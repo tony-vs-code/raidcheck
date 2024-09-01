@@ -4,6 +4,7 @@ import logging
 from decouple import config
 from discord.ext import tasks
 from subprocess import check_output, CalledProcessError, STDOUT
+from typing import Tuple
 
 # Configure logging
 logging.basicConfig(
@@ -22,7 +23,7 @@ if not DISCORD_TOKEN or not CHANNEL_ID:
 
 client = discord.Client(intents=discord.Intents.default())
 
-async def send_message(message):
+async def send_message(message: str) -> None:
     try:
         channel = client.get_channel(int(CHANNEL_ID))
         if channel:
@@ -32,36 +33,58 @@ async def send_message(message):
     except Exception as e:
         logging.error(f"Failed to send message: {e}")
 
-def check_raid_status():
+def check_raid_status() -> Tuple[str, str]:
     try:
         result = check_output(['mdadm', '--detail', '/dev/md127'], stderr=STDOUT).decode()
         if 'State : clean' in result:
             return 'clean', result
-        else:
+        elif 'State : active' in result:
+            return 'active', result
+        elif 'State : degraded' in result:
             return 'degraded', result
+        elif 'State : recovering' in result:
+            return 'recovering', result
+        elif 'State : resyncing' in result:
+            return 'resyncing', result
+        elif 'State : failed' in result:
+            return 'failed', result
+        else:
+            return 'unknown', result
     except CalledProcessError as e:
         logging.error(f"Error checking RAID status: {e.output.decode()}")
         return 'error', e.output.decode()
 
 @client.event
-async def on_ready():
+async def on_ready() -> None:
     logging.info(f'Logged in as {client.user}')
     monitor_raid.start()
 
 @tasks.loop(minutes=1)
-async def monitor_raid():
+async def monitor_raid() -> None:
     status, details = check_raid_status()
     if status == 'degraded':
         logging.info('RAID Array Degraded Sending Message')
         await send_message(f'``` \n RAID Array Degraded:\n{details} \n ```')
-    elif status == 'clean':
+    elif status in ['clean', 'active']:
         if not hasattr(monitor_raid, 'last_clean_notification') or \
            time.time() - monitor_raid.last_clean_notification > 86400:
             logging.info('RAID Array Clean Sending Message')
             await send_message(f'``` \n RAID Array Clean:\n{details} \n ```')
             monitor_raid.last_clean_notification = time.time()
+    elif status == 'recovering':
+        logging.info('RAID Array Recovering Sending Message')
+        await send_message(f'``` \n RAID Array Recovering:\n{details} \n ```')
+    elif status == 'resyncing':
+        logging.info('RAID Array Resyncing Sending Message')
+        await send_message(f'``` \n RAID Array Resyncing:\n{details} \n ```')
+    elif status == 'failed':
+        logging.error('RAID Array Failed Sending Message')
+        await send_message(f'``` \n RAID Array Failed:\n{details} \n ```')
     elif status == 'error':
         logging.error('Error checking RAID status sending message containing error')
         await send_message(f'``` \n Error checking RAID status:\n{details} \n ```')
+    else:
+        logging.warning('Unknown RAID status sending message')
+        await send_message(f'``` \n Unknown RAID status:\n{details} \n ```')
 
 client.run(DISCORD_TOKEN)
