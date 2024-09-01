@@ -49,7 +49,7 @@ The bot will check the RAID status every minute, however, it will only send a cl
 
 1. Create a new service unit file using a text editor:
 
-`sudo nano /etc/systemd/system/raidcheck.service`
+```sudo nano /etc/systemd/system/raidcheck.service```
 
 2. Add the following content to the file:
 
@@ -70,27 +70,39 @@ WantedBy=multi-user.target
 
 3. Reload systemctl
 
-`sudo systemctl daemon-reload`
+```sh
+sudo systemctl daemon-reload
+```
 
 4. Start the service
 
-`sudo systemctl start raidcheck`
+```sh
+sudo systemctl start raidcheck
+```
 
 5. Enable the service to auto start
 
-`sudo systemctl enable raidcheck`
+```sh
+sudo systemctl enable raidcheck
+```
 
 Now the bot will run as a service and automatically start on boot. You can check the status of the service using the following command:
 
-`sudo systemctl status raidcheck`
+```sh
+sudo systemctl status raidcheck
+```
 
 To stop the bot service, use:
 
-`sudo systemctl stop raidcheck`
+```sh
+sudo systemctl stop raidcheck
+```
 
 To disable the bot service from starting on boot, use:
 
-`sudo systemctl disable raidcheck`
+```sh
+sudo systemctl disable raidcheck
+```
 
 ## Code Overview
 
