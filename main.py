@@ -62,29 +62,14 @@ async def on_ready() -> None:
 @tasks.loop(minutes=1)
 async def monitor_raid() -> None:
     status, details = check_raid_status()
-    if status == 'degraded':
-        logging.info('RAID Array Degraded Sending Message')
-        await send_message(f'``` \n RAID Array Degraded:\n{details} \n ```')
-    elif status in ['clean', 'active']:
+    if status in ['clean', 'active']:
         if not hasattr(monitor_raid, 'last_clean_notification') or \
            time.time() - monitor_raid.last_clean_notification > 86400:
-            logging.info('RAID Array Clean Sending Message')
-            await send_message(f'``` \n RAID Array Clean:\n{details} \n ```')
+            logging.info(f'RAID Array {status.capitalize()} Sending Message')
+            await send_message(f'``` \n RAID Array {status.capitalize()}:\n{details} \n ```')
             monitor_raid.last_clean_notification = time.time()
-    elif status == 'recovering':
-        logging.info('RAID Array Recovering Sending Message')
-        await send_message(f'``` \n RAID Array Recovering:\n{details} \n ```')
-    elif status == 'resyncing':
-        logging.info('RAID Array Resyncing Sending Message')
-        await send_message(f'``` \n RAID Array Resyncing:\n{details} \n ```')
-    elif status == 'failed':
-        logging.error('RAID Array Failed Sending Message')
-        await send_message(f'``` \n RAID Array Failed:\n{details} \n ```')
-    elif status == 'error':
-        logging.error('Error checking RAID status sending message containing error')
-        await send_message(f'``` \n Error checking RAID status:\n{details} \n ```')
     else:
-        logging.warning('Unknown RAID status sending message')
-        await send_message(f'``` \n Unknown RAID status:\n{details} \n ```')
+        logging.info(f'RAID Array {status.capitalize()} Sending Message')
+        await send_message(f'``` \n RAID Array {status.capitalize()}:\n{details} \n ```')
 
 client.run(DISCORD_TOKEN)
