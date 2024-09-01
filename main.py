@@ -6,7 +6,11 @@ from discord.ext import tasks
 from subprocess import check_output, CalledProcessError, STDOUT
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    filename='/var/log/raid_monitor.log',  # Log file path
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 # Discord bot token and channel ID
 DISCORD_TOKEN = config('DISCORD_TOKEN')
