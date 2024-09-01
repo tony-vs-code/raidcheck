@@ -36,7 +36,7 @@ I would highly reccomend setting this up in `/usr/local/bin/`
 
 The bot will check the RAID status every minute, however, it will only send a clean raid summary once a day. As soon as it sees a degraded state, it will send a message.
 
-[!NOTE]
+[NOTE]
 Please make sure to replace `<your-discord-bot-token>` and `<your-discord-channel-id>` in the `.env` file with your actual Discord bot token and channel ID before running.
 
 ### Run the bot:
