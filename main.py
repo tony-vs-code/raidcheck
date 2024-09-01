@@ -16,7 +16,7 @@ if not DISCORD_TOKEN or not CHANNEL_ID:
     logging.error("DISCORD_TOKEN or CHANNEL_ID not set in environment variables.")
     exit(1)
 
-client = discord.Client()
+client = discord.Client(intents=discord.Intents.default())
 
 async def send_message(message):
     try:
