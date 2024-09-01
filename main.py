@@ -52,13 +52,16 @@ async def on_ready():
 async def monitor_raid():
     status, details = check_raid_status()
     if status == 'degraded':
+        logging.info('RAID Array Degraded Sending Message')
         await send_message(f'``` \n RAID Array Degraded:\n{details} \n ```')
     elif status == 'clean':
         if not hasattr(monitor_raid, 'last_clean_notification') or \
            time.time() - monitor_raid.last_clean_notification > 86400:
+            logging.info('RAID Array Clean Sending Message')
             await send_message(f'``` \n RAID Array Clean:\n{details} \n ```')
             monitor_raid.last_clean_notification = time.time()
     elif status == 'error':
+        logging.error('Error checking RAID status sending message containing error')
         await send_message(f'``` \n Error checking RAID status:\n{details} \n ```')
 
 client.run(DISCORD_TOKEN)
