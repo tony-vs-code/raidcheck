@@ -106,15 +106,15 @@ sudo systemctl disable raidcheck
 
 ## Code Overview
 
-- [`main.py`]: Contains the main logic for the Discord bot, including functions to check RAID status and send messages.
-- [`.env`]: Stores environment variables for the Discord bot token and channel ID.
-- [`requirements.txt`]: Lists the Python dependencies for the project.
+- `main.py`: Contains the main logic for the Discord bot, including functions to check RAID status and send messages.
+- `.env`: Stores environment variables for the Discord bot token and channel ID.
+- `requirements.txt`: Lists the Python dependencies for the project.
 
 ## Functions
 
-- [`check_raid_status()`]: Checks the status of the RAID array using [`mdadm`]
-- [`monitor_raid()`]: Periodically checks the RAID status and sends notifications to Discord.
-- [`send_message(message)`]: Sends a message to the specified Discord channel.
+- `check_raid_status()`: Checks the status of the RAID array using [`mdadm`]
+- `monitor_raid()`: Periodically checks the RAID status and sends notifications to Discord.
+- `send_message(message)`: Sends a message to the specified Discord channel.
 
 ## Logging
 
