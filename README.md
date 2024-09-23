@@ -1,7 +1,7 @@
 
 ## Setup
 
-The bot will check the RAID status every minute, however, it will only send a clean raid summary once a day. As soon as it sees a degraded state, it will send a message. I would highly reccomend setting this up in `/usr/local/bin/`.
+The bot will check the RAID status every 2 hours, however, it will only send a clean raid summary once a week. As soon as it sees a degraded state, it will send a message. I would highly reccomend setting this up in `/usr/local/bin/`.
 
 1. **Clone the repository:**
 
