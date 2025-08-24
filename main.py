@@ -142,9 +142,9 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
         )
         rows.append(device_separator)
         rows.append("│ Active Disks                                                │")
-        rows.append("├─────┬────────┬─────────────────────────────────────────────┤")
-        rows.append("│ No. │ Device │ State                                       │")
-        rows.append("├─────┼────────┼─────────────────────────────────────────────┤")
+        rows.append("├─────┬────────┬──────────────────────────────────────────────┤")
+        rows.append("│ No. │ Device │ State                                        │")
+        rows.append("├─────┼────────┼──────────────────────────────────────────────┤")
 
         if devices:
             for device in devices:
@@ -152,19 +152,19 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
                 device_name = device["device"].ljust(6)
                 device_state = device["state"]
 
-                # Ensure state fits in the allocated space (43 chars)
-                if len(device_state) > 43:
-                    device_state = device_state[:40] + "..."
+                # Ensure state fits in the allocated space (44 chars)
+                if len(device_state) > 44:
+                    device_state = device_state[:41] + "..."
                 else:
-                    device_state = device_state.ljust(43)
+                    device_state = device_state.ljust(44)
 
                 rows.append(f"│ {device_num} │ {device_name} │ {device_state} │")
         else:
             rows.append(
-                "│     │        │ No device information available             │"
+                "│     │        │ No device information available              │"
             )
 
-        footer = "╰─────┴────────┴─────────────────────────────────────────────╯"
+        footer = "╰─────┴────────┴──────────────────────────────────────────────╯"
 
         return "\n".join([header, title, separator] + rows + [footer])
 
