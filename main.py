@@ -80,9 +80,10 @@ async def monitor_raid() -> None:
     status, details = check_raid_status()
     duf_output = get_duf_output()
 
-    # Send RAID details in code block, duf output with colors outside
-    raid_message = f"```\nRAID Array {status.capitalize()}:\n{details}\n```"
-    duf_message = f"Disk Usage:\n{duf_output}"
+    # Combine RAID details and duf output in one code block
+    message_content = (
+        f"RAID Array {status.capitalize()}:\n{details}\n\nDisk Usage:\n{duf_output}"
+    )
 
     if status in ["clean", "active"]:
         if (
@@ -90,13 +91,11 @@ async def monitor_raid() -> None:
             or time.time() - monitor_raid.last_clean_notification > 604800
         ):  # 604800 seconds = 1 week
             logging.info(f"RAID Array {status.capitalize()} Sending Message")
-            await send_message(raid_message)
-            await send_message(duf_message)
+            await send_message(f"```\n{message_content}\n```")
             monitor_raid.last_clean_notification = time.time()
     else:
         logging.info(f"RAID Array {status.capitalize()} Sending Message")
-        await send_message(raid_message)
-        await send_message(duf_message)
+        await send_message(f"```\n{message_content}\n```")
 
 
 client.run(DISCORD_TOKEN)
