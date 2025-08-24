@@ -37,7 +37,9 @@ async def send_message(message: str) -> None:
 
 def check_raid_status() -> Tuple[str, str]:
     try:
-        result = check_output(["mdadm", "--detail", "/dev/md127"], stderr=STDOUT).decode()
+        result = check_output(
+            ["mdadm", "--detail", "/dev/md127"], stderr=STDOUT
+        ).decode()
         if "State : clean" in result:
             return "clean", result
         elif "State : active" in result:
@@ -57,6 +59,18 @@ def check_raid_status() -> Tuple[str, str]:
         return "error", e.output.decode()
 
 
+def get_duf_output() -> str:
+    try:
+        # Use --output plain to remove ANSI color codes for better Discord formatting
+        result = check_output(
+            ["duf", "/home/media/raid/", "--output", "plain"], stderr=STDOUT
+        ).decode()
+        return result.strip()
+    except CalledProcessError as e:
+        logging.error(f"Error getting duf output: {e.output.decode()}")
+        return f"Error getting disk usage: {e.output.decode()}"
+
+
 @client.event
 async def on_ready() -> None:
     logging.info(f"Logged in as {client.user}")
@@ -66,17 +80,23 @@ async def on_ready() -> None:
 @tasks.loop(hours=2)
 async def monitor_raid() -> None:
     status, details = check_raid_status()
+    duf_output = get_duf_output()
+
+    message_content = (
+        f"RAID Array {status.capitalize()}:\n{details}\n\nDisk Usage:\n{duf_output}"
+    )
+
     if status in ["clean", "active"]:
         if (
             not hasattr(monitor_raid, "last_clean_notification")
             or time.time() - monitor_raid.last_clean_notification > 604800
         ):  # 604800 seconds = 1 week
             logging.info(f"RAID Array {status.capitalize()} Sending Message")
-            await send_message(f"``` \n RAID Array {status.capitalize()}:\n{details} \n ```")
+            await send_message(f"```\n{message_content}\n```")
             monitor_raid.last_clean_notification = time.time()
     else:
         logging.info(f"RAID Array {status.capitalize()} Sending Message")
-        await send_message(f"``` \n RAID Array {status.capitalize()}:\n{details} \n ```")
+        await send_message(f"```\n{message_content}\n```")
 
 
 client.run(DISCORD_TOKEN)
