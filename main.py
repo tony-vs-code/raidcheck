@@ -61,13 +61,13 @@ def check_raid_status() -> Tuple[str, str]:
 
 def get_duf_output() -> str:
     try:
-        # Set a specific width for better mobile/narrow display
+        # Very compact - only mount point, size, and usage percentage
         result = check_output(
             [
                 "duf",
                 "/home/media/raid/",
-                "--width",
-                "60",  # Set maximum width to 60 characters
+                "--output",
+                "mountpoint,size,usage",
             ],
             stderr=STDOUT,
         ).decode()
