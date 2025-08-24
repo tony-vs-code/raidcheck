@@ -62,9 +62,7 @@ def check_raid_status() -> Tuple[str, str]:
 def get_duf_output() -> str:
     try:
         # Use --output plain to remove ANSI color codes for better Discord formatting
-        result = check_output(
-            ["duf", "/home/media/raid/", "--output", "plain"], stderr=STDOUT
-        ).decode()
+        result = check_output(["duf", "/home/media/raid/"], stderr=STDOUT).decode()
         return result.strip()
     except CalledProcessError as e:
         logging.error(f"Error getting duf output: {e.output.decode()}")
