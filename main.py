@@ -61,14 +61,9 @@ def check_raid_status() -> Tuple[str, str]:
 
 def get_duf_output() -> str:
     try:
-        # Very compact - only mount point, size, and usage percentage
+        # Use --output to show only specific columns for narrower display
         result = check_output(
-            [
-                "duf",
-                "/home/media/raid/",
-                "--output",
-                "mountpoint,size,usage",
-            ],
+            ["duf", "/home/media/raid/", "--output", "mountpoint,size,usage"],
             stderr=STDOUT,
         ).decode()
         return result.strip()
