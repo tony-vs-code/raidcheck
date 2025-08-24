@@ -121,9 +121,7 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
         persistence = persistence_match.group(1) if persistence_match else "unknown"
 
         # Create unified table format with fixed widths
-        table_width = 61  # Total table width
-        label_width = 15  # Width of the label column
-        content_width = table_width - label_width - 3  # 3 for borders and separator
+        content_width = 43  # Width of the content column
 
         header = "╭─────────────────────────────────────────────────────────────╮"
         title = f"│ RAID {raid_level.upper()} SYSTEM STATUS - {status.upper():<32} │"
@@ -152,11 +150,13 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
             for device in devices:
                 device_num = device["number"].rjust(3)
                 device_name = device["device"].ljust(6)
-                device_state = device["state"].ljust(43)
+                device_state = device["state"]
 
-                # Truncate state if too long
+                # Ensure state fits in the allocated space (43 chars)
                 if len(device_state) > 43:
                     device_state = device_state[:40] + "..."
+                else:
+                    device_state = device_state.ljust(43)
 
                 rows.append(f"│ {device_num} │ {device_name} │ {device_state} │")
         else:
