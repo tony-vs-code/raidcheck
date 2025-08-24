@@ -128,11 +128,37 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
         # Add storage usage row
         rows.append(f"│ Storage Usage │ {storage_info:<43} │")
 
-        # Add devices row (might need wrapping for long lists)
+        # Handle device list with wrapping if too long
         devices_str = ", ".join(devices)
-        if len(devices_str) > 43:
-            devices_str = devices_str[:40] + "..."
-        rows.append(f"│ Active Disks  │ {devices_str:<43} │")
+        max_width = 43
+
+        if len(devices_str) <= max_width:
+            # Fits in one line
+            rows.append(f"│ Active Disks  │ {devices_str:<43} │")
+        else:
+            # Need to wrap across multiple lines
+            words = devices_str.split(", ")
+            current_line = ""
+            device_lines = []
+
+            for word in words:
+                if not current_line:
+                    current_line = word
+                elif len(current_line + ", " + word) <= max_width:
+                    current_line += ", " + word
+                else:
+                    device_lines.append(current_line)
+                    current_line = word
+
+            if current_line:
+                device_lines.append(current_line)
+
+            # Add first line with label
+            rows.append(f"│ Active Disks  │ {device_lines[0]:<43} │")
+
+            # Add additional lines without label
+            for line in device_lines[1:]:
+                rows.append(f"│               │ {line:<43} │")
 
         footer = "╰───────────────┴─────────────────────────────────────────────╯"
 
