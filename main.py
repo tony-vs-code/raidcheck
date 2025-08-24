@@ -84,14 +84,22 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
         update_time_match = re.search(r"Update Time : (.+)", details)
         persistence_match = re.search(r"Persistence : (.+)", details)
 
-        # Extract device information
+        # Extract detailed device information
         devices = []
+        device_section = False
         for line in details.split("\n"):
-            if "/dev/sd" in line and "active sync" in line:
+            if "Number   Major   Minor   RaidDevice State" in line:
+                device_section = True
+                continue
+            if device_section and "/dev/sd" in line:
                 parts = line.strip().split()
-                if len(parts) >= 4:
+                if len(parts) >= 6:
+                    number = parts[0]
                     device = parts[-1].replace("/dev/", "")
-                    devices.append(device)
+                    state = " ".join(
+                        parts[4:-1]
+                    )  # Everything between device number and device path
+                    devices.append({"number": number, "device": device, "state": state})
 
         # Extract storage information from duf
         storage_info = "N/A"
@@ -127,43 +135,36 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
             f"│ Devices       │ {active_devices} active, {failed_devices} failed{'':<{content_width - len(f'{active_devices} active, {failed_devices} failed')}} │",
             f"│ Persistence   │ {persistence:<{content_width}} │",
             f"│ Last Update   │ {update_time:<{content_width}} │",
+            f"│ Storage Usage │ {storage_info:<{content_width}} │",
         ]
 
-        # Add storage usage row
-        rows.append(f"│ Storage Usage │ {storage_info:<{content_width}} │")
+        # Add Active Disks section as full-width nested table
+        device_separator = (
+            "├─────────────────────────────────────────────────────────────┤"
+        )
+        rows.append(device_separator)
+        rows.append("│ Active Disks                                                │")
+        rows.append("├─────┬────────┬─────────────────────────────────────────────┤")
+        rows.append("│ No. │ Device │ State                                       │")
+        rows.append("├─────┼────────┼─────────────────────────────────────────────┤")
 
-        # Handle device list with proper width calculations
-        devices_str = ", ".join(devices)
+        if devices:
+            for device in devices:
+                device_num = device["number"].rjust(3)
+                device_name = device["device"].ljust(6)
+                device_state = device["state"].ljust(43)
 
-        if len(devices_str) <= content_width:
-            # Fits in one line
-            rows.append(f"│ Active Disks  │ {devices_str:<{content_width}} │")
+                # Truncate state if too long
+                if len(device_state) > 43:
+                    device_state = device_state[:40] + "..."
+
+                rows.append(f"│ {device_num} │ {device_name} │ {device_state} │")
         else:
-            # Need to wrap across multiple lines
-            words = devices_str.split(", ")
-            current_line = ""
-            device_lines = []
+            rows.append(
+                "│     │        │ No device information available             │"
+            )
 
-            for word in words:
-                if not current_line:
-                    current_line = word
-                elif len(current_line + ", " + word) <= content_width:
-                    current_line += ", " + word
-                else:
-                    device_lines.append(current_line)
-                    current_line = word
-
-            if current_line:
-                device_lines.append(current_line)
-
-            # Add first line with label
-            rows.append(f"│ Active Disks  │ {device_lines[0]:<{content_width}} │")
-
-            # Add additional lines without label
-            for line in device_lines[1:]:
-                rows.append(f"│               │ {line:<{content_width}} │")
-
-        footer = "╰───────────────┴─────────────────────────────────────────────╯"
+        footer = "╰─────┴────────┴─────────────────────────────────────────────╯"
 
         return "\n".join([header, title, separator] + rows + [footer])
 
