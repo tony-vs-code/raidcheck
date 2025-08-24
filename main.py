@@ -5,6 +5,7 @@ from decouple import config
 from discord.ext import tasks
 from subprocess import check_output, CalledProcessError, STDOUT
 from typing import Tuple
+import re
 
 # Configure logging
 logging.basicConfig(
@@ -72,6 +73,76 @@ def get_duf_output() -> str:
         return f"Error getting disk usage: {e.output.decode()}"
 
 
+def format_raid_summary(status: str, details: str, duf_output: str) -> str:
+    """Extract and format RAID and storage information in a unified table format"""
+    try:
+        # Extract RAID information using regex
+        level_match = re.search(r"Raid Level : (\w+)", details)
+        array_size_match = re.search(r"Array Size : \d+ \(([^)]+)\)", details)
+        active_devices_match = re.search(r"Active Devices : (\d+)", details)
+        failed_devices_match = re.search(r"Failed Devices : (\d+)", details)
+        update_time_match = re.search(r"Update Time : (.+)", details)
+        persistence_match = re.search(r"Persistence : (.+)", details)
+
+        # Extract device information
+        devices = []
+        for line in details.split("\n"):
+            if "/dev/sd" in line and "active sync" in line:
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    device = parts[-1].replace("/dev/", "")
+                    devices.append(device)
+
+        # Extract storage information from duf
+        storage_info = "N/A"
+        for line in duf_output.split("\n"):
+            if "T" in line and ("│" in line or "|" in line):
+                cleaned = line.replace("│", "|").replace("|", " ").strip()
+                parts = [p.strip() for p in cleaned.split() if p.strip()]
+                if len(parts) >= 4:
+                    size, used, avail, usage = parts[0], parts[1], parts[2], parts[3]
+                    storage_info = f"{used}/{size} ({usage}) | {avail} free"
+                    break
+
+        # Build values
+        raid_level = level_match.group(1) if level_match else "unknown"
+        array_size = array_size_match.group(1) if array_size_match else "unknown"
+        active_devices = active_devices_match.group(1) if active_devices_match else "0"
+        failed_devices = failed_devices_match.group(1) if failed_devices_match else "0"
+        update_time = update_time_match.group(1) if update_time_match else "unknown"
+        persistence = persistence_match.group(1) if persistence_match else "unknown"
+
+        # Create unified table format
+        header = "╭─────────────────────────────────────────────────────────────╮"
+        title = f"│ RAID {raid_level.upper()} SYSTEM STATUS - {status.upper():<32} │"
+        separator = "├───────────────┬─────────────────────────────────────────────┤"
+
+        rows = [
+            f"│ Status        │ {status.capitalize():<43} │",
+            f"│ Array Size    │ {array_size:<43} │",
+            f"│ Devices       │ {active_devices} active, {failed_devices} failed{'':<30} │",
+            f"│ Persistence   │ {persistence:<43} │",
+            f"│ Last Update   │ {update_time:<43} │",
+        ]
+
+        # Add storage usage row
+        rows.append(f"│ Storage Usage │ {storage_info:<43} │")
+
+        # Add devices row (might need wrapping for long lists)
+        devices_str = ", ".join(devices)
+        if len(devices_str) > 43:
+            devices_str = devices_str[:40] + "..."
+        rows.append(f"│ Active Disks  │ {devices_str:<43} │")
+
+        footer = "╰───────────────┴─────────────────────────────────────────────╯"
+
+        return "\n".join([header, title, separator] + rows + [footer])
+
+    except Exception as e:
+        logging.error(f"Error formatting RAID summary: {e}")
+        return f"RAID Array {status.capitalize()}\nError parsing details"
+
+
 @client.event
 async def on_ready() -> None:
     logging.info(f"Logged in as {client.user}")
@@ -83,10 +154,8 @@ async def monitor_raid() -> None:
     status, details = check_raid_status()
     duf_output = get_duf_output()
 
-    # Combine RAID details and duf output in one code block
-    message_content = (
-        f"RAID Array {status.capitalize()}:\n{details}\n\nDisk Usage:\n{duf_output}"
-    )
+    # Create unified formatted message
+    message_content = format_raid_summary(status, details, duf_output)
 
     if status in ["clean", "active"]:
         if (
