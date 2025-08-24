@@ -112,29 +112,32 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
         update_time = update_time_match.group(1) if update_time_match else "unknown"
         persistence = persistence_match.group(1) if persistence_match else "unknown"
 
-        # Create unified table format
+        # Create unified table format with fixed widths
+        table_width = 61  # Total table width
+        label_width = 15  # Width of the label column
+        content_width = table_width - label_width - 3  # 3 for borders and separator
+
         header = "╭─────────────────────────────────────────────────────────────╮"
         title = f"│ RAID {raid_level.upper()} SYSTEM STATUS - {status.upper():<32} │"
         separator = "├───────────────┬─────────────────────────────────────────────┤"
 
         rows = [
-            f"│ Status        │ {status.capitalize():<43} │",
-            f"│ Array Size    │ {array_size:<43} │",
-            f"│ Devices       │ {active_devices} active, {failed_devices} failed{'':<30} │",
-            f"│ Persistence   │ {persistence:<43} │",
-            f"│ Last Update   │ {update_time:<43} │",
+            f"│ Status        │ {status.capitalize():<{content_width}} │",
+            f"│ Array Size    │ {array_size:<{content_width}} │",
+            f"│ Devices       │ {active_devices} active, {failed_devices} failed{'':<{content_width - len(f'{active_devices} active, {failed_devices} failed')}} │",
+            f"│ Persistence   │ {persistence:<{content_width}} │",
+            f"│ Last Update   │ {update_time:<{content_width}} │",
         ]
 
         # Add storage usage row
-        rows.append(f"│ Storage Usage │ {storage_info:<43} │")
+        rows.append(f"│ Storage Usage │ {storage_info:<{content_width}} │")
 
-        # Handle device list with wrapping if too long
+        # Handle device list with proper width calculations
         devices_str = ", ".join(devices)
-        max_width = 43
 
-        if len(devices_str) <= max_width:
+        if len(devices_str) <= content_width:
             # Fits in one line
-            rows.append(f"│ Active Disks  │ {devices_str:<43} │")
+            rows.append(f"│ Active Disks  │ {devices_str:<{content_width}} │")
         else:
             # Need to wrap across multiple lines
             words = devices_str.split(", ")
@@ -144,7 +147,7 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
             for word in words:
                 if not current_line:
                     current_line = word
-                elif len(current_line + ", " + word) <= max_width:
+                elif len(current_line + ", " + word) <= content_width:
                     current_line += ", " + word
                 else:
                     device_lines.append(current_line)
@@ -154,11 +157,11 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
                 device_lines.append(current_line)
 
             # Add first line with label
-            rows.append(f"│ Active Disks  │ {device_lines[0]:<43} │")
+            rows.append(f"│ Active Disks  │ {device_lines[0]:<{content_width}} │")
 
             # Add additional lines without label
             for line in device_lines[1:]:
-                rows.append(f"│               │ {line:<43} │")
+                rows.append(f"│               │ {line:<{content_width}} │")
 
         footer = "╰───────────────┴─────────────────────────────────────────────╯"
 
