@@ -64,7 +64,7 @@ def get_duf_output() -> str:
     try:
         # Use --output to show only specific columns for narrower display
         result = check_output(
-            ["duf", "--output", "size,used,avail,usage", "/home/media/raid/"],
+            ["duf", "--output", "size,used,avail,usage", "/mnt/media/"],
             stderr=STDOUT,
         ).decode()
         return result.strip()
