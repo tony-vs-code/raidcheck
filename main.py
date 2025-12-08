@@ -120,31 +120,37 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
         update_time = update_time_match.group(1) if update_time_match else "unknown"
         persistence = persistence_match.group(1) if persistence_match else "unknown"
 
-        # Create unified table format with fixed widths
-        content_width = 43  # Width of the content column
+        # --- Create unified table format with corrected widths ---
+        content_width = 43
+        full_width = 61
 
-        header = "╭─────────────────────────────────────────────────────────────╮"
-        title = f"│ RAID {raid_level.upper()} SYSTEM STATUS - {status.upper():<32} │"
-        separator = "├───────────────┬─────────────────────────────────────────────┤"
+        header = f"╭{'─' * full_width}╮"
+        title = (
+            f"│ RAID {raid_level.upper()} SYSTEM STATUS - {status.upper()}".ljust(
+                full_width
+            )
+            + " │"
+        )
+        separator = f"├───────────────┬{'─' * (content_width + 2)}┤"
 
         rows = [
             f"│ Status        │ {status.capitalize():<{content_width}} │",
             f"│ Array Size    │ {array_size:<{content_width}} │",
-            f"│ Devices       │ {active_devices} active, {failed_devices} failed{'':<{content_width - len(f'{active_devices} active, {failed_devices} failed')}} │",
+            f"│ Devices       │ {f'{active_devices} active, {failed_devices} failed':<{content_width}} │",
             f"│ Persistence   │ {persistence:<{content_width}} │",
             f"│ Last Update   │ {update_time:<{content_width}} │",
             f"│ Storage Usage │ {storage_info:<{content_width}} │",
         ]
 
         # Add Active Disks section as full-width nested table
-        device_separator = (
-            "├─────────────────────────────────────────────────────────────┤"
-        )
+        device_separator = f"├{'─' * full_width}┤"
         rows.append(device_separator)
-        rows.append("│ Active Disks                                                │")
-        rows.append("├─────┬────────┬──────────────────────────────────────────────┤")
-        rows.append("│ No. │ Device │ State                                        │")
-        rows.append("├─────┼────────┼──────────────────────────────────────────────┤")
+        rows.append(f"│ Active Disks{' ' * (full_width - 12)}│")
+
+        device_header_sep = f"├─────┬────────┬{'─' * (content_width - 6)}┤"
+        rows.append(device_header_sep)
+        rows.append(f"│ No. │ Device │ State{' ' * (content_width - 12)}│")
+        rows.append(device_header_sep)
 
         if devices:
             for device in devices:
@@ -152,19 +158,19 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
                 device_name = device["device"].ljust(6)
                 device_state = device["state"]
 
-                # Ensure state fits in the allocated space (44 chars)
-                if len(device_state) > 44:
-                    device_state = device_state[:41] + "..."
+                state_width = content_width - 8
+                if len(device_state) > state_width:
+                    device_state = device_state[: state_width - 3] + "..."
                 else:
-                    device_state = device_state.ljust(44)
+                    device_state = device_state.ljust(state_width)
 
                 rows.append(f"│ {device_num} │ {device_name} │ {device_state} │")
         else:
             rows.append(
-                "│     │        │ No device information available              │"
+                f"│     │        │ {'No device information available':<{content_width - 8}} │"
             )
 
-        footer = "╰─────┴────────┴──────────────────────────────────────────────╯"
+        footer = f"╰─────┴────────┴{'─' * (content_width - 6)}╯"
 
         return "\n".join([header, title, separator] + rows + [footer])
 

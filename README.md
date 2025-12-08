@@ -1,4 +1,3 @@
-
 ## Setup
 
 The bot will check the RAID status every 2 hours, however, it will only send a clean raid summary once a week. As soon as it sees a degraded state, it will send a message. I would highly reccomend setting this up in `/usr/local/bin/`.
@@ -13,14 +12,14 @@ The bot will check the RAID status every 2 hours, however, it will only send a c
 2. **Create and activate a virtual environment:**
 
     ```sh
-    python -m venv venv
-    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+    uv venv
+    source .venv/bin/activate  # On Windows use `.venv\Scripts\activate`
     ```
 
 3. **Install the dependencies:**
 
     ```sh
-    pip install -r requirements.txt
+    uv pip install -r requirements.txt
     ```
 
 4. **Configure environment variables:**
@@ -57,9 +56,10 @@ Description=Raidcheck Discord Bot
 After=network.target
 
 [Service]
-User=root # We must run as root to have permission for mdadm
+User=root
 Group=root
-ExecStart=/usr/local/bin/raidcheck/venv/bin/python3 /usr/local/bin/raidcheck/main.py
+WorkingDirectory=/usr/local/bin/raidcheck/
+ExecStart=/bin/sh -c '/usr/local/bin/raidcheck/.venv/bin/python /usr/local/bin/raidcheck/main.py'
 Restart=always
 
 [Install]
