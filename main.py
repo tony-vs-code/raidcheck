@@ -39,7 +39,7 @@ async def send_message(message: str) -> None:
 def check_raid_status() -> Tuple[str, str]:
     try:
         result = check_output(
-            ["mdadm", "--detail", "/dev/md127"], stderr=STDOUT
+            ["mdadm", "--detail", "/dev/md128"], stderr=STDOUT
         ).decode()
         if "State : clean" in result:
             return "clean", result
@@ -101,16 +101,19 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
                     )  # Everything between device number and device path
                     devices.append({"number": number, "device": device, "state": state})
 
-        # Extract storage information from duf
+        # --- FIX: Correctly parse space-separated duf output ---
         storage_info = "N/A"
-        for line in duf_output.split("\n"):
-            if "T" in line and ("│" in line or "|" in line):
-                cleaned = line.replace("│", "|").replace("|", " ").strip()
-                parts = [p.strip() for p in cleaned.split() if p.strip()]
+        # The output of `duf --output` is just space-separated values, often with a header.
+        # We can grab the last line, which should be the data.
+        duf_lines = duf_output.strip().split("\n")
+        if duf_lines:
+            data_line = duf_lines[-1]
+            # A simple check to ensure it's likely the data we want
+            if "T" in data_line or "G" in data_line:
+                parts = data_line.split()
                 if len(parts) >= 4:
                     size, used, avail, usage = parts[0], parts[1], parts[2], parts[3]
                     storage_info = f"{used}/{size} ({usage}) | {avail} free"
-                    break
 
         # Build values
         raid_level = level_match.group(1) if level_match else "unknown"
