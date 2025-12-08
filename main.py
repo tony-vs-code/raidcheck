@@ -101,19 +101,24 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
                     )  # Everything between device number and device path
                     devices.append({"number": number, "device": device, "state": state})
 
-        # --- FIX: Correctly parse space-separated duf output ---
+        # --- FIX: Correctly parse duf's formatted table output ---
         storage_info = "N/A"
-        # The output of `duf --output` is just space-separated values, often with a header.
-        # We can grab the last line, which should be the data.
-        duf_lines = duf_output.strip().split("\n")
-        if duf_lines:
-            data_line = duf_lines[-1]
-            # A simple check to ensure it's likely the data we want
-            if "T" in data_line or "G" in data_line:
-                parts = data_line.split()
-                if len(parts) >= 4:
-                    size, used, avail, usage = parts[0], parts[1], parts[2], parts[3]
-                    storage_info = f"{used}/{size} ({usage}) | {avail} free"
+        for line in duf_output.split("\n"):
+            # Find the data line, which contains the box characters and size units
+            if "│" in line and ("T" in line or "G" in line):
+                # Clean the line by removing the box characters and splitting
+                # Example line: │ 63.4T │ 16.4T │ 43.8T │ [#####...]  25.9% │
+                parts = line.replace("│", " ").strip().split()
+                # Resulting parts: ['63.4T', '16.4T', '43.8T', '[#####...]', '25.9%']
+                if len(parts) >= 5:
+                    size, used, avail, usage_percent = (
+                        parts[0],
+                        parts[1],
+                        parts[2],
+                        parts[-1],
+                    )
+                    storage_info = f"{used}/{size} ({usage_percent}) | {avail} free"
+                    break  # Found the data, no need to continue
 
         # Build values
         raid_level = level_match.group(1) if level_match else "unknown"
