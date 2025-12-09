@@ -80,9 +80,20 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
         level_match = re.search(r"Raid Level : (\w+)", details)
         array_size_match = re.search(r"Array Size : \d+ \(([^)]+)\)", details)
         active_devices_match = re.search(r"Active Devices : (\d+)", details)
+        working_devices_match = re.search(r"Working Devices : (\d+)", details)
         failed_devices_match = re.search(r"Failed Devices : (\d+)", details)
+        spare_devices_match = re.search(r"Spare Devices : (\d+)", details)
         update_time_match = re.search(r"Update Time : (.+)", details)
         persistence_match = re.search(r"Persistence : (.+)", details)
+        state_match = re.search(r"State : (.+)", details)
+        check_status_match = re.search(r"Check Status : (.+)", details)
+        events_match = re.search(r"Events : (\d+)", details)
+        layout_match = re.search(r"Layout : (.+)", details)
+        chunk_size_match = re.search(r"Chunk Size : (.+)", details)
+        consistency_policy_match = re.search(r"Consistency Policy : (.+)", details)
+        uuid_match = re.search(r"UUID : (.+)", details)
+        creation_time_match = re.search(r"Creation Time : (.+)", details)
+        version_match = re.search(r"Version : (.+)", details)
 
         # Extract detailed device information
         devices = []
@@ -116,9 +127,26 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
         raid_level = level_match.group(1) if level_match else "unknown"
         array_size = array_size_match.group(1) if array_size_match else "unknown"
         active_devices = active_devices_match.group(1) if active_devices_match else "0"
+        working_devices = (
+            working_devices_match.group(1) if working_devices_match else "0"
+        )
         failed_devices = failed_devices_match.group(1) if failed_devices_match else "0"
+        spare_devices = spare_devices_match.group(1) if spare_devices_match else "0"
         update_time = update_time_match.group(1) if update_time_match else "unknown"
         persistence = persistence_match.group(1) if persistence_match else "unknown"
+        full_state = state_match.group(1) if state_match else "unknown"
+        check_status = check_status_match.group(1) if check_status_match else "N/A"
+        events = events_match.group(1) if events_match else "unknown"
+        layout = layout_match.group(1) if layout_match else "unknown"
+        chunk_size = chunk_size_match.group(1) if chunk_size_match else "unknown"
+        consistency_policy = (
+            consistency_policy_match.group(1) if consistency_policy_match else "unknown"
+        )
+        uuid = uuid_match.group(1) if uuid_match else "unknown"
+        creation_time = (
+            creation_time_match.group(1) if creation_time_match else "unknown"
+        )
+        version = version_match.group(1) if version_match else "unknown"
 
         # Create unified table format with fixed widths
         content_width = 43  # Width of the content column
@@ -128,11 +156,19 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
         separator = "├───────────────┬─────────────────────────────────────────────┤"
 
         rows = [
-            f"│ Status        │ {status.capitalize():<{content_width}} │",
+            f"│ Status        │ {full_state:<{content_width}} │",
             f"│ Array Size    │ {array_size:<{content_width}} │",
-            f"│ Devices       │ {active_devices} active, {failed_devices} failed{'':<{content_width - len(f'{active_devices} active, {failed_devices} failed')}} │",
+            f"│ Devices       │ {active_devices} active, {working_devices} working, {failed_devices} failed, {spare_devices} spare{'':<{content_width - len(f'{active_devices} active, {working_devices} working, {failed_devices} failed, {spare_devices} spare')}} │",
             f"│ Persistence   │ {persistence:<{content_width}} │",
             f"│ Last Update   │ {update_time:<{content_width}} │",
+            f"│ Check Status  │ {check_status:<{content_width}} │",
+            f"│ Events        │ {events:<{content_width}} │",
+            f"│ Layout        │ {layout:<{content_width}} │",
+            f"│ Chunk Size    │ {chunk_size:<{content_width}} │",
+            f"│ Consistency   │ {consistency_policy:<{content_width}} │",
+            f"│ UUID          │ {uuid:<{content_width}} │",
+            f"│ Creation Time │ {creation_time:<{content_width}} │",
+            f"│ Version       │ {version:<{content_width}} │",
             f"│ Storage Usage │ {storage_info:<{content_width}} │",
         ]
 
