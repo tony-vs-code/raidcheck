@@ -1,6 +1,6 @@
 ## Setup
 
-The bot will check the RAID status every 2 hours, however, it will only send a clean raid summary once a week. As soon as it sees a degraded state, it will send a message. I would highly reccomend setting this up in `/usr/local/bin/`.
+The bot checks RAID status every 2 hours and sends a clean or active summary at most once a week. Other RAID states are sent as alerts on each check. The weekly due time and sent-notification history are stored in SQLite. I would highly reccomend setting this up in `/usr/local/bin/`.
 
 1. **Clone the repository:**
 
@@ -29,7 +29,14 @@ The bot will check the RAID status every 2 hours, however, it will only send a c
     ```env
     DISCORD_TOKEN=<your-discord-bot-token>
     CHANNEL_ID=<your-discord-channel-id>
+    RAID_STATE_DB=/var/lib/raidcheck/raid_monitor.sqlite3
+    RAID_LOG_MAX_BYTES=10485760
+    RAID_LOG_BACKUP_COUNT=5
     ```
+
+    `RAID_STATE_DB` stores the last successful weekly summary, its next due time, and notification history in SQLite. The bot creates the database directory if needed; the service user must be able to write to it. Keep this database on persistent storage so restarts do not reset the weekly limit.
+
+    The application log rotates at 10 MiB by default and keeps five rotated files, for an approximate 60 MiB total cap. Adjust `RAID_LOG_MAX_BYTES` and `RAID_LOG_BACKUP_COUNT` to change that limit.
 
 ## Usage
 
@@ -41,6 +48,15 @@ The bot will check the RAID status every 2 hours, however, it will only send a c
     ```sh
     python main.py
     ```
+
+### Check notification status and history from a terminal:
+
+    ```sh
+    python main.py status
+    python main.py logs --limit 20
+    ```
+
+The status and history commands do not require Discord credentials. To follow the application log file while the bot runs and across rotations, use `sudo tail -F /var/log/raid_monitor.log`. Rotated files are kept alongside it as `raid_monitor.log.1` through `raid_monitor.log.5`. For service output, use `sudo journalctl -u raidcheck -f`.
     
 ### Run as a service:
 

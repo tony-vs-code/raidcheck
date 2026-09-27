@@ -1,39 +1,149 @@
+import argparse
+import sys
 import time
 import discord
 import logging
+from logging.handlers import RotatingFileHandler
+import sqlite3
 from decouple import config
 from discord.ext import tasks
 from subprocess import check_output, CalledProcessError, STDOUT
-from typing import Tuple
+from pathlib import Path
+from datetime import datetime
+from typing import Optional, Tuple
 import re
 
-# Configure logging
-logging.basicConfig(
-    filename="/var/log/raid_monitor.log",  # Log file path
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+RAID_STATE_DB = Path(
+    config("RAID_STATE_DB", default="/var/lib/raidcheck/raid_monitor.sqlite3")
 )
-
-# Discord bot token and channel ID
-DISCORD_TOKEN = config("DISCORD_TOKEN")
-CHANNEL_ID = config("CHANNEL_ID")
-
-if not DISCORD_TOKEN or not CHANNEL_ID:
-    logging.error("DISCORD_TOKEN or CHANNEL_ID not set in environment variables.")
-    exit(1)
+WEEK_SECONDS = 7 * 24 * 60 * 60
+CHANNEL_ID = ""
 
 client = discord.Client(intents=discord.Intents.default())
 
 
-async def send_message(message: str) -> None:
+async def send_message(message: str) -> bool:
     try:
         channel = client.get_channel(int(CHANNEL_ID))
         if channel:
             await channel.send(message)
+            return True
         else:
             logging.error(f"Channel with ID {CHANNEL_ID} not found.")
     except Exception as e:
         logging.error(f"Failed to send message: {e}")
+    return False
+
+
+def _connect_state_db() -> sqlite3.Connection:
+    RAID_STATE_DB.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(RAID_STATE_DB))
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS notification_state "
+        "(name TEXT PRIMARY KEY, sent_at REAL NOT NULL)"
+    )
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(notification_state)")
+    }
+    if "due_at" not in columns:
+        connection.execute("ALTER TABLE notification_state ADD COLUMN due_at REAL")
+    if "status" not in columns:
+        connection.execute("ALTER TABLE notification_state ADD COLUMN status TEXT")
+    connection.execute(
+        "UPDATE notification_state SET due_at = sent_at + ? WHERE due_at IS NULL",
+        (WEEK_SECONDS,),
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS notification_history "
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT NOT NULL, "
+        "sent_at REAL NOT NULL, weekly INTEGER NOT NULL)"
+    )
+    connection.commit()
+    return connection
+
+
+def get_weekly_notification_state() -> Optional[Tuple[float, float, str]]:
+    connection = _connect_state_db()
+    try:
+        row = connection.execute(
+            "SELECT sent_at, due_at, status FROM notification_state WHERE name = ?",
+            ("raid_summary",),
+        ).fetchone()
+        if row:
+            return float(row[0]), float(row[1]), row[2] or "unknown"
+        return None
+    finally:
+        connection.close()
+
+
+def record_notification(status: str, timestamp: float, weekly: bool) -> None:
+    connection = _connect_state_db()
+    try:
+        if weekly:
+            connection.execute(
+                "INSERT OR REPLACE INTO notification_state "
+                "(name, sent_at, due_at, status) VALUES (?, ?, ?, ?)",
+                ("raid_summary", timestamp, timestamp + WEEK_SECONDS, status),
+            )
+        connection.execute(
+            "INSERT INTO notification_history (status, sent_at, weekly) "
+            "VALUES (?, ?, ?)",
+            (status, timestamp, int(weekly)),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def get_notification_history(limit: int) -> list:
+    connection = _connect_state_db()
+    try:
+        return connection.execute(
+            "SELECT status, sent_at, weekly FROM notification_history "
+            "ORDER BY sent_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+
+def format_timestamp(timestamp: float) -> str:
+    return (
+        datetime.fromtimestamp(timestamp)
+        .astimezone()
+        .isoformat(sep=" ", timespec="seconds")
+    )
+
+
+def show_notification_status() -> None:
+    state = get_weekly_notification_state()
+    if state is None:
+        print("No successful weekly summary has been recorded yet.")
+        print("Next weekly summary: due on the next clean/active RAID check.")
+        return
+
+    sent_at, due_at, status = state
+    print(f"Last successful weekly summary: {format_timestamp(sent_at)} ({status})")
+    print(f"Next weekly summary due:       {format_timestamp(due_at)}")
+    remaining = int(due_at - time.time())
+    if remaining <= 0:
+        print("Refresh status:                due on the next clean/active RAID check")
+    else:
+        days, remaining = divmod(remaining, 24 * 60 * 60)
+        hours, remaining = divmod(remaining, 60 * 60)
+        minutes = remaining // 60
+        print(f"Time remaining:                {days}d {hours}h {minutes}m")
+
+
+def show_notification_logs(limit: int) -> None:
+    history = get_notification_history(limit)
+    if not history:
+        print("No successful notifications have been recorded yet.")
+        return
+
+    for status, timestamp, weekly in history:
+        kind = "weekly summary" if weekly else "alert"
+        print(f"{format_timestamp(timestamp)} | {kind:<14} | {status}")
 
 
 def check_raid_status() -> Tuple[str, str]:
@@ -224,16 +334,84 @@ async def monitor_raid() -> None:
     message_content = format_raid_summary(status, details, duf_output)
 
     if status in ["clean", "active"]:
-        if (
-            not hasattr(monitor_raid, "last_clean_notification")
-            or time.time() - monitor_raid.last_clean_notification > 604800
-        ):  # 604800 seconds = 1 week
+        try:
+            notification_state = get_weekly_notification_state()
+        except (OSError, sqlite3.Error):
+            logging.exception("Could not read RAID notification state from SQLite.")
+            return
+
+        if notification_state is None or time.time() >= notification_state[1]:
             logging.info(f"RAID Array {status.capitalize()} Sending Message")
-            await send_message(f"```\n{message_content}\n```")
-            monitor_raid.last_clean_notification = time.time()
+            if await send_message(f"```\n{message_content}\n```"):
+                try:
+                    record_notification(status, time.time(), weekly=True)
+                except (OSError, sqlite3.Error):
+                    logging.exception(
+                        "Could not save RAID notification state to SQLite."
+                    )
     else:
         logging.info(f"RAID Array {status.capitalize()} Sending Message")
-        await send_message(f"```\n{message_content}\n```")
+        if await send_message(f"```\n{message_content}\n```"):
+            try:
+                record_notification(status, time.time(), weekly=False)
+            except (OSError, sqlite3.Error):
+                logging.exception("Could not save RAID notification history to SQLite.")
 
 
-client.run(DISCORD_TOKEN)
+def main() -> int:
+    global CHANNEL_ID
+
+    parser = argparse.ArgumentParser(description="RAID monitoring bot and status tools")
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("status", help="Show the next weekly summary due time")
+    logs_parser = subparsers.add_parser("logs", help="Show recent sent notifications")
+    logs_parser.add_argument("--limit", "-n", type=int, default=20)
+    arguments = parser.parse_args()
+
+    if arguments.command:
+        if arguments.command == "logs" and arguments.limit < 1:
+            parser.error("--limit must be a positive integer")
+        try:
+            if arguments.command == "status":
+                show_notification_status()
+            else:
+                show_notification_logs(arguments.limit)
+        except (OSError, sqlite3.Error) as error:
+            print(f"Could not read RAID notification data: {error}", file=sys.stderr)
+            return 1
+        return 0
+
+    discord_token = config("DISCORD_TOKEN", default="")
+    CHANNEL_ID = config("CHANNEL_ID", default="")
+    if not discord_token or not CHANNEL_ID:
+        print(
+            "DISCORD_TOKEN and CHANNEL_ID must be set to run the bot.", file=sys.stderr
+        )
+        return 1
+
+    log_max_bytes = config("RAID_LOG_MAX_BYTES", default=10 * 1024 * 1024, cast=int)
+    log_backup_count = config("RAID_LOG_BACKUP_COUNT", default=5, cast=int)
+    if log_max_bytes < 1 or log_backup_count < 0:
+        print(
+            "RAID_LOG_MAX_BYTES must be positive and RAID_LOG_BACKUP_COUNT cannot be negative.",
+            file=sys.stderr,
+        )
+        return 1
+
+    log_handler = RotatingFileHandler(
+        "/var/log/raid_monitor.log",
+        maxBytes=log_max_bytes,
+        backupCount=log_backup_count,
+        encoding="utf-8",
+    )
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[log_handler],
+    )
+    client.run(discord_token)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
