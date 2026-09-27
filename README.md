@@ -9,20 +9,15 @@ The bot checks RAID status every 2 hours and sends a clean or active summary at 
     cd raidcheck
     ```
 
-2. **Create and activate a virtual environment:**
+2. **Create the environment and install dependencies:**
 
     ```sh
-    uv venv
-    source .venv/bin/activate  # On Windows use `.venv\Scripts\activate`
+    uv sync
     ```
 
-3. **Install the dependencies:**
+    This creates `.venv` using the Python version in `.python-version` and installs the locked dependencies from `pyproject.toml` and `uv.lock`.
 
-    ```sh
-    uv pip install -r requirements.txt
-    ```
-
-4. **Configure environment variables:**
+3. **Configure environment variables:**
 
     Create a `.env` file in the root directory with the following content:
 
@@ -46,14 +41,14 @@ The bot checks RAID status every 2 hours and sends a clean or active summary at 
 ### Run the bot:
 
     ```sh
-    python main.py
+    uv run main.py
     ```
 
 ### Check notification status and history from a terminal:
 
     ```sh
-    python main.py status
-    python main.py logs --limit 20
+    uv run main.py status
+    uv run main.py logs --limit 20
     ```
 
 The status and history commands do not require Discord credentials. To follow the application log file while the bot runs and across rotations, use `sudo tail -F /var/log/raid_monitor.log`. Rotated files are kept alongside it as `raid_monitor.log.1` through `raid_monitor.log.5`. For service output, use `sudo journalctl -u raidcheck -f`.
@@ -75,12 +70,14 @@ After=network.target
 User=root
 Group=root
 WorkingDirectory=/usr/local/bin/raidcheck/
-ExecStart=/bin/sh -c '/usr/local/bin/raidcheck/.venv/bin/python /usr/local/bin/raidcheck/main.py'
+ExecStart=/usr/local/bin/raidcheck/.venv/bin/python /usr/local/bin/raidcheck/main.py
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+The systemd service uses the virtual environment created by `uv`; `uv` itself does not need to run as part of the service.
 
 3. Reload systemctl
 
