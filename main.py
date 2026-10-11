@@ -20,6 +20,15 @@ WEEK_SECONDS = 7 * 24 * 60 * 60
 CHANNEL_ID = ""
 
 client = discord.Client(intents=discord.Intents.default())
+MAX_DISCORD_MESSAGE_LENGTH = 2000
+
+
+def enforce_discord_message_limit(message: str) -> str:
+    """Trim a message to Discord's 2000-character hard limit while preserving readability."""
+    if len(message) <= MAX_DISCORD_MESSAGE_LENGTH:
+        return message
+    trimmed = message[: MAX_DISCORD_MESSAGE_LENGTH - 24].rstrip()
+    return f"{trimmed}...\n[truncated]"
 
 
 async def send_message(message: str | discord.Embed) -> bool:
@@ -447,7 +456,8 @@ async def run_raid_check(force: bool = False) -> None:
 
         if should_send_weekly_summary(notification_state, force=force):
             logging.info(f"RAID Array {status.capitalize()} Sending Message")
-            if await send_message(f"```\n{message_content}\n```"):
+            safe_message = enforce_discord_message_limit(f"```\n{message_content}\n```")
+            if await send_message(safe_message):
                 try:
                     record_notification(status, time.time(), weekly=True)
                 except (OSError, sqlite3.Error):
@@ -456,7 +466,8 @@ async def run_raid_check(force: bool = False) -> None:
                     )
     else:
         logging.info(f"RAID Array {status.capitalize()} Sending Message")
-        if await send_message(f"```\n{message_content}\n```"):
+        safe_message = enforce_discord_message_limit(f"```\n{message_content}\n```")
+        if await send_message(safe_message):
             try:
                 record_notification(status, time.time(), weekly=False)
             except (OSError, sqlite3.Error):

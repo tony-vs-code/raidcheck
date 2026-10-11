@@ -60,6 +60,12 @@ class RaidFormattingTests(unittest.TestCase):
         )
         self.assertTrue(main.should_send_weekly_summary(future_state, now=250.0))
 
+    def test_enforce_discord_message_limit_truncates_large_messages(self):
+        long_message = "A" * 5000
+        truncated = main.enforce_discord_message_limit(long_message)
+        self.assertLessEqual(len(truncated), 2000)
+        self.assertIn("[truncated]", truncated)
+
 
 if __name__ == "__main__":
     unittest.main()
