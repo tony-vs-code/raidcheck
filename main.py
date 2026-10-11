@@ -293,7 +293,7 @@ def _extract_raid_summary_data(status: str, details: str, duf_output: str) -> di
 
 
 def build_raid_embed(status: str, details: str, duf_output: str) -> discord.Embed:
-    """Build a Discord embed that adapts to the channel width instead of using fixed ASCII tables."""
+    """Keep the old boxed RAID card look, but render it inside a Discord embed."""
     data = _extract_raid_summary_data(status, details, duf_output)
     raid_level = data["raid_level"]
     display_raid_level = (
@@ -311,44 +311,12 @@ def build_raid_embed(status: str, details: str, duf_output: str) -> discord.Embe
         "error": 0xE74C3C,
     }.get(status, 0x95A5A6)
 
+    card = format_raid_summary(status, details, duf_output)
     embed = discord.Embed(
         title=f"RAID {display_raid_level} | {status.upper()}",
         color=color,
     )
-    embed.add_field(name="State", value=data["full_state"], inline=True)
-    embed.add_field(name="Array size", value=data["array_size"], inline=True)
-    embed.add_field(
-        name="Devices",
-        value=(
-            f"{data['active_devices']} active, {data['working_devices']} working, "
-            f"{data['failed_devices']} failed, {data['spare_devices']} spare"
-        ),
-        inline=False,
-    )
-    embed.add_field(name="Persistence", value=data["persistence"], inline=True)
-    embed.add_field(name="Last update", value=data["update_time"], inline=True)
-    embed.add_field(name="Check status", value=data["check_status"], inline=True)
-    embed.add_field(name="Events", value=data["events"], inline=True)
-    embed.add_field(name="Layout", value=data["layout"], inline=True)
-    embed.add_field(name="Chunk size", value=data["chunk_size"], inline=True)
-    embed.add_field(name="Consistency", value=data["consistency_policy"], inline=True)
-    embed.add_field(name="Storage", value=data["storage_info"], inline=False)
-
-    if data["devices"]:
-        device_lines = [
-            f"{device['device']}: {device['state']}" for device in data["devices"]
-        ]
-        if len("\n".join(device_lines)) > 1000:
-            device_lines = device_lines[:10]
-            device_lines.append("...")
-        embed.add_field(
-            name="Active disks", value="\n".join(device_lines), inline=False
-        )
-    else:
-        embed.add_field(
-            name="Active disks", value="No device information available", inline=False
-        )
-
+    embed.description = f"```text\n{card}\n```"
     return embed
 
 
@@ -445,7 +413,7 @@ async def run_raid_check(force: bool = False) -> None:
     status, details = check_raid_status()
     duf_output = get_duf_output()
 
-    message_content = format_raid_summary(status, details, duf_output)
+    message_content = build_raid_embed(status, details, duf_output)
 
     if status in ["clean", "active"]:
         try:
@@ -456,8 +424,7 @@ async def run_raid_check(force: bool = False) -> None:
 
         if should_send_weekly_summary(notification_state, force=force):
             logging.info(f"RAID Array {status.capitalize()} Sending Message")
-            safe_message = enforce_discord_message_limit(f"```\n{message_content}\n```")
-            if await send_message(safe_message):
+            if await send_message(message_content):
                 try:
                     record_notification(status, time.time(), weekly=True)
                 except (OSError, sqlite3.Error):
@@ -466,8 +433,7 @@ async def run_raid_check(force: bool = False) -> None:
                     )
     else:
         logging.info(f"RAID Array {status.capitalize()} Sending Message")
-        safe_message = enforce_discord_message_limit(f"```\n{message_content}\n```")
-        if await send_message(safe_message):
+        if await send_message(message_content):
             try:
                 record_notification(status, time.time(), weekly=False)
             except (OSError, sqlite3.Error):

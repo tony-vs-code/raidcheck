@@ -50,7 +50,8 @@ class RaidFormattingTests(unittest.TestCase):
     def test_build_raid_embed_is_compatible(self):
         embed = main.build_raid_embed("clean", SAMPLE_DETAILS, SAMPLE_DUF)
         self.assertEqual(embed.title, "RAID 1 | CLEAN")
-        self.assertGreater(len(embed.fields), 1)
+        self.assertIn("╭", embed.description)
+        self.assertIn("Status", embed.description)
 
     def test_should_send_weekly_summary_respects_due_date(self):
         future_state = (100.0, 200.0, "clean")
