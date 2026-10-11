@@ -332,8 +332,6 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
         )
 
         lines = [
-            f"RAID {display_raid_level} SYSTEM STATUS - {status.upper()}",
-            "",
             f"Status: {data['full_state']}",
             f"Array Size: {data['array_size']}",
             (
