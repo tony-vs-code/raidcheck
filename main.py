@@ -118,6 +118,26 @@ def format_timestamp(timestamp: float) -> str:
     )
 
 
+def should_send_weekly_summary(
+    notification_state: Optional[Tuple[float, float, str]],
+    *,
+    force: bool = False,
+    now: Optional[float] = None,
+) -> bool:
+    """Decide whether a clean/active weekly summary should be sent.
+
+    A bot restart should trigger one immediate check without waiting for the stored
+    `due_at` value to expire; the normal weekly throttling still applies otherwise.
+    """
+    if force:
+        return True
+    if notification_state is None:
+        return True
+    _, due_at, _ = notification_state
+    current_time = time.time() if now is None else now
+    return current_time >= due_at
+
+
 def show_notification_status() -> None:
     state = get_weekly_notification_state()
     if state is None:
@@ -364,14 +384,7 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
         return f"RAID Array {status.capitalize()}\nError parsing details"
 
 
-@client.event
-async def on_ready() -> None:
-    logging.info(f"Logged in as {client.user}")
-    monitor_raid.start()
-
-
-@tasks.loop(hours=2)
-async def monitor_raid() -> None:
+async def run_raid_check(force: bool = False) -> None:
     status, details = check_raid_status()
     duf_output = get_duf_output()
 
@@ -384,7 +397,7 @@ async def monitor_raid() -> None:
             logging.exception("Could not read RAID notification state from SQLite.")
             return
 
-        if notification_state is None or time.time() >= notification_state[1]:
+        if should_send_weekly_summary(notification_state, force=force):
             logging.info(f"RAID Array {status.capitalize()} Sending Message")
             if await send_message(message_content):
                 try:
@@ -400,6 +413,18 @@ async def monitor_raid() -> None:
                 record_notification(status, time.time(), weekly=False)
             except (OSError, sqlite3.Error):
                 logging.exception("Could not save RAID notification history to SQLite.")
+
+
+@client.event
+async def on_ready() -> None:
+    logging.info(f"Logged in as {client.user}")
+    await run_raid_check(force=True)
+    monitor_raid.start()
+
+
+@tasks.loop(hours=2)
+async def monitor_raid() -> None:
+    await run_raid_check(force=False)
 
 
 def main() -> int:

@@ -53,6 +53,14 @@ class RaidFormattingTests(unittest.TestCase):
         self.assertEqual(embed.title, "RAID 1 | CLEAN")
         self.assertGreater(len(embed.fields), 1)
 
+    def test_should_send_weekly_summary_respects_due_date(self):
+        future_state = (100.0, 200.0, "clean")
+        self.assertFalse(main.should_send_weekly_summary(future_state, now=150.0))
+        self.assertTrue(
+            main.should_send_weekly_summary(future_state, force=True, now=150.0)
+        )
+        self.assertTrue(main.should_send_weekly_summary(future_state, now=250.0))
+
 
 if __name__ == "__main__":
     unittest.main()
