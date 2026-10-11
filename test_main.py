@@ -40,17 +40,17 @@ SAMPLE_DUF = """Filesystem      Size  Used Avail Use%
 
 
 class RaidFormattingTests(unittest.TestCase):
-    def test_format_raid_summary_uses_boxed_status_card(self):
+    def test_format_raid_summary_uses_clean_card_layout(self):
         text = main.format_raid_summary("clean", SAMPLE_DETAILS, SAMPLE_DUF)
-        self.assertIn("╭", text)
-        self.assertIn("│", text)
+        self.assertNotIn("╭", text)
+        self.assertNotIn("│", text)
         self.assertIn("Status", text)
         self.assertIn("Array Size", text)
 
     def test_build_raid_embed_is_compatible(self):
         embed = main.build_raid_embed("clean", SAMPLE_DETAILS, SAMPLE_DUF)
         self.assertEqual(embed.title, "RAID 1 | CLEAN")
-        self.assertIn("╭", embed.description)
+        self.assertNotIn("╭", embed.description)
         self.assertIn("Status", embed.description)
 
     def test_should_send_weekly_summary_respects_due_date(self):

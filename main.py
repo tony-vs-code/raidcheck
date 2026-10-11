@@ -321,7 +321,7 @@ def build_raid_embed(status: str, details: str, duf_output: str) -> discord.Embe
 
 
 def format_raid_summary(status: str, details: str, duf_output: str) -> str:
-    """Return the original RAID status card while allowing long values to wrap."""
+    """Return the RAID status in a clean card-friendly list format without box borders."""
     try:
         data = _extract_raid_summary_data(status, details, duf_output)
         raid_level = data["raid_level"]
@@ -331,79 +331,39 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
             else raid_level.upper()
         )
 
-        def wrap_value(value: str, width: int) -> list[str]:
-            if len(value) <= width:
-                return [value]
-            chunks = []
-            start = 0
-            while start < len(value):
-                end = min(start + width, len(value))
-                chunks.append(value[start:end])
-                start = end
-            return chunks
-
-        label_width = 15
-        content_width = 45
-        rows = [
-            "╭─────────────────────────────────────────────────────────────╮",
-            f"│ RAID {display_raid_level} SYSTEM STATUS - {status.upper():<20} │",
-            "├─────────────────────────────────────────────────────────────┤",
-        ]
-
-        pairs = [
-            ("Status", data["full_state"]),
-            ("Array Size", data["array_size"]),
+        lines = [
+            f"RAID {display_raid_level} SYSTEM STATUS - {status.upper()}",
+            "",
+            f"Status: {data['full_state']}",
+            f"Array Size: {data['array_size']}",
             (
-                "Devices",
-                f"{data['active_devices']} active, {data['working_devices']} working, {data['failed_devices']} failed, {data['spare_devices']} spare",
+                "Devices: "
+                f"{data['active_devices']} active, {data['working_devices']} working, "
+                f"{data['failed_devices']} failed, {data['spare_devices']} spare"
             ),
-            ("Persistence", data["persistence"]),
-            ("Last Update", data["update_time"]),
-            ("Check Status", data["check_status"]),
-            ("Events", data["events"]),
-            ("Layout", data["layout"]),
-            ("Chunk Size", data["chunk_size"]),
-            ("Consistency", data["consistency_policy"]),
-            ("UUID", data["uuid"]),
-            ("Creation Time", data["creation_time"]),
-            ("Version", data["version"]),
-            ("Storage Usage", data["storage_info"]),
+            f"Persistence: {data['persistence']}",
+            f"Last Update: {data['update_time']}",
+            f"Check Status: {data['check_status']}",
+            f"Events: {data['events']}",
+            f"Layout: {data['layout']}",
+            f"Chunk Size: {data['chunk_size']}",
+            f"Consistency: {data['consistency_policy']}",
+            f"UUID: {data['uuid']}",
+            f"Creation Time: {data['creation_time']}",
+            f"Version: {data['version']}",
+            f"Storage Usage: {data['storage_info']}",
+            "",
+            "Active Disks:",
         ]
-
-        for label, value in pairs:
-            wrapped = wrap_value(str(value), content_width)
-            for index, chunk in enumerate(wrapped):
-                if index == 0:
-                    rows.append(
-                        f"│ {label:<{label_width}} │ {chunk:<{content_width}} │"
-                    )
-                else:
-                    rows.append(f"│ {'':<{label_width}} │ {chunk:<{content_width}} │")
-
-        rows.append("├─────────────────────────────────────────────────────────────┤")
-        rows.append("│ Active Disks                                               │")
-        rows.append("├─────┬────────┬──────────────────────────────────────────────┤")
-        rows.append("│ No. │ Device │ State                                        │")
-        rows.append("├─────┼────────┼──────────────────────────────────────────────┤")
 
         if data["devices"]:
-            for device in data["devices"]:
-                device_name = device["device"]
-                device_state = device["state"]
-                wrapped_state = wrap_value(device_state, 44)
-                first = wrapped_state[0].ljust(44)
-                rows.append(
-                    f"│ {str(len(rows) - 1).rjust(3)} │ {device_name:<6} │ {first} │"
-                )
-                for extra in wrapped_state[1:]:
-                    rows.append(f"│ {'':>3} │ {'':<6} │ {extra.ljust(44)} │")
-        else:
-            rows.append(
-                "│     │        │ No device information available              │"
+            lines.extend(
+                f"- {device['device']}: {device['state']}" for device in data["devices"]
             )
+        else:
+            lines.append("- No device information available")
 
-        rows.append("╰─────┴────────┴──────────────────────────────────────────────╯")
-        return "\n".join(rows)
+        return "\n".join(lines)
     except Exception as e:
         logging.error(f"Error formatting RAID summary: {e}")
         return f"RAID Array {status.capitalize()}\nError parsing details"
