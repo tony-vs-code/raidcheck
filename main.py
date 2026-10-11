@@ -344,7 +344,7 @@ def build_raid_embed(status: str, details: str, duf_output: str) -> discord.Embe
 
 
 def format_raid_summary(status: str, details: str, duf_output: str) -> str:
-    """Return a compact plain-text summary that works even in narrow Discord windows."""
+    """Return the original RAID status card while allowing long values to wrap."""
     try:
         data = _extract_raid_summary_data(status, details, duf_output)
         raid_level = data["raid_level"]
@@ -353,32 +353,80 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
             if raid_level.lower().startswith("raid")
             else raid_level.upper()
         )
-        lines = [
-            f"RAID {display_raid_level} | {status.upper()}",
-            f"State: {data['full_state']}",
-            f"Array Size: {data['array_size']}",
-            (
-                "Devices: "
-                f"{data['active_devices']} active, {data['working_devices']} working, "
-                f"{data['failed_devices']} failed, {data['spare_devices']} spare"
-            ),
-            f"Persistence: {data['persistence']}",
-            f"Last Update: {data['update_time']}",
-            f"Check Status: {data['check_status']}",
-            f"Events: {data['events']}",
-            f"Layout: {data['layout']}",
-            f"Chunk Size: {data['chunk_size']}",
-            f"Consistency: {data['consistency_policy']}",
-            f"Storage: {data['storage_info']}",
+
+        def wrap_value(value: str, width: int) -> list[str]:
+            if len(value) <= width:
+                return [value]
+            chunks = []
+            start = 0
+            while start < len(value):
+                end = min(start + width, len(value))
+                chunks.append(value[start:end])
+                start = end
+            return chunks
+
+        label_width = 15
+        content_width = 45
+        rows = [
+            "╭─────────────────────────────────────────────────────────────╮",
+            f"│ RAID {display_raid_level} SYSTEM STATUS - {status.upper():<20} │",
+            "├─────────────────────────────────────────────────────────────┤",
         ]
+
+        pairs = [
+            ("Status", data["full_state"]),
+            ("Array Size", data["array_size"]),
+            (
+                "Devices",
+                f"{data['active_devices']} active, {data['working_devices']} working, {data['failed_devices']} failed, {data['spare_devices']} spare",
+            ),
+            ("Persistence", data["persistence"]),
+            ("Last Update", data["update_time"]),
+            ("Check Status", data["check_status"]),
+            ("Events", data["events"]),
+            ("Layout", data["layout"]),
+            ("Chunk Size", data["chunk_size"]),
+            ("Consistency", data["consistency_policy"]),
+            ("UUID", data["uuid"]),
+            ("Creation Time", data["creation_time"]),
+            ("Version", data["version"]),
+            ("Storage Usage", data["storage_info"]),
+        ]
+
+        for label, value in pairs:
+            wrapped = wrap_value(str(value), content_width)
+            for index, chunk in enumerate(wrapped):
+                if index == 0:
+                    rows.append(
+                        f"│ {label:<{label_width}} │ {chunk:<{content_width}} │"
+                    )
+                else:
+                    rows.append(f"│ {'':<{label_width}} │ {chunk:<{content_width}} │")
+
+        rows.append("├─────────────────────────────────────────────────────────────┤")
+        rows.append("│ Active Disks                                               │")
+        rows.append("├─────┬────────┬──────────────────────────────────────────────┤")
+        rows.append("│ No. │ Device │ State                                        │")
+        rows.append("├─────┼────────┼──────────────────────────────────────────────┤")
+
         if data["devices"]:
-            lines.append("Active Disks:")
-            lines.extend(
-                f"- {device['device']}: {device['state']}" for device in data["devices"]
-            )
+            for device in data["devices"]:
+                device_name = device["device"]
+                device_state = device["state"]
+                wrapped_state = wrap_value(device_state, 44)
+                first = wrapped_state[0].ljust(44)
+                rows.append(
+                    f"│ {str(len(rows) - 1).rjust(3)} │ {device_name:<6} │ {first} │"
+                )
+                for extra in wrapped_state[1:]:
+                    rows.append(f"│ {'':>3} │ {'':<6} │ {extra.ljust(44)} │")
         else:
-            lines.append("Active Disks: none")
-        return "\n".join(lines)
+            rows.append(
+                "│     │        │ No device information available              │"
+            )
+
+        rows.append("╰─────┴────────┴──────────────────────────────────────────────╯")
+        return "\n".join(rows)
     except Exception as e:
         logging.error(f"Error formatting RAID summary: {e}")
         return f"RAID Array {status.capitalize()}\nError parsing details"
@@ -388,7 +436,7 @@ async def run_raid_check(force: bool = False) -> None:
     status, details = check_raid_status()
     duf_output = get_duf_output()
 
-    message_content = build_raid_embed(status, details, duf_output)
+    message_content = format_raid_summary(status, details, duf_output)
 
     if status in ["clean", "active"]:
         try:
@@ -399,7 +447,7 @@ async def run_raid_check(force: bool = False) -> None:
 
         if should_send_weekly_summary(notification_state, force=force):
             logging.info(f"RAID Array {status.capitalize()} Sending Message")
-            if await send_message(message_content):
+            if await send_message(f"```\n{message_content}\n```"):
                 try:
                     record_notification(status, time.time(), weekly=True)
                 except (OSError, sqlite3.Error):
@@ -408,7 +456,7 @@ async def run_raid_check(force: bool = False) -> None:
                     )
     else:
         logging.info(f"RAID Array {status.capitalize()} Sending Message")
-        if await send_message(message_content):
+        if await send_message(f"```\n{message_content}\n```"):
             try:
                 record_notification(status, time.time(), weekly=False)
             except (OSError, sqlite3.Error):
