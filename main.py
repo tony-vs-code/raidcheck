@@ -1,4 +1,11 @@
 import argparse
+import glob
+import hashlib
+import hmac
+import os
+import secrets
+import shutil
+import subprocess
 import sys
 import time
 import discord
@@ -10,14 +17,25 @@ from discord.ext import tasks
 from subprocess import check_output, CalledProcessError, STDOUT
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 import re
 
+REPO_DIR = Path(__file__).resolve().parent
 RAID_STATE_DB = Path(
     config("RAID_STATE_DB", default="/var/lib/raidcheck/raid_monitor.sqlite3")
 )
 WEEK_SECONDS = 7 * 24 * 60 * 60
+SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 CHANNEL_ID = ""
+
+APP_SETTING_KEYS = (
+    "discord_token",
+    "channel_id",
+    "raid_device",
+    "mount_path",
+    "google_client_id",
+    "allowed_google_emails",
+)
 
 client = discord.Client(intents=discord.Intents.default())
 MAX_DISCORD_MESSAGE_LENGTH = 2000
@@ -33,7 +51,8 @@ def enforce_discord_message_limit(message: str) -> str:
 
 async def send_message(message: str | discord.Embed) -> bool:
     try:
-        channel = client.get_channel(int(CHANNEL_ID))
+        effective_channel_id = CHANNEL_ID or get_app_settings().get("channel_id", "")
+        channel = client.get_channel(int(effective_channel_id))
         if channel:
             if isinstance(message, discord.Embed):
                 await channel.send(embed=message)
@@ -41,7 +60,7 @@ async def send_message(message: str | discord.Embed) -> bool:
                 await channel.send(message)
             return True
         else:
-            logging.error(f"Channel with ID {CHANNEL_ID} not found.")
+            logging.error(f"Channel with ID {effective_channel_id} not found.")
     except Exception as e:
         logging.error(f"Failed to send message: {e}")
     return False
@@ -70,8 +89,394 @@ def _connect_state_db() -> sqlite3.Connection:
         "(id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT NOT NULL, "
         "sent_at REAL NOT NULL, weekly INTEGER NOT NULL)"
     )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS users "
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, "
+        "password_hash TEXT NOT NULL, salt TEXT NOT NULL, "
+        "email TEXT DEFAULT '', created_at REAL NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS sessions "
+        "(token TEXT PRIMARY KEY, username TEXT NOT NULL, "
+        "created_at REAL NOT NULL, expires_at REAL NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS app_settings "
+        "(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at REAL NOT NULL)"
+    )
     connection.commit()
     return connection
+
+
+def _hash_password(password: str, salt_hex: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        bytes.fromhex(salt_hex),
+        100_000,
+    ).hex()
+
+
+def has_any_user() -> bool:
+    connection = _connect_state_db()
+    try:
+        row = connection.execute("SELECT COUNT(*) FROM users").fetchone()
+        return bool(row and row[0] > 0)
+    finally:
+        connection.close()
+
+
+def create_user(username: str, password: str, email: str = "") -> dict[str, Any]:
+    clean_username = username.strip()
+    clean_email = email.strip()
+    if not clean_username or not password:
+        raise ValueError("Username and password are required.")
+    salt_hex = secrets.token_hex(16)
+    password_hash = _hash_password(password, salt_hex)
+    now = time.time()
+    connection = _connect_state_db()
+    try:
+        connection.execute(
+            "INSERT INTO users (username, password_hash, salt, email, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (clean_username, password_hash, salt_hex, clean_email, now),
+        )
+        connection.commit()
+        return {
+            "username": clean_username,
+            "email": clean_email,
+            "created_at": now,
+        }
+    finally:
+        connection.close()
+
+
+def verify_user(username: str, password: str) -> bool:
+    clean_username = username.strip()
+    if not clean_username or not password:
+        return False
+    connection = _connect_state_db()
+    try:
+        row = connection.execute(
+            "SELECT password_hash, salt FROM users WHERE username = ?",
+            (clean_username,),
+        ).fetchone()
+        if not row:
+            return False
+        expected_hash, salt_hex = row[0], row[1]
+        actual_hash = _hash_password(password, salt_hex)
+        return hmac.compare_digest(expected_hash, actual_hash)
+    finally:
+        connection.close()
+
+
+def get_or_create_google_user(email: str) -> str:
+    clean_email = email.strip().lower()
+    if not clean_email:
+        raise ValueError("Email is required.")
+    connection = _connect_state_db()
+    try:
+        row = connection.execute(
+            "SELECT username FROM users WHERE LOWER(email) = ? OR LOWER(username) = ?",
+            (clean_email, clean_email),
+        ).fetchone()
+        if row:
+            return str(row[0])
+        salt_hex = secrets.token_hex(16)
+        random_hash = _hash_password(secrets.token_urlsafe(32), salt_hex)
+        now = time.time()
+        connection.execute(
+            "INSERT INTO users (username, password_hash, salt, email, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (clean_email, random_hash, salt_hex, clean_email, now),
+        )
+        connection.commit()
+        return clean_email
+    finally:
+        connection.close()
+
+
+def create_session(username: str) -> str:
+    token = secrets.token_urlsafe(32)
+    now = time.time()
+    expires_at = now + SESSION_TTL_SECONDS
+    connection = _connect_state_db()
+    try:
+        connection.execute(
+            "INSERT INTO sessions (token, username, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?)",
+            (token, username, now, expires_at),
+        )
+        connection.commit()
+        return token
+    finally:
+        connection.close()
+
+
+def verify_session(token: Optional[str]) -> Optional[str]:
+    if not token:
+        return None
+    connection = _connect_state_db()
+    try:
+        row = connection.execute(
+            "SELECT username, expires_at FROM sessions WHERE token = ?",
+            (token,),
+        ).fetchone()
+        if not row:
+            return None
+        username, expires_at = str(row[0]), float(row[1])
+        if time.time() >= expires_at:
+            connection.execute("DELETE FROM sessions WHERE token = ?", (token,))
+            connection.commit()
+            return None
+        return username
+    finally:
+        connection.close()
+
+
+def delete_session(token: Optional[str]) -> None:
+    if not token:
+        return
+    connection = _connect_state_db()
+    try:
+        connection.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _default_app_settings_from_env() -> dict[str, str]:
+    return {
+        "discord_token": str(config("DISCORD_TOKEN", default="") or ""),
+        "channel_id": str(config("CHANNEL_ID", default="") or ""),
+        "raid_device": str(config("RAID_DEVICE", default="auto") or "auto"),
+        "mount_path": str(config("MOUNT_PATH", default="/mnt/media/") or "/mnt/media/"),
+        "google_client_id": str(config("GOOGLE_CLIENT_ID", default="") or ""),
+        "allowed_google_emails": str(config("ALLOWED_GOOGLE_EMAILS", default="") or ""),
+    }
+
+
+def get_app_settings() -> dict[str, str]:
+    defaults = _default_app_settings_from_env()
+    try:
+        connection = _connect_state_db()
+    except (OSError, sqlite3.Error):
+        return defaults
+
+    try:
+        rows = connection.execute("SELECT key, value FROM app_settings").fetchall()
+        stored = {str(k): str(v) for k, v in rows}
+        now = time.time()
+        inserted = False
+        for key, default_val in defaults.items():
+            if key not in stored:
+                connection.execute(
+                    "INSERT OR IGNORE INTO app_settings (key, value, updated_at) "
+                    "VALUES (?, ?, ?)",
+                    (key, default_val, now),
+                )
+                stored[key] = default_val
+                inserted = True
+        if inserted:
+            connection.commit()
+
+        result: dict[str, str] = {}
+        for key in APP_SETTING_KEYS:
+            db_val = stored.get(key, "")
+            result[key] = db_val if db_val != "" else defaults.get(key, "")
+        return result
+    except (OSError, sqlite3.Error):
+        return defaults
+    finally:
+        connection.close()
+
+
+def update_app_settings(updates: dict[str, Any]) -> dict[str, str]:
+    global CHANNEL_ID
+    connection = _connect_state_db()
+    try:
+        now = time.time()
+        for key, value in updates.items():
+            if key in APP_SETTING_KEYS and value is not None:
+                str_val = str(value).strip()
+                connection.execute(
+                    "INSERT OR REPLACE INTO app_settings (key, value, updated_at) "
+                    "VALUES (?, ?, ?)",
+                    (key, str_val, now),
+                )
+                if key == "channel_id" and str_val:
+                    CHANNEL_ID = str_val
+        connection.commit()
+    finally:
+        connection.close()
+    return get_app_settings()
+
+
+def _parse_semver(version_str: str) -> Tuple[int, ...]:
+    cleaned = version_str.strip().lstrip("vV")
+    parts = []
+    for segment in cleaned.split("."):
+        num_match = re.match(r"(\d+)", segment)
+        parts.append(int(num_match.group(1)) if num_match else 0)
+    return tuple(parts) if parts else (0, 0, 0)
+
+
+def get_current_version_info() -> dict[str, str]:
+    version = "0.1.0"
+    pyproject_path = REPO_DIR / "pyproject.toml"
+    try:
+        if pyproject_path.is_file():
+            content = pyproject_path.read_text(encoding="utf-8")
+            match = re.search(r'^version\s*=\s*"([^"]+)"', content, re.MULTILINE)
+            if match:
+                version = match.group(1).strip()
+    except OSError:
+        pass
+
+    commit = "unknown"
+    try:
+        commit = (
+            check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(REPO_DIR),
+                stderr=STDOUT,
+            )
+            .decode()
+            .strip()
+        )
+    except (CalledProcessError, FileNotFoundError, OSError):
+        pass
+
+    return {"version": version, "commit": commit}
+
+
+def check_for_release_update() -> dict[str, Any]:
+    current = get_current_version_info()
+    current_version = current["version"]
+    current_commit = current["commit"]
+
+    try:
+        check_output(
+            ["git", "fetch", "origin", "--tags"],
+            cwd=str(REPO_DIR),
+            stderr=STDOUT,
+        )
+    except (CalledProcessError, FileNotFoundError, OSError) as e:
+        logging.warning(f"Could not fetch tags from origin: {e}")
+
+    tags: list[str] = []
+    try:
+        raw_tags = (
+            check_output(
+                ["git", "tag", "-l", "v*"],
+                cwd=str(REPO_DIR),
+                stderr=STDOUT,
+            )
+            .decode()
+            .splitlines()
+        )
+        tags = [t.strip() for t in raw_tags if t.strip()]
+    except (CalledProcessError, FileNotFoundError, OSError):
+        tags = []
+
+    if not tags:
+        return {
+            "current_version": current_version,
+            "current_commit": current_commit,
+            "latest_version": current_version,
+            "latest_commit": current_commit,
+            "update_available": False,
+            "changelog": "",
+        }
+
+    tags.sort(key=_parse_semver, reverse=True)
+    latest_tag = tags[0]
+    latest_version = latest_tag.lstrip("vV")
+
+    latest_commit = current_commit
+    try:
+        latest_commit = (
+            check_output(
+                ["git", "rev-parse", "--short", f"{latest_tag}^{{commit}}"],
+                cwd=str(REPO_DIR),
+                stderr=STDOUT,
+            )
+            .decode()
+            .strip()
+        )
+    except (CalledProcessError, FileNotFoundError, OSError):
+        pass
+
+    update_available = _parse_semver(latest_version) > _parse_semver(current_version)
+    changelog = ""
+    if update_available:
+        try:
+            changelog = (
+                check_output(
+                    ["git", "log", "--oneline", f"HEAD..{latest_tag}"],
+                    cwd=str(REPO_DIR),
+                    stderr=STDOUT,
+                )
+                .decode()
+                .strip()
+            )
+        except (CalledProcessError, FileNotFoundError, OSError):
+            changelog = ""
+
+    return {
+        "current_version": current_version,
+        "current_commit": current_commit,
+        "latest_version": latest_version,
+        "latest_commit": latest_commit,
+        "update_available": update_available,
+        "changelog": changelog,
+    }
+
+
+def apply_release_update() -> dict[str, Any]:
+    info = check_for_release_update()
+    target_version = info["latest_version"]
+    target_tag = f"v{target_version}"
+
+    check_output(
+        ["git", "checkout", target_tag],
+        cwd=str(REPO_DIR),
+        stderr=STDOUT,
+    )
+    check_output(
+        ["uv", "sync"],
+        cwd=str(REPO_DIR),
+        stderr=STDOUT,
+    )
+
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        systemd_dir = REPO_DIR / "systemd"
+        target_systemd_dir = Path("/etc/systemd/system")
+        if systemd_dir.is_dir() and target_systemd_dir.is_dir():
+            for unit_file in systemd_dir.glob("*.service"):
+                shutil.copy2(unit_file, target_systemd_dir / unit_file.name)
+            try:
+                check_output(["systemctl", "daemon-reload"], stderr=STDOUT)
+            except (CalledProcessError, FileNotFoundError, OSError):
+                pass
+
+    try:
+        subprocess.Popen(
+            ["bash", "-c", "sleep 2 && systemctl restart raidcheck raidcheck-web"],
+            cwd=str(REPO_DIR),
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as e:
+        logging.warning(f"Could not spawn delayed service restart: {e}")
+
+    return {
+        "status": "updating",
+        "target_version": target_version,
+        "target_commit": info["latest_commit"],
+        "message": f"Updated to v{target_version}. Restarting services in 2 seconds...",
+    }
 
 
 def get_weekly_notification_state() -> Optional[Tuple[float, float, str]]:
@@ -178,10 +583,61 @@ def show_notification_logs(limit: int) -> None:
         print(f"{format_timestamp(timestamp)} | {kind:<14} | {status}")
 
 
+def discover_raid_devices() -> list[str]:
+    """Discover active Linux md RAID array devices from /proc/mdstat and /dev/md*."""
+    discovered: set[str] = set()
+    mdstat_path = Path("/proc/mdstat")
+    try:
+        if mdstat_path.is_file():
+            for line in mdstat_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                match = re.match(r"^(md\d+)\s*:", line.strip())
+                if match:
+                    discovered.add(f"/dev/{match.group(1)}")
+    except OSError:
+        pass
+
+    try:
+        for path_str in glob.glob("/dev/md[0-9]*"):
+            if re.match(r"^/dev/md\d+$", path_str):
+                discovered.add(path_str)
+        for path_str in glob.glob("/dev/md/*"):
+            if not path_str.endswith("-part") and not re.search(r"p\d+$", path_str):
+                discovered.add(path_str)
+    except OSError:
+        pass
+
+    return sorted(discovered)
+
+
+def resolve_raid_device(configured_device: Optional[str] = None) -> Optional[str]:
+    """Resolve the target md RAID device path from settings or dynamic discovery."""
+    if configured_device is None:
+        configured_device = get_app_settings().get("raid_device", "auto")
+    cleaned = (configured_device or "").strip()
+    discovered = discover_raid_devices()
+
+    if cleaned == "" or cleaned.lower() in ("auto", "none"):
+        return discovered[0] if discovered else None
+
+    try:
+        exists = Path(cleaned).exists()
+    except OSError:
+        exists = False
+
+    if exists or cleaned in discovered:
+        return cleaned
+    if discovered:
+        return discovered[0]
+    return None
+
+
 def check_raid_status() -> Tuple[str, str]:
     try:
+        raid_device = resolve_raid_device()
+        if raid_device is None:
+            return "none", "No RAID array detected"
         result = check_output(
-            ["mdadm", "--detail", "/dev/md128"], stderr=STDOUT
+            ["mdadm", "--detail", raid_device], stderr=STDOUT
         ).decode()
         if "State : clean" in result:
             return "clean", result
@@ -209,9 +665,10 @@ def check_raid_status() -> Tuple[str, str]:
 
 def get_duf_output() -> str:
     try:
+        mount_path = get_app_settings().get("mount_path") or "/mnt/media/"
         # Use --output to show only specific columns for narrower display
         result = check_output(
-            ["duf", "--output", "size,used,avail,usage", "/mnt/media/"],
+            ["duf", "--output", "size,used,avail,usage", mount_path],
             stderr=STDOUT,
         ).decode()
         return result.strip()
@@ -227,6 +684,15 @@ def get_duf_output() -> str:
 
 def _extract_raid_summary_data(status: str, details: str, duf_output: str) -> dict:
     """Parse RAID mdadm output into a compact, Discord-friendly data structure."""
+    device_header_match = re.search(r"^(/dev/\S+?):", details, re.MULTILINE)
+    if status == "none":
+        raid_device = "None"
+    else:
+        raid_device = (
+            device_header_match.group(1)
+            if device_header_match
+            else (resolve_raid_device() or "None")
+        )
     level_match = re.search(r"Raid Level : (\w+)", details)
     array_size_match = re.search(r"Array Size : \d+ \(([^)]+)\)", details)
     active_devices_match = re.search(r"Active Devices : (\d+)", details)
@@ -251,7 +717,7 @@ def _extract_raid_summary_data(status: str, details: str, duf_output: str) -> di
         if "Number   Major   Minor   RaidDevice State" in line:
             device_section = True
             continue
-        if device_section and "/dev/sd" in line:
+        if device_section and "/dev/" in line:
             parts = line.strip().split()
             if len(parts) >= 6:
                 device_name = parts[-1].replace("/dev/", "")
@@ -268,7 +734,14 @@ def _extract_raid_summary_data(status: str, details: str, duf_output: str) -> di
                 storage_info = f"{used}/{size} ({usage}) | {avail} free"
                 break
 
+    full_state = (
+        "No RAID array detected"
+        if status == "none"
+        else (state_match.group(1) if state_match else "unknown")
+    )
+
     return {
+        "raid_device": raid_device,
         "status": status,
         "raid_level": level_match.group(1) if level_match else "unknown",
         "array_size": array_size_match.group(1) if array_size_match else "unknown",
@@ -284,7 +757,7 @@ def _extract_raid_summary_data(status: str, details: str, duf_output: str) -> di
         "spare_devices": spare_devices_match.group(1) if spare_devices_match else "0",
         "update_time": update_time_match.group(1) if update_time_match else "unknown",
         "persistence": persistence_match.group(1) if persistence_match else "unknown",
-        "full_state": state_match.group(1) if state_match else "unknown",
+        "full_state": full_state,
         "check_status": check_status_match.group(1) if check_status_match else "N/A",
         "events": events_match.group(1) if events_match else "unknown",
         "layout": layout_match.group(1) if layout_match else "unknown",
@@ -319,6 +792,7 @@ def build_raid_embed(status: str, details: str, duf_output: str) -> discord.Embe
         "resyncing": 0xE67E22,
         "failed": 0xE74C3C,
         "error": 0xE74C3C,
+        "none": 0x95A5A6,
     }.get(status, 0x95A5A6)
 
     card = format_raid_summary(status, details, duf_output)
@@ -379,6 +853,10 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
 
 async def run_raid_check(force: bool = False) -> None:
     status, details = check_raid_status()
+    if status == "none":
+        logging.info("No RAID array detected; skipping Discord notification")
+        return
+
     duf_output = get_duf_output()
 
     message_content = build_raid_embed(status, details, duf_output)
@@ -452,8 +930,9 @@ def main() -> int:
             return 1
         return 0
 
-    discord_token = config("DISCORD_TOKEN", default="")
-    CHANNEL_ID = config("CHANNEL_ID", default="")
+    settings = get_app_settings()
+    discord_token = settings.get("discord_token") or config("DISCORD_TOKEN", default="")
+    CHANNEL_ID = settings.get("channel_id") or config("CHANNEL_ID", default="")
     if not discord_token or not CHANNEL_ID:
         print(
             "DISCORD_TOKEN and CHANNEL_ID must be set to run the bot.", file=sys.stderr

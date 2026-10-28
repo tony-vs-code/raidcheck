@@ -5,8 +5,165 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SystemAlerts — RAID &amp; System Monitor</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
+  <!-- Full-App Authentication Gate (#auth-overlay) -->
+  <div id="auth-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+    <div class="modal-card auth-card">
+      <div class="auth-header">
+        <div class="brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="26" height="26" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+        </div>
+        <div>
+          <h2 id="auth-modal-title" class="modal-title">Sign In</h2>
+          <p id="auth-modal-subtitle" class="modal-subtitle">Authenticate to access the SystemAlerts dashboard</p>
+        </div>
+      </div>
+
+      <div id="auth-error" class="auth-alert hidden" role="alert"></div>
+
+      <!-- Initial Admin Setup Form -->
+      <form id="auth-setup-form" class="auth-form hidden">
+        <div class="form-group">
+          <label for="setup-username">Admin Username</label>
+          <input id="setup-username" name="username" type="text" required autocomplete="username" placeholder="admin" />
+        </div>
+        <div class="form-group">
+          <label for="setup-password">Admin Password</label>
+          <input id="setup-password" name="password" type="password" required autocomplete="new-password" placeholder="Create a strong password" />
+        </div>
+        <div class="form-group">
+          <label for="setup-email">Google Email (Optional, for Google Sign-In)</label>
+          <input id="setup-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" />
+        </div>
+        <button id="setup-submit-btn" type="submit" class="btn-primary btn-full">
+          Complete Initial Admin Setup
+        </button>
+      </form>
+
+      <!-- Sign In Form -->
+      <form id="auth-login-form" class="auth-form hidden">
+        <div class="form-group">
+          <label for="login-username">Username</label>
+          <input id="login-username" name="username" type="text" required autocomplete="username" placeholder="Enter username" />
+        </div>
+        <div class="form-group">
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" required autocomplete="current-password" placeholder="Enter password" />
+        </div>
+        <button id="login-submit-btn" type="submit" class="btn-primary btn-full">
+          Sign In
+        </button>
+
+        <div id="google-auth-section" class="google-auth-section hidden">
+          <div class="auth-divider"><span>or continue with</span></div>
+          <div id="google-signin-btn" class="google-btn-wrapper"></div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- SQLite Settings Modal (#settings-modal) -->
+  <div id="settings-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+    <div class="modal-card settings-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="settings-modal-title" class="modal-title">Application Settings</h2>
+          <p class="modal-subtitle">Configure Discord alerts, RAID paths, and Google OAuth in SQLite</p>
+        </div>
+        <button id="close-settings-btn" type="button" class="btn-icon-close" aria-label="Close settings modal">&times;</button>
+      </div>
+
+      <div id="settings-feedback" class="auth-alert hidden" role="status"></div>
+
+      <form id="settings-form" class="settings-form">
+        <div class="settings-grid">
+          <div class="form-group">
+            <label for="setting-discord-token">
+              Discord Bot Token
+              <span id="discord-token-status" class="token-status-badge">Not configured</span>
+            </label>
+            <input
+              id="setting-discord-token"
+              name="discord_token"
+              type="password"
+              autocomplete="off"
+              placeholder="Leave blank to keep existing token"
+            />
+            <small class="form-hint">Only overwritten if you enter a new token above.</small>
+          </div>
+
+          <div class="form-group">
+            <label for="setting-channel-id">Discord Channel ID</label>
+            <input
+              id="setting-channel-id"
+              name="channel_id"
+              type="text"
+              placeholder="e.g. 123456789012345678"
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="settings-raid-device">RAID Device</label>
+            <input
+              id="settings-raid-device"
+              name="raid_device"
+              type="text"
+              list="raid-devices-list"
+              placeholder="auto or /dev/md0, /dev/md128"
+            />
+            <datalist id="raid-devices-list">
+              <option value="auto">Auto-detect active md array</option>
+            </datalist>
+            <small id="raid-devices-hint" class="form-hint">
+              Detected on host: No RAID arrays detected
+            </small>
+          </div>
+
+          <div class="form-group">
+            <label for="setting-mount-path">Mount Path</label>
+            <input
+              id="setting-mount-path"
+              name="mount_path"
+              type="text"
+              placeholder="/mnt/media/"
+            />
+          </div>
+
+          <div class="form-group full-width">
+            <label for="setting-google-client-id">Google Client ID (OAuth 2.0)</label>
+            <input
+              id="setting-google-client-id"
+              name="google_client_id"
+              type="text"
+              placeholder="xxxx.apps.googleusercontent.com"
+            />
+          </div>
+
+          <div class="form-group full-width">
+            <label for="setting-allowed-google-emails">Allowed Google Emails</label>
+            <input
+              id="setting-allowed-google-emails"
+              name="allowed_google_emails"
+              type="text"
+              placeholder="admin@example.com, ops@example.com"
+            />
+            <small class="form-hint">Comma-separated list of Google accounts permitted to sign in.</small>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button id="cancel-settings-btn" type="button" class="btn-secondary">Cancel</button>
+          <button id="save-settings-btn" type="submit" class="btn-primary">Save Settings</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div class="app-container">
     <!-- 1. Header -->
     <header class="app-header">
@@ -20,7 +177,10 @@
           </svg>
         </div>
         <div>
-          <h1 class="app-title">SystemAlerts Dashboard</h1>
+          <div class="title-row">
+            <h1 class="app-title">SystemAlerts Dashboard</h1>
+            <span id="version-badge" class="version-badge" title="Current installed release version">v0.1.0</span>
+          </div>
           <p class="app-subtitle">RAID Array &amp; System Telemetry Monitor</p>
         </div>
       </div>
@@ -41,6 +201,7 @@
             </span>
             <span id="last-updated" class="last-updated">Never updated</span>
           </div>
+
           <button id="refresh-btn" class="btn-refresh" type="button" aria-label="Refresh dashboard data">
             <svg class="refresh-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="23 4 23 10 17 10"></polyline>
@@ -49,9 +210,38 @@
             </svg>
             <span>Refresh</span>
           </button>
+
+          <button id="check-update-btn" class="btn-header-action" type="button" title="Check GitHub tags for new releases">
+            <span>Check Updates</span>
+          </button>
+
+          <button id="settings-btn" class="btn-header-action" type="button" aria-label="Open application settings">
+            <span>Settings</span>
+          </button>
+
+          <div id="user-session-box" class="user-session-box hidden">
+            <span id="auth-username" class="auth-username-pill">admin</span>
+            <button id="logout-btn" class="btn-logout" type="button">Logout</button>
+          </div>
         </div>
       </div>
     </header>
+
+    <!-- Release-Tag Update Banner (#update-banner) -->
+    <div id="update-banner" class="update-banner hidden" role="region" aria-label="Software update available">
+      <div class="update-banner-info">
+        <div class="update-banner-title">
+          <span class="update-badge-new">NEW RELEASE</span>
+          <strong>Version <span id="update-latest-version">--</span> is available!</strong>
+        </div>
+        <pre id="update-changelog" class="update-changelog"></pre>
+      </div>
+      <div class="update-banner-actions">
+        <button id="apply-update-btn" class="btn-update-apply" type="button">
+          Update &amp; Restart Services
+        </button>
+      </div>
+    </div>
 
     <!-- Error Banner -->
     <div id="error-banner" class="error-banner hidden" role="alert">
@@ -158,6 +348,10 @@
           </div>
 
           <dl class="details-list">
+            <div class="detail-item">
+              <dt>RAID Device</dt>
+              <dd id="raid-device" class="mono-text">--</dd>
+            </div>
             <div class="detail-item">
               <dt>RAID Level</dt>
               <dd id="raid-level">--</dd>

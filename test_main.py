@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.error import URLError
 from urllib.parse import urlsplit
 
 import discord
@@ -62,9 +63,16 @@ SAMPLE_DUF_TABLE = """╭─────────┬────────�
 class AsgiResponse:
     """Minimal response wrapper for in-process ASGI requests."""
 
-    def __init__(self, status_code: int, headers: dict[str, str], body: bytes) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        headers: dict[str, str],
+        raw_headers: list[tuple[str, str]],
+        body: bytes,
+    ) -> None:
         self.status_code = status_code
         self.headers = headers
+        self.raw_headers = raw_headers
         self.content = body
         self.text = body.decode("utf-8", errors="replace")
 
@@ -72,19 +80,43 @@ class AsgiResponse:
         return json.loads(self.text)
 
 
-def asgi_get(app, path: str) -> AsgiResponse:
-    """Execute a GET request directly against an ASGI app without external HTTP client deps."""
+def asgi_request(
+    app,
+    method: str,
+    path: str,
+    *,
+    json_body: dict | None = None,
+    headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
+) -> AsgiResponse:
+    """Execute an HTTP request directly against an ASGI app without external HTTP client deps."""
     parsed = urlsplit(path)
+    body_bytes = b""
+    req_headers: list[tuple[bytes, bytes]] = [(b"host", b"testserver")]
+
+    if json_body is not None:
+        body_bytes = json.dumps(json_body).encode("utf-8")
+        req_headers.append((b"content-type", b"application/json"))
+        req_headers.append((b"content-length", str(len(body_bytes)).encode("ascii")))
+
+    if headers:
+        for k, v in headers.items():
+            req_headers.append((k.lower().encode("latin1"), v.encode("latin1")))
+
+    if cookies:
+        cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        req_headers.append((b"cookie", cookie_str.encode("latin1")))
+
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
-        "method": "GET",
+        "method": method.upper(),
         "scheme": "http",
         "path": parsed.path or "/",
         "raw_path": (parsed.path or "/").encode("ascii"),
         "query_string": parsed.query.encode("ascii"),
-        "headers": [(b"host", b"testserver")],
+        "headers": req_headers,
         "client": ("127.0.0.1", 12345),
         "server": ("testserver", 80),
     }
@@ -96,7 +128,7 @@ def asgi_get(app, path: str) -> AsgiResponse:
         nonlocal request_sent
         if not request_sent:
             request_sent = True
-            return {"type": "http.request", "body": b"", "more_body": False}
+            return {"type": "http.request", "body": body_bytes, "more_body": False}
         await asyncio.sleep(3600)
         return {"type": "http.disconnect"}
 
@@ -106,23 +138,58 @@ def asgi_get(app, path: str) -> AsgiResponse:
     asyncio.run(app(scope, receive, send))
 
     status_code = 500
-    headers: dict[str, str] = {}
+    resp_headers: dict[str, str] = {}
+    raw_headers: list[tuple[str, str]] = []
     body_parts: list[bytes] = []
 
     for message in messages:
         if message["type"] == "http.response.start":
             status_code = message["status"]
-            headers = {
-                k.decode("latin1").lower(): v.decode("latin1")
-                for k, v in message.get("headers", [])
-            }
+            for k, v in message.get("headers", []):
+                key_str = k.decode("latin1").lower()
+                val_str = v.decode("latin1")
+                resp_headers[key_str] = val_str
+                raw_headers.append((key_str, val_str))
         elif message["type"] == "http.response.body":
             body_parts.append(message.get("body", b""))
 
-    return AsgiResponse(status_code, headers, b"".join(body_parts))
+    return AsgiResponse(status_code, resp_headers, raw_headers, b"".join(body_parts))
+
+
+def asgi_get(
+    app,
+    path: str,
+    *,
+    headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
+) -> AsgiResponse:
+    return asgi_request(app, "GET", path, headers=headers, cookies=cookies)
+
+
+def asgi_post(
+    app,
+    path: str,
+    *,
+    json_body: dict | None = None,
+    headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
+) -> AsgiResponse:
+    return asgi_request(
+        app, "POST", path, json_body=json_body, headers=headers, cookies=cookies
+    )
 
 
 class RaidFormattingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test_formatting.sqlite3"
+        self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
+        self.db_patcher.start()
+
+    def tearDown(self):
+        self.db_patcher.stop()
+        self.temp_dir.cleanup()
+
     def test_format_raid_summary_uses_clean_card_layout(self):
         text = main.format_raid_summary("clean", SAMPLE_DETAILS, SAMPLE_DUF)
         self.assertNotIn("╭", text)
@@ -142,6 +209,7 @@ class RaidFormattingTests(unittest.TestCase):
 
     def test_extract_raid_summary_data_parses_duf_table_and_fallback(self):
         data = main._extract_raid_summary_data("clean", SAMPLE_DETAILS, SAMPLE_DUF_TABLE)
+        self.assertEqual(data["raid_device"], "/dev/md128")
         self.assertEqual(data["status"], "clean")
         self.assertEqual(data["raid_level"], "raid1")
         self.assertEqual(data["array_size"], "9.31 GiB")
@@ -155,6 +223,78 @@ class RaidFormattingTests(unittest.TestCase):
 
         summary_no_devices = main.format_raid_summary("unknown", "", "")
         self.assertIn("- No device information available", summary_no_devices)
+
+    def test_extract_raid_summary_data_parses_nvme_vda_and_raid_device(self):
+        nvme_details = """/dev/md0:
+        Version : 1.2
+        Raid Level : raid10
+        Array Size : 20000 (19.07 GiB)
+        State : active
+        Active Devices : 2
+        Working Devices : 2
+        Failed Devices : 0
+        Spare Devices : 0
+
+        Number   Major   Minor   RaidDevice State
+           0     259       0        0      active sync set-A   /dev/nvme0n1p1
+           1     252       1        1      active sync set-B   /dev/vda1
+"""
+        data = main._extract_raid_summary_data("active", nvme_details, SAMPLE_DUF_TABLE)
+        self.assertEqual(data["raid_device"], "/dev/md0")
+        self.assertEqual(data["raid_level"], "raid10")
+        self.assertEqual(
+            data["devices"],
+            [
+                {"device": "nvme0n1p1", "state": "active sync set-A"},
+                {"device": "vda1", "state": "active sync set-B"},
+            ],
+        )
+
+    def test_discover_and_resolve_raid_devices(self):
+        fake_mdstat = """Personalities : [raid1] [raid6] [raid5] [raid4]
+md127 : active raid5 sdc1[0] sdd1[1] sde1[2]
+      19532609536 blocks super 1.2 level 5, 512k chunk, algorithm 2 [3/3] [UUU]
+
+md0 : active raid1 nvme0n1p1[0] nvme1n1p1[1]
+      999872 blocks super 1.2 [2/2] [UU]
+
+unused devices: <none>
+"""
+        mdstat_file = Path(self.temp_dir.name) / "mdstat"
+        mdstat_file.write_text(fake_mdstat, encoding="utf-8")
+
+        orig_path = main.Path
+
+        def fake_path_factory(p):
+            if p == "/proc/mdstat":
+                return mdstat_file
+            return orig_path(p)
+
+        with (
+            patch.object(main, "Path", side_effect=fake_path_factory),
+            patch.object(
+                main.glob,
+                "glob",
+                side_effect=lambda pattern: (
+                    ["/dev/md0", "/dev/md0p1"] if pattern == "/dev/md[0-9]*" else []
+                ),
+            ),
+        ):
+            devices = main.discover_raid_devices()
+            self.assertEqual(devices, ["/dev/md0", "/dev/md127"])
+
+            # 'auto' resolves to first discovered device (/dev/md0)
+            self.assertEqual(main.resolve_raid_device("auto"), "/dev/md0")
+
+            # Non-existent default '/dev/md128' falls back to discovered '/dev/md0'
+            self.assertEqual(main.resolve_raid_device("/dev/md128"), "/dev/md0")
+
+        # When no devices are discovered on disk or in /proc/mdstat, returns None
+        with patch.object(main, "discover_raid_devices", return_value=[]):
+            self.assertIsNone(main.resolve_raid_device("auto"))
+            self.assertIsNone(main.resolve_raid_device(""))
+            self.assertIsNone(main.resolve_raid_device("none"))
+            self.assertIsNone(main.resolve_raid_device("/dev/md_nonexistent"))
 
     def test_build_raid_embed_is_compatible_across_statuses(self):
         embed = main.build_raid_embed("clean", SAMPLE_DETAILS, SAMPLE_DUF)
@@ -200,40 +340,53 @@ class RaidFormattingTests(unittest.TestCase):
         self.assertTrue(truncated.endswith("...\n[truncated]"))
 
     def test_check_raid_status_all_state_branches_and_errors(self):
-        for expected_state in [
-            "clean",
-            "active",
-            "degraded",
-            "recovering",
-            "resyncing",
-            "failed",
-        ]:
-            raw_output = f"/dev/md128:\n        State : {expected_state}\n".encode()
-            with patch("main.check_output", return_value=raw_output):
+        # When resolve_raid_device() returns None, check_raid_status returns ('none', 'No RAID array detected') without calling mdadm
+        with (
+            patch.object(main, "resolve_raid_device", return_value=None),
+            patch("main.check_output") as mock_check_output,
+        ):
+            status, details = main.check_raid_status()
+            self.assertEqual(status, "none")
+            self.assertEqual(details, "No RAID array detected")
+            mock_check_output.assert_not_called()
+
+        with patch.object(main, "resolve_raid_device", return_value="/dev/md128"):
+            for expected_state in [
+                "clean",
+                "active",
+                "degraded",
+                "recovering",
+                "resyncing",
+                "failed",
+            ]:
+                raw_output = f"/dev/md128:\n        State : {expected_state}\n".encode()
+                with patch("main.check_output", return_value=raw_output):
+                    status, details = main.check_raid_status()
+                    self.assertEqual(status, expected_state)
+                    self.assertIn(f"State : {expected_state}", details)
+
+            with patch(
+                "main.check_output", return_value=b"/dev/md128:\n        State : weird\n"
+            ):
                 status, details = main.check_raid_status()
-                self.assertEqual(status, expected_state)
-                self.assertIn(f"State : {expected_state}", details)
+                self.assertEqual(status, "unknown")
+                self.assertIn("State : weird", details)
 
-        with patch("main.check_output", return_value=b"/dev/md128:\n        State : weird\n"):
-            status, details = main.check_raid_status()
-            self.assertEqual(status, "unknown")
-            self.assertIn("State : weird", details)
+            with patch(
+                "main.check_output",
+                side_effect=CalledProcessError(1, ["mdadm"], output=b"mdadm failed"),
+            ):
+                status, details = main.check_raid_status()
+                self.assertEqual(status, "error")
+                self.assertEqual(details, "mdadm failed")
 
-        with patch(
-            "main.check_output",
-            side_effect=CalledProcessError(1, ["mdadm"], output=b"mdadm failed"),
-        ):
-            status, details = main.check_raid_status()
-            self.assertEqual(status, "error")
-            self.assertEqual(details, "mdadm failed")
-
-        with patch(
-            "main.check_output",
-            side_effect=FileNotFoundError("No such file or directory: 'mdadm'"),
-        ):
-            status, details = main.check_raid_status()
-            self.assertEqual(status, "error")
-            self.assertIn("mdadm", details)
+            with patch(
+                "main.check_output",
+                side_effect=FileNotFoundError("No such file or directory: 'mdadm'"),
+            ):
+                status, details = main.check_raid_status()
+                self.assertEqual(status, "error")
+                self.assertIn("mdadm", details)
 
     def test_get_duf_output_success_and_error_branches(self):
         with patch("main.check_output", return_value=b"  duf table output  \n"):
@@ -308,21 +461,17 @@ class DiscordAndRaidCheckTests(unittest.TestCase):
             patch.object(main, "get_duf_output", return_value=SAMPLE_DUF),
             patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send,
         ):
-            # First run sends weekly summary and records state
             asyncio.run(main.run_raid_check(force=False))
             self.assertEqual(mock_send.await_count, 1)
             self.assertIsNotNone(main.get_weekly_notification_state())
 
-            # Second immediate run without force is throttled
             mock_send.reset_mock()
             asyncio.run(main.run_raid_check(force=False))
             self.assertEqual(mock_send.await_count, 0)
 
-            # Forced run sends immediately even when not yet due
             asyncio.run(main.run_raid_check(force=True))
             self.assertEqual(mock_send.await_count, 1)
 
-        # Degraded status always sends an alert (weekly=False)
         with (
             patch.object(
                 main, "check_raid_status", return_value=("degraded", SAMPLE_DETAILS)
@@ -336,8 +485,19 @@ class DiscordAndRaidCheckTests(unittest.TestCase):
             self.assertEqual(history[0][0], "degraded")
             self.assertEqual(history[0][2], 0)
 
+        # When check_raid_status returns ('none', 'No RAID array detected'), no Discord alert is sent
+        with (
+            patch.object(
+                main,
+                "check_raid_status",
+                return_value=("none", "No RAID array detected"),
+            ),
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send,
+        ):
+            asyncio.run(main.run_raid_check(force=True))
+            self.assertEqual(mock_send.await_count, 0)
+
     def test_run_raid_check_handles_sqlite_errors_gracefully(self):
-        # Error reading weekly notification state
         with (
             patch.object(
                 main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)
@@ -353,7 +513,6 @@ class DiscordAndRaidCheckTests(unittest.TestCase):
             asyncio.run(main.run_raid_check(force=False))
             self.assertEqual(mock_send.await_count, 0)
 
-        # Error recording weekly notification state
         with (
             patch.object(
                 main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)
@@ -367,7 +526,6 @@ class DiscordAndRaidCheckTests(unittest.TestCase):
             asyncio.run(main.run_raid_check(force=True))
             self.assertEqual(mock_send.await_count, 1)
 
-        # Error recording non-weekly alert notification history
         with (
             patch.object(
                 main, "check_raid_status", return_value=("failed", SAMPLE_DETAILS)
@@ -399,7 +557,6 @@ class CliAndMainTests(unittest.TestCase):
             main.show_notification_status()
         self.assertIn("No successful weekly summary has been recorded yet.", buf.getvalue())
 
-        # Record a recent weekly summary so due_at is in the future
         now = time.time()
         main.record_notification("clean", now, weekly=True)
         buf_future = io.StringIO()
@@ -408,7 +565,6 @@ class CliAndMainTests(unittest.TestCase):
         self.assertIn("Last successful weekly summary:", buf_future.getvalue())
         self.assertIn("Time remaining:", buf_future.getvalue())
 
-        # Record an old weekly summary so due_at is in the past
         past = now - main.WEEK_SECONDS - 100
         main.record_notification("active", past, weekly=True)
         buf_overdue = io.StringIO()
@@ -437,21 +593,18 @@ class CliAndMainTests(unittest.TestCase):
         self.assertIn("degraded", output)
 
     def test_main_cli_subcommands_and_validation(self):
-        # status subcommand
         with (
             patch("sys.argv", ["main.py", "status"]),
             patch("sys.stdout", io.StringIO()),
         ):
             self.assertEqual(main.main(), 0)
 
-        # logs subcommand
         with (
             patch("sys.argv", ["main.py", "logs", "--limit", "5"]),
             patch("sys.stdout", io.StringIO()),
         ):
             self.assertEqual(main.main(), 0)
 
-        # logs with invalid --limit < 1 exits via parser.error
         with (
             patch("sys.argv", ["main.py", "logs", "--limit", "0"]),
             patch("sys.stderr", io.StringIO()),
@@ -459,7 +612,6 @@ class CliAndMainTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 main.main()
 
-        # status subcommand when SQLite raises error returns 1
         with (
             patch("sys.argv", ["main.py", "status"]),
             patch.object(
@@ -472,7 +624,6 @@ class CliAndMainTests(unittest.TestCase):
             self.assertEqual(main.main(), 1)
             self.assertIn("Could not read RAID notification data", err_buf.getvalue())
 
-        # web subcommand invokes uvicorn.run
         with (
             patch("sys.argv", ["main.py", "web", "--host", "127.0.0.1", "--port", "9000"]),
             patch("uvicorn.run") as mock_uvicorn,
@@ -480,9 +631,9 @@ class CliAndMainTests(unittest.TestCase):
             self.assertEqual(main.main(), 0)
             mock_uvicorn.assert_called_once_with("api:app", host="127.0.0.1", port=9000)
 
-        # Missing DISCORD_TOKEN or CHANNEL_ID returns 1
         with (
             patch("sys.argv", ["main.py"]),
+            patch.object(main, "get_app_settings", return_value={}),
             patch.object(main, "config", side_effect=lambda k, **kw: ""),
             patch("sys.stderr", io.StringIO()) as err_buf,
         ):
@@ -492,7 +643,6 @@ class CliAndMainTests(unittest.TestCase):
                 err_buf.getvalue(),
             )
 
-        # Invalid log rotation settings return 1
         def fake_config_invalid_log(key, default=None, cast=None):
             values = {
                 "DISCORD_TOKEN": "token123",
@@ -504,6 +654,7 @@ class CliAndMainTests(unittest.TestCase):
 
         with (
             patch("sys.argv", ["main.py"]),
+            patch.object(main, "get_app_settings", return_value={}),
             patch.object(main, "config", side_effect=fake_config_invalid_log),
             patch("sys.stderr", io.StringIO()) as err_buf,
         ):
@@ -538,14 +689,12 @@ class SqlitePersistenceTests(unittest.TestCase):
         self.assertEqual(due_at, t1 + main.WEEK_SECONDS)
         self.assertEqual(status, "clean")
 
-        # Recording a non-weekly alert should not overwrite weekly notification_state
         t2 = t1 + 3600.0
         main.record_notification("degraded", t2, weekly=False)
 
         state_after_alert = main.get_weekly_notification_state()
         self.assertEqual(state_after_alert, (t1, t1 + main.WEEK_SECONDS, "clean"))
 
-        # Recording a new weekly summary updates notification_state
         t3 = t1 + main.WEEK_SECONDS + 60.0
         main.record_notification("active", t3, weekly=True)
         state_after_second_weekly = main.get_weekly_notification_state()
@@ -553,7 +702,6 @@ class SqlitePersistenceTests(unittest.TestCase):
             state_after_second_weekly, (t3, t3 + main.WEEK_SECONDS, "active")
         )
 
-        # History is ordered newest-first and respects limit
         full_history = main.get_notification_history(10)
         self.assertEqual(
             full_history,
@@ -569,6 +717,89 @@ class SqlitePersistenceTests(unittest.TestCase):
         self.assertEqual(limited_history[0][0], "active")
         self.assertEqual(limited_history[1][0], "degraded")
 
+    def test_users_and_sessions_crud_and_expiration(self):
+        self.assertFalse(main.has_any_user())
+
+        with self.assertRaises(ValueError):
+            main.create_user("", "secret")
+        with self.assertRaises(ValueError):
+            main.create_user("admin", "")
+
+        created = main.create_user("admin", "CorrectHorseBatteryStaple", email="admin@example.com")
+        self.assertEqual(created["username"], "admin")
+        self.assertEqual(created["email"], "admin@example.com")
+        self.assertTrue(main.has_any_user())
+
+        self.assertTrue(main.verify_user("admin", "CorrectHorseBatteryStaple"))
+        self.assertFalse(main.verify_user("admin", "WrongPassword"))
+        self.assertFalse(main.verify_user("nonexistent", "CorrectHorseBatteryStaple"))
+        self.assertFalse(main.verify_user("", "CorrectHorseBatteryStaple"))
+
+        # Sessions: create, verify, expire, delete
+        token = main.create_session("admin")
+        self.assertEqual(main.verify_session(token), "admin")
+        self.assertIsNone(main.verify_session(None))
+        self.assertIsNone(main.verify_session("unknown-token"))
+
+        # Expire session in the future using time.time mock
+        future_time = time.time() + main.SESSION_TTL_SECONDS + 10
+        with patch("main.time.time", return_value=future_time):
+            self.assertIsNone(main.verify_session(token))
+        # Expired session should have been deleted from DB
+        self.assertIsNone(main.verify_session(token))
+
+        # Delete active session
+        token2 = main.create_session("admin")
+        self.assertEqual(main.verify_session(token2), "admin")
+        main.delete_session(token2)
+        self.assertIsNone(main.verify_session(token2))
+        main.delete_session(None)
+
+    def test_app_settings_env_seed_update_and_fallback(self):
+        env_values = {
+            "DISCORD_TOKEN": "env_discord_token_1234",
+            "CHANNEL_ID": "987654321",
+            "RAID_DEVICE": "/dev/md128",
+            "MOUNT_PATH": "/mnt/media/",
+            "GOOGLE_CLIENT_ID": "env-google-client.apps.googleusercontent.com",
+            "ALLOWED_GOOGLE_EMAILS": "owner@example.com",
+        }
+        with patch.object(
+            main, "config", side_effect=lambda k, default="": env_values.get(k, default)
+        ):
+            seeded = main.get_app_settings()
+            self.assertEqual(seeded["discord_token"], "env_discord_token_1234")
+            self.assertEqual(seeded["channel_id"], "987654321")
+            self.assertEqual(seeded["raid_device"], "/dev/md128")
+            self.assertEqual(seeded["mount_path"], "/mnt/media/")
+            self.assertEqual(
+                seeded["google_client_id"], "env-google-client.apps.googleusercontent.com"
+            )
+            self.assertEqual(seeded["allowed_google_emails"], "owner@example.com")
+
+            # Update settings in SQLite
+            updated = main.update_app_settings(
+                {
+                    "channel_id": "111222333",
+                    "raid_device": "/dev/md0",
+                    "mount_path": "/mnt/storage/",
+                    "allowed_google_emails": "owner@example.com, second@example.com",
+                }
+            )
+            self.assertEqual(updated["channel_id"], "111222333")
+            self.assertEqual(main.CHANNEL_ID, "111222333")
+            self.assertEqual(updated["raid_device"], "/dev/md0")
+            self.assertEqual(updated["mount_path"], "/mnt/storage/")
+            self.assertEqual(updated["discord_token"], "env_discord_token_1234")
+
+            # Verify fallback to .env defaults if SQLite raises an error
+            with patch.object(
+                main, "_connect_state_db", side_effect=sqlite3.Error("db locked")
+            ):
+                fallback = main.get_app_settings()
+                self.assertEqual(fallback["channel_id"], "987654321")
+                self.assertEqual(fallback["discord_token"], "env_discord_token_1234")
+
 
 class FastAPIEndpointTests(unittest.TestCase):
     def setUp(self):
@@ -576,10 +807,308 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.db_path = Path(self.temp_dir.name) / "test_api_raid.sqlite3"
         self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
         self.db_patcher.start()
+        main.create_user("admin", "adminpass", email="admin@example.com")
+        self.session_token = main.create_session("admin")
+        self.auth_cookies = {"session_token": self.session_token}
+        self.auth_headers = {"Authorization": f"Bearer {self.session_token}"}
 
     def tearDown(self):
         self.db_patcher.stop()
         self.temp_dir.cleanup()
+
+    def test_protected_endpoints_enforce_authentication(self):
+        protected_get_paths = [
+            "/api/status",
+            "/api/history",
+            "/api/settings",
+            "/api/update/check",
+        ]
+        for path in protected_get_paths:
+            resp = asgi_get(api.app, path)
+            self.assertEqual(resp.status_code, 401, f"Expected 401 for unauthenticated GET {path}")
+
+        for path in ["/api/settings", "/api/update/apply"]:
+            resp = asgi_post(api.app, path, json_body={})
+            self.assertEqual(resp.status_code, 401, f"Expected 401 for unauthenticated POST {path}")
+
+        # Verify both session cookie and Bearer token grant 200 access
+        with (
+            patch.object(main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF),
+        ):
+            cookie_resp = asgi_get(api.app, "/api/status", cookies=self.auth_cookies)
+            self.assertEqual(cookie_resp.status_code, 200)
+
+            bearer_resp = asgi_get(api.app, "/api/status", headers=self.auth_headers)
+            self.assertEqual(bearer_resp.status_code, 200)
+
+    def test_auth_setup_login_google_and_logout_flows(self):
+        # Use a fresh empty DB to test initial setup flow
+        fresh_db = Path(self.temp_dir.name) / "fresh_auth.sqlite3"
+        with patch.object(main, "RAID_STATE_DB", fresh_db):
+            status_before = asgi_get(api.app, "/api/auth/status").json()
+            self.assertFalse(status_before["authenticated"])
+            self.assertTrue(status_before["setup_required"])
+
+            # Password too short returns 400
+            bad_setup = asgi_post(
+                api.app,
+                "/api/auth/setup",
+                json_body={"username": "firstadmin", "password": "123"},
+            )
+            self.assertEqual(bad_setup.status_code, 400)
+
+            # Valid initial setup creates user and returns token + cookie
+            setup_resp = asgi_post(
+                api.app,
+                "/api/auth/setup",
+                json_body={
+                    "username": "firstadmin",
+                    "password": "strongpassword",
+                    "email": "first@example.com",
+                },
+            )
+            self.assertEqual(setup_resp.status_code, 200)
+            setup_data = setup_resp.json()
+            self.assertTrue(setup_data["authenticated"])
+            self.assertEqual(setup_data["username"], "firstadmin")
+            self.assertIn("session_token=", setup_resp.headers.get("set-cookie", ""))
+
+            # Second setup attempt is rejected with 400
+            dup_setup = asgi_post(
+                api.app,
+                "/api/auth/setup",
+                json_body={"username": "second", "password": "strongpassword"},
+            )
+            self.assertEqual(dup_setup.status_code, 400)
+
+            # Login with invalid password returns 401
+            bad_login = asgi_post(
+                api.app,
+                "/api/auth/login",
+                json_body={"username": "firstadmin", "password": "wrongpassword"},
+            )
+            self.assertEqual(bad_login.status_code, 401)
+
+            # Login with valid password returns 200 and session token
+            login_resp = asgi_post(
+                api.app,
+                "/api/auth/login",
+                json_body={"username": "firstadmin", "password": "strongpassword"},
+            )
+            self.assertEqual(login_resp.status_code, 200)
+            login_token = login_resp.json()["token"]
+
+            # Auth status with token shows authenticated
+            status_after = asgi_get(
+                api.app,
+                "/api/auth/status",
+                cookies={"session_token": login_token},
+            ).json()
+            self.assertTrue(status_after["authenticated"])
+            self.assertEqual(status_after["username"], "firstadmin")
+            self.assertFalse(status_after["setup_required"])
+
+            # Google OAuth login test (mocking urlopen to Google tokeninfo endpoint)
+            main.update_app_settings(
+                {
+                    "google_client_id": "my-google-client-id",
+                    "allowed_google_emails": "allowed@example.com",
+                }
+            )
+
+            missing_token_resp = asgi_post(api.app, "/api/auth/google", json_body={})
+            self.assertEqual(missing_token_resp.status_code, 400)
+
+            def mock_urlopen_factory(payload_dict):
+                mock_cm = MagicMock()
+                mock_cm.__enter__.return_value.read.return_value = json.dumps(
+                    payload_dict
+                ).encode("utf-8")
+                return mock_cm
+
+            # Allowed Google email succeeds
+            with patch(
+                "api.urlopen",
+                return_value=mock_urlopen_factory(
+                    {
+                        "email": "allowed@example.com",
+                        "email_verified": "true",
+                        "aud": "my-google-client-id",
+                    }
+                ),
+            ):
+                google_ok = asgi_post(
+                    api.app,
+                    "/api/auth/google",
+                    json_body={"credential": "fake-google-jwt"},
+                )
+                self.assertEqual(google_ok.status_code, 200)
+                self.assertTrue(google_ok.json()["authenticated"])
+                self.assertEqual(google_ok.json()["username"], "allowed@example.com")
+
+            # Unauthorized Google email returns 403
+            with patch(
+                "api.urlopen",
+                return_value=mock_urlopen_factory(
+                    {
+                        "email": "intruder@example.com",
+                        "email_verified": "true",
+                        "aud": "my-google-client-id",
+                    }
+                ),
+            ):
+                google_forbidden = asgi_post(
+                    api.app,
+                    "/api/auth/google",
+                    json_body={"credential": "fake-google-jwt"},
+                )
+                self.assertEqual(google_forbidden.status_code, 403)
+
+            # Audience mismatch returns 401
+            with patch(
+                "api.urlopen",
+                return_value=mock_urlopen_factory(
+                    {
+                        "email": "allowed@example.com",
+                        "email_verified": "true",
+                        "aud": "wrong-client-id",
+                    }
+                ),
+            ):
+                google_bad_aud = asgi_post(
+                    api.app,
+                    "/api/auth/google",
+                    json_body={"credential": "fake-google-jwt"},
+                )
+                self.assertEqual(google_bad_aud.status_code, 401)
+
+            # URLError during tokeninfo verification returns 401
+            with patch("api.urlopen", side_effect=URLError("network error")):
+                google_net_err = asgi_post(
+                    api.app,
+                    "/api/auth/google",
+                    json_body={"credential": "fake-google-jwt"},
+                )
+                self.assertEqual(google_net_err.status_code, 401)
+
+            # Logout invalidates session token
+            logout_resp = asgi_post(
+                api.app,
+                "/api/auth/logout",
+                cookies={"session_token": login_token},
+            )
+            self.assertEqual(logout_resp.status_code, 200)
+            self.assertFalse(logout_resp.json()["authenticated"])
+            self.assertIsNone(main.verify_session(login_token))
+
+    def test_settings_api_masks_discord_token_and_updates_sqlite(self):
+        main.update_app_settings(
+            {
+                "discord_token": "super_secret_token_9876",
+                "channel_id": "123456789",
+                "raid_device": "/dev/md128",
+                "mount_path": "/mnt/media/",
+            }
+        )
+
+        with patch.object(
+            main, "discover_raid_devices", return_value=["/dev/md0", "/dev/md127"]
+        ):
+            get_resp = asgi_get(api.app, "/api/settings", cookies=self.auth_cookies)
+            self.assertEqual(get_resp.status_code, 200)
+            settings_data = get_resp.json()
+            self.assertTrue(settings_data["discord_token_configured"])
+            self.assertEqual(settings_data["discord_token_masked"], "••••9876")
+            self.assertNotIn("super_secret", json.dumps(settings_data))
+            self.assertEqual(settings_data["channel_id"], "123456789")
+            self.assertEqual(
+                settings_data["available_raid_devices"], ["/dev/md0", "/dev/md127"]
+            )
+            self.assertEqual(settings_data["resolved_raid_device"], "/dev/md0")
+
+        # Update settings without sending discord_token preserves existing token
+        post_resp = asgi_post(
+            api.app,
+            "/api/settings",
+            cookies=self.auth_cookies,
+            json_body={
+                "channel_id": "555666777",
+                "raid_device": "/dev/md1",
+                "mount_path": "/mnt/raid/",
+                "google_client_id": "new-client-id",
+                "allowed_google_emails": "user1@example.com",
+            },
+        )
+        self.assertEqual(post_resp.status_code, 200)
+        updated_data = post_resp.json()
+        self.assertTrue(updated_data["saved"])
+        self.assertEqual(updated_data["channel_id"], "555666777")
+        self.assertEqual(updated_data["raid_device"], "/dev/md1")
+        self.assertEqual(updated_data["mount_path"], "/mnt/raid/")
+        self.assertEqual(updated_data["discord_token_masked"], "••••9876")
+
+        # Updating discord_token changes the stored and masked value
+        post_token_resp = asgi_post(
+            api.app,
+            "/api/settings",
+            cookies=self.auth_cookies,
+            json_body={"discord_token": "new_discord_token_4321"},
+        )
+        self.assertEqual(post_token_resp.status_code, 200)
+        self.assertEqual(post_token_resp.json()["discord_token_masked"], "••••4321")
+        self.assertEqual(main.get_app_settings()["discord_token"], "new_discord_token_4321")
+
+    def test_release_update_check_and_apply_endpoints(self):
+        def fake_check_output(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "rev-parse", "--short"] and cmd[3] == "HEAD":
+                return b"abc1234\n"
+            if cmd[:3] == ["git", "fetch", "origin"]:
+                return b""
+            if cmd[:3] == ["git", "tag", "-l"]:
+                return b"v0.1.0\nv0.2.0\n"
+            if cmd[:3] == ["git", "rev-parse", "--short"] and "v0.2.0" in cmd[3]:
+                return b"def5678\n"
+            if cmd[:3] == ["git", "log", "--oneline"]:
+                return b"def5678 Add settings and update manager\n"
+            if cmd[:2] == ["git", "checkout"]:
+                return b"Previous HEAD position was abc1234\nHEAD is now at def5678\n"
+            if cmd[:2] == ["uv", "sync"]:
+                return b"Resolved 20 packages\n"
+            return b""
+
+        with patch.object(main, "check_output", side_effect=fake_check_output):
+            check_resp = asgi_get(api.app, "/api/update/check", cookies=self.auth_cookies)
+            self.assertEqual(check_resp.status_code, 200)
+            check_data = check_resp.json()
+            self.assertEqual(check_data["current_version"], "0.1.0")
+            self.assertEqual(check_data["current_commit"], "abc1234")
+            self.assertEqual(check_data["latest_version"], "0.2.0")
+            self.assertEqual(check_data["latest_commit"], "def5678")
+            self.assertTrue(check_data["update_available"])
+            self.assertIn("Add settings and update manager", check_data["changelog"])
+
+            with patch("main.subprocess.Popen") as mock_popen:
+                apply_resp = asgi_post(
+                    api.app, "/api/update/apply", cookies=self.auth_cookies
+                )
+                self.assertEqual(apply_resp.status_code, 200)
+                apply_data = apply_resp.json()
+                self.assertEqual(apply_data["status"], "updating")
+                self.assertEqual(apply_data["target_version"], "0.2.0")
+                mock_popen.assert_called_once()
+
+        # Verify 500 response when git checkout / uv sync fails during apply
+        with patch.object(
+            main,
+            "apply_release_update",
+            side_effect=CalledProcessError(1, ["git", "checkout"], output=b"checkout conflict"),
+        ):
+            fail_resp = asgi_post(
+                api.app, "/api/update/apply", cookies=self.auth_cookies
+            )
+            self.assertEqual(fail_resp.status_code, 500)
+            self.assertIn("checkout conflict", fail_resp.json()["detail"])
 
     def test_get_api_status_returns_raid_system_and_notification_state(self):
         ts = 1700001000.0
@@ -593,7 +1122,7 @@ class FastAPIEndpointTests(unittest.TestCase):
                 main, "get_duf_output", return_value=SAMPLE_DUF_TABLE
             ) as mock_duf,
         ):
-            response = asgi_get(api.app, "/api/status")
+            response = asgi_get(api.app, "/api/status", cookies=self.auth_cookies)
 
         self.assertEqual(response.status_code, 200)
         mock_raid.assert_called_once()
@@ -603,6 +1132,7 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn("raid", payload)
         self.assertIn("system", payload)
         self.assertIn("notification_state", payload)
+        self.assertIn("version", payload)
 
         self.assertEqual(payload["raid"]["status"], "clean")
         self.assertEqual(payload["raid"]["raid_level"], "raid1")
@@ -631,7 +1161,7 @@ class FastAPIEndpointTests(unittest.TestCase):
             ),
             patch.object(main, "get_duf_output", return_value=SAMPLE_DUF),
         ):
-            response = asgi_get(api.app, "/api/status")
+            response = asgi_get(api.app, "/api/status", cookies=self.auth_cookies)
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -643,7 +1173,7 @@ class FastAPIEndpointTests(unittest.TestCase):
         main.record_notification("degraded", 1700000200.0, weekly=False)
         main.record_notification("recovering", 1700000300.0, weekly=False)
 
-        response = asgi_get(api.app, "/api/history")
+        response = asgi_get(api.app, "/api/history", cookies=self.auth_cookies)
         self.assertEqual(response.status_code, 200)
         history = response.json()["history"]
         self.assertEqual(len(history), 3)
@@ -654,13 +1184,17 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertTrue(history[2]["weekly"])
         self.assertEqual(history[2]["kind"], "weekly summary")
 
-        limited_resp = asgi_get(api.app, "/api/history?limit=1")
+        limited_resp = asgi_get(
+            api.app, "/api/history?limit=1", cookies=self.auth_cookies
+        )
         self.assertEqual(limited_resp.status_code, 200)
         limited_history = limited_resp.json()["history"]
         self.assertEqual(len(limited_history), 1)
         self.assertEqual(limited_history[0]["status"], "recovering")
 
-        invalid_resp = asgi_get(api.app, "/api/history?limit=0")
+        invalid_resp = asgi_get(
+            api.app, "/api/history?limit=0", cookies=self.auth_cookies
+        )
         self.assertEqual(invalid_resp.status_code, 422)
 
     def test_api_sqlite_error_and_missing_index_fallbacks(self):
@@ -675,7 +1209,7 @@ class FastAPIEndpointTests(unittest.TestCase):
                 side_effect=sqlite3.Error("db unavailable"),
             ),
         ):
-            status_resp = asgi_get(api.app, "/api/status")
+            status_resp = asgi_get(api.app, "/api/status", cookies=self.auth_cookies)
             self.assertEqual(status_resp.status_code, 200)
             self.assertIsNone(status_resp.json()["notification_state"])
 
@@ -684,7 +1218,7 @@ class FastAPIEndpointTests(unittest.TestCase):
             "get_notification_history",
             side_effect=sqlite3.Error("db unavailable"),
         ):
-            history_resp = asgi_get(api.app, "/api/history")
+            history_resp = asgi_get(api.app, "/api/history", cookies=self.auth_cookies)
             self.assertEqual(history_resp.status_code, 200)
             self.assertEqual(history_resp.json(), {"history": []})
 
@@ -707,6 +1241,8 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="raid-status-badge"', index_resp.text)
         self.assertIn('id="active-disks-table"', index_resp.text)
         self.assertIn('id="notification-history-table"', index_resp.text)
+        self.assertIn('id="auth-overlay"', index_resp.text)
+        self.assertIn('id="settings-modal"', index_resp.text)
 
         css_resp = asgi_get(api.app, "/static/styles.css")
         self.assertEqual(css_resp.status_code, 200)

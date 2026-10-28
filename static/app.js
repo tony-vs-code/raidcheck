@@ -1,4 +1,5 @@
 const AUTO_REFRESH_INTERVAL_MS = 10000;
+const SESSION_TOKEN_STORAGE_KEY = "systemalerts_session_token";
 const VALID_RAID_STATES = new Set([
   "clean",
   "active",
@@ -8,10 +9,64 @@ const VALID_RAID_STATES = new Set([
   "failed",
   "error",
   "unknown",
+  "none",
 ]);
 
 let refreshTimerId = null;
 let isFetching = false;
+let isAuthenticated = false;
+let currentGoogleClientId = "";
+
+/**
+ * Retrieve stored session token if present.
+ */
+function getStoredToken() {
+  try {
+    return localStorage.getItem(SESSION_TOKEN_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Save or clear session token in localStorage.
+ */
+function setStoredToken(token) {
+  try {
+    if (token) {
+      localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, token);
+    } else {
+      localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage errors in restricted browsing modes
+  }
+}
+
+/**
+ * Wrapper around fetch() that attaches session credentials and handles 401 responses.
+ */
+async function apiFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  if (!headers.has("Accept")) {
+    headers.set("Accept", "application/json");
+  }
+  const token = getStoredToken();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const fetchOptions = {
+    ...options,
+    headers,
+    credentials: "same-origin",
+  };
+
+  const response = await fetch(url, fetchOptions);
+  if (response.status === 401 && !url.startsWith("/api/auth/")) {
+    await handleUnauthorized();
+  }
+  return response;
+}
 
 /**
  * Format raw byte count into human-readable GiB/MiB/TiB string.
@@ -84,7 +139,7 @@ function applyStatusBadge(badgeEl, textEl, rawState) {
   badgeEl.classList.add(`status-${state}`);
   badgeEl.setAttribute("data-state", state);
 
-  const label = state.toUpperCase();
+  const label = state === "none" ? "NO RAID" : state.toUpperCase();
   if (textEl) {
     textEl.textContent = label;
   } else {
@@ -196,26 +251,44 @@ function renderRaidDetails(raid) {
     if (el) el.textContent = value || "--";
   };
 
-  setField("raid-level", (raid.raid_level || "unknown").toUpperCase());
-  setField("raid-array-size", raid.array_size);
-  setField(
-    "raid-devices-summary",
-    `${activeCount} active, ${workingCount} working, ${failedCount} failed, ${spareCount} spare`
-  );
-  setField("raid-storage-info", raid.storage_info);
-  setField("raid-check-status", raid.check_status);
-  setField("raid-full-state", raid.full_state || status);
-  setField("raid-persistence", raid.persistence);
-  setField("raid-uuid", raid.uuid);
-  setField("raid-update-time", raid.update_time);
-  setField(
-    "raid-layout-chunk",
-    `${raid.layout || "unknown"} / ${raid.chunk_size || "unknown"}`
-  );
-  setField(
-    "raid-consistency-events",
-    `${raid.consistency_policy || "unknown"} (Events: ${raid.events || "unknown"})`
-  );
+  const isNoRaid = normalizeRaidState(status) === "none";
+
+  if (isNoRaid) {
+    setField("raid-device", "No RAID array detected");
+    setField("raid-level", "--");
+    setField("raid-array-size", "--");
+    setField("raid-devices-summary", "--");
+    setField("raid-storage-info", "--");
+    setField("raid-check-status", "--");
+    setField("raid-full-state", "No RAID array detected");
+    setField("raid-persistence", "--");
+    setField("raid-uuid", "--");
+    setField("raid-update-time", "--");
+    setField("raid-layout-chunk", "--");
+    setField("raid-consistency-events", "--");
+  } else {
+    setField("raid-device", raid.raid_device);
+    setField("raid-level", (raid.raid_level || "unknown").toUpperCase());
+    setField("raid-array-size", raid.array_size);
+    setField(
+      "raid-devices-summary",
+      `${activeCount} active, ${workingCount} working, ${failedCount} failed, ${spareCount} spare`
+    );
+    setField("raid-storage-info", raid.storage_info);
+    setField("raid-check-status", raid.check_status);
+    setField("raid-full-state", raid.full_state || status);
+    setField("raid-persistence", raid.persistence);
+    setField("raid-uuid", raid.uuid);
+    setField("raid-update-time", raid.update_time);
+    setField(
+      "raid-layout-chunk",
+      `${raid.layout || "unknown"} / ${raid.chunk_size || "unknown"}`
+    );
+    setField(
+      "raid-consistency-events",
+      `${raid.consistency_policy || "unknown"} (Events: ${raid.events || "unknown"})`
+    );
+  }
 
   // Active Disks table
   const devices = Array.isArray(raid.devices) ? raid.devices : [];
@@ -228,12 +301,14 @@ function renderRaidDetails(raid) {
   if (!tbody) return;
   tbody.innerHTML = "";
 
-  if (devices.length === 0) {
+  if (isNoRaid || devices.length === 0) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
     td.colSpan = 3;
     td.className = "empty-state";
-    td.textContent = "No active member disks detected";
+    td.textContent = isNoRaid
+      ? "No RAID array configured or detected on this host"
+      : "No active member disks detected";
     tr.appendChild(td);
     tbody.appendChild(tr);
     return;
@@ -412,10 +487,28 @@ function setErrorState(message) {
 }
 
 /**
+ * Update the header version badge.
+ */
+function updateVersionBadge(versionInfo) {
+  if (!versionInfo) return;
+  const badge = document.getElementById("version-badge");
+  if (!badge) return;
+
+  const ver =
+    versionInfo.current_version ||
+    versionInfo.version ||
+    badge.textContent ||
+    "v0.1.0";
+  const formattedVer = String(ver).startsWith("v") ? ver : `v${ver}`;
+  const commit = versionInfo.current_commit || versionInfo.commit || "";
+  badge.textContent = commit ? `${formattedVer} (${commit})` : formattedVer;
+}
+
+/**
  * Fetch both /api/status and /api/history?limit=20 and update the UI.
  */
 async function refreshDashboard() {
-  if (isFetching) return;
+  if (isFetching || !isAuthenticated) return;
   isFetching = true;
 
   const refreshBtn = document.getElementById("refresh-btn");
@@ -423,9 +516,13 @@ async function refreshDashboard() {
 
   try {
     const [statusResp, historyResp] = await Promise.all([
-      fetch("/api/status", { headers: { Accept: "application/json" } }),
-      fetch("/api/history?limit=20", { headers: { Accept: "application/json" } }),
+      apiFetch("/api/status"),
+      apiFetch("/api/history?limit=20"),
     ]);
+
+    if (statusResp.status === 401 || historyResp.status === 401) {
+      return;
+    }
 
     if (!statusResp.ok) {
       throw new Error(`GET /api/status failed with HTTP ${statusResp.status}`);
@@ -441,6 +538,10 @@ async function refreshDashboard() {
     renderSystemMetrics(statusData.system || statusData);
     renderWeeklyNotificationState(statusData.notification_state ?? null);
     renderNotificationHistory(historyData);
+
+    if (statusData.version || statusData.version_info) {
+      updateVersionBadge(statusData.version_info || statusData.version);
+    }
 
     setErrorState(null);
 
@@ -459,19 +560,609 @@ async function refreshDashboard() {
   }
 }
 
+/* =========================================================================
+ * 1. Authentication Gate (#auth-overlay)
+ * ========================================================================= */
+
+function showAuthError(message) {
+  const errEl = document.getElementById("auth-error");
+  if (!errEl) return;
+  if (message) {
+    errEl.textContent = message;
+    errEl.classList.remove("hidden");
+  } else {
+    errEl.textContent = "";
+    errEl.classList.add("hidden");
+  }
+}
+
+function stopPolling() {
+  if (refreshTimerId) {
+    window.clearInterval(refreshTimerId);
+    refreshTimerId = null;
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  refreshDashboard();
+  refreshTimerId = window.setInterval(refreshDashboard, AUTO_REFRESH_INTERVAL_MS);
+}
+
 /**
- * Initialize listeners and 10-second polling timer.
+ * Initialize Google Identity Services button when google_client_id is configured.
  */
-function initDashboard() {
-  const refreshBtn = document.getElementById("refresh-btn");
-  if (refreshBtn) {
-    refreshBtn.addEventListener("click", () => {
-      refreshDashboard();
+function setupGoogleSignIn(clientId) {
+  const section = document.getElementById("google-auth-section");
+  const btnContainer = document.getElementById("google-signin-btn");
+  if (!section || !btnContainer) return;
+
+  if (!clientId) {
+    section.classList.add("hidden");
+    return;
+  }
+
+  section.classList.remove("hidden");
+  currentGoogleClientId = clientId;
+
+  const renderGsi = () => {
+    if (!window.google || !window.google.accounts || !window.google.accounts.id) {
+      return false;
+    }
+    btnContainer.innerHTML = "";
+    window.google.accounts.id.initialize({
+      client_id: clientId,
+      callback: handleGoogleCredentialResponse,
+    });
+    window.google.accounts.id.renderButton(btnContainer, {
+      theme: "filled_black",
+      size: "large",
+      width: 340,
+      text: "signin_with",
+    });
+    return true;
+  };
+
+  if (!renderGsi()) {
+    let attempts = 0;
+    const waitTimer = window.setInterval(() => {
+      attempts += 1;
+      if (renderGsi() || attempts > 25) {
+        window.clearInterval(waitTimer);
+      }
+    }, 200);
+  }
+}
+
+async function handleGoogleCredentialResponse(response) {
+  if (!response || !response.credential) return;
+  showAuthError(null);
+  try {
+    const resp = await apiFetch("/api/auth/google", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential: response.credential }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Google authentication failed");
+    }
+    if (data.token) {
+      setStoredToken(data.token);
+    }
+    onAuthenticatedSuccess(data.username || "google-user");
+  } catch (err) {
+    showAuthError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+function openAuthOverlay({ setupRequired = false, googleClientId = "" } = {}) {
+  isAuthenticated = false;
+  stopPolling();
+
+  const overlay = document.getElementById("auth-overlay");
+  const titleEl = document.getElementById("auth-modal-title");
+  const subtitleEl = document.getElementById("auth-modal-subtitle");
+  const setupForm = document.getElementById("auth-setup-form");
+  const loginForm = document.getElementById("auth-login-form");
+  const userBox = document.getElementById("user-session-box");
+
+  if (userBox) userBox.classList.add("hidden");
+  showAuthError(null);
+
+  if (setupRequired) {
+    if (titleEl) titleEl.textContent = "Initial Admin Setup";
+    if (subtitleEl) {
+      subtitleEl.textContent =
+        "Create the primary administrator account to secure your dashboard";
+    }
+    if (setupForm) setupForm.classList.remove("hidden");
+    if (loginForm) loginForm.classList.add("hidden");
+  } else {
+    if (titleEl) titleEl.textContent = "Sign In";
+    if (subtitleEl) {
+      subtitleEl.textContent =
+        "Authenticate to access the SystemAlerts dashboard";
+    }
+    if (setupForm) setupForm.classList.add("hidden");
+    if (loginForm) loginForm.classList.remove("hidden");
+    setupGoogleSignIn(googleClientId);
+  }
+
+  if (overlay) overlay.classList.remove("hidden");
+}
+
+function onAuthenticatedSuccess(username) {
+  isAuthenticated = true;
+  const overlay = document.getElementById("auth-overlay");
+  const userBox = document.getElementById("user-session-box");
+  const usernameEl = document.getElementById("auth-username");
+
+  if (overlay) overlay.classList.add("hidden");
+  if (usernameEl) usernameEl.textContent = username || "admin";
+  if (userBox) userBox.classList.remove("hidden");
+
+  startPolling();
+  checkForUpdates({ silent: true });
+}
+
+async function handleUnauthorized() {
+  setStoredToken("");
+  await checkAuthStatus();
+}
+
+/**
+ * Check GET /api/auth/status on startup and whenever 401 occurs.
+ */
+async function checkAuthStatus() {
+  try {
+    const resp = await apiFetch("/api/auth/status");
+    if (!resp.ok) {
+      throw new Error(`Auth check failed with HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+
+    if (data.setup_required) {
+      openAuthOverlay({
+        setupRequired: true,
+        googleClientId: data.google_client_id || "",
+      });
+      return;
+    }
+
+    if (!data.authenticated) {
+      openAuthOverlay({
+        setupRequired: false,
+        googleClientId: data.google_client_id || "",
+      });
+      return;
+    }
+
+    onAuthenticatedSuccess(data.username || "admin");
+  } catch (err) {
+    console.error("Failed to check auth status:", err);
+    openAuthOverlay({ setupRequired: false });
+    showAuthError("Unable to verify authentication status with server.");
+  }
+}
+
+async function handleSetupSubmit(event) {
+  event.preventDefault();
+  showAuthError(null);
+
+  const username = document.getElementById("setup-username")?.value.trim() || "";
+  const password = document.getElementById("setup-password")?.value || "";
+  const email = document.getElementById("setup-email")?.value.trim() || "";
+
+  if (!username || !password) {
+    showAuthError("Username and password are required.");
+    return;
+  }
+
+  try {
+    const resp = await apiFetch("/api/auth/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, email }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Initial admin setup failed");
+    }
+    if (data.token) {
+      setStoredToken(data.token);
+    }
+    onAuthenticatedSuccess(data.username || username);
+  } catch (err) {
+    showAuthError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function handleLoginSubmit(event) {
+  event.preventDefault();
+  showAuthError(null);
+
+  const username = document.getElementById("login-username")?.value.trim() || "";
+  const password = document.getElementById("login-password")?.value || "";
+
+  if (!username || !password) {
+    showAuthError("Please enter both username and password.");
+    return;
+  }
+
+  try {
+    const resp = await apiFetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Invalid username or password");
+    }
+    if (data.token) {
+      setStoredToken(data.token);
+    }
+    onAuthenticatedSuccess(data.username || username);
+  } catch (err) {
+    showAuthError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function handleLogout() {
+  try {
+    await apiFetch("/api/auth/logout", { method: "POST" });
+  } catch {
+    // Ignore network errors during logout
+  }
+  setStoredToken("");
+  await checkAuthStatus();
+}
+
+/* =========================================================================
+ * 2. Release-Tag Updater (#version-badge, #check-update-btn, #update-banner)
+ * ========================================================================= */
+
+async function checkForUpdates({ silent = false } = {}) {
+  const checkBtn = document.getElementById("check-update-btn");
+  if (checkBtn && !silent) {
+    checkBtn.disabled = true;
+    checkBtn.textContent = "Checking...";
+  }
+
+  try {
+    const resp = await apiFetch("/api/update/check");
+    if (resp.status === 401) return;
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || `Update check failed (${resp.status})`);
+    }
+
+    updateVersionBadge(data);
+
+    const banner = document.getElementById("update-banner");
+    const latestVerEl = document.getElementById("update-latest-version");
+    const changelogEl = document.getElementById("update-changelog");
+
+    if (data.update_available) {
+      if (latestVerEl) {
+        latestVerEl.textContent = data.latest_version || "latest";
+      }
+      if (changelogEl) {
+        changelogEl.textContent =
+          data.changelog || "New tagged release available on origin.";
+      }
+      if (banner) banner.classList.remove("hidden");
+    } else {
+      if (banner) banner.classList.add("hidden");
+      if (checkBtn && !silent) {
+        checkBtn.textContent = "Up to date";
+        window.setTimeout(() => {
+          if (checkBtn) checkBtn.textContent = "Check Updates";
+        }, 2500);
+        return;
+      }
+    }
+  } catch (err) {
+    console.error("Update check error:", err);
+    if (!silent) {
+      setErrorState(
+        `Update check failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  } finally {
+    if (checkBtn && !silent) {
+      checkBtn.disabled = false;
+      if (checkBtn.textContent === "Checking...") {
+        checkBtn.textContent = "Check Updates";
+      }
+    }
+  }
+}
+
+async function applyReleaseUpdate() {
+  const applyBtn = document.getElementById("apply-update-btn");
+  if (applyBtn) {
+    applyBtn.disabled = true;
+    applyBtn.textContent = "Updating & Restarting Services...";
+  }
+
+  try {
+    const resp = await apiFetch("/api/update/apply", { method: "POST" });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || `Update failed (HTTP ${resp.status})`);
+    }
+
+    stopPolling();
+    pollUntilServerRestarts();
+  } catch (err) {
+    console.error("Failed to apply update:", err);
+    setErrorState(
+      `Failed to apply update: ${err instanceof Error ? err.message : String(err)}`
+    );
+    if (applyBtn) {
+      applyBtn.disabled = false;
+      applyBtn.textContent = "Update & Restart Services";
+    }
+  }
+}
+
+function pollUntilServerRestarts() {
+  let attempts = 0;
+  const maxAttempts = 40;
+  const pollTimer = window.setInterval(async () => {
+    attempts += 1;
+    try {
+      const resp = await fetch("/api/auth/status", {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (resp.ok && attempts >= 2) {
+        window.clearInterval(pollTimer);
+        window.location.reload();
+      }
+    } catch {
+      // Server is restarting; keep polling
+    }
+
+    if (attempts >= maxAttempts) {
+      window.clearInterval(pollTimer);
+      window.location.reload();
+    }
+  }, 2000);
+}
+
+/* =========================================================================
+ * 3. SQLite Settings Modal (#settings-modal)
+ * ========================================================================= */
+
+function showSettingsFeedback(message, isSuccess = false) {
+  const el = document.getElementById("settings-feedback");
+  if (!el) return;
+  if (!message) {
+    el.textContent = "";
+    el.classList.add("hidden");
+    el.classList.remove("success");
+    return;
+  }
+  el.textContent = message;
+  el.classList.toggle("success", isSuccess);
+  el.classList.remove("hidden");
+}
+
+async function openSettingsModal() {
+  const modal = document.getElementById("settings-modal");
+  if (!modal) return;
+  showSettingsFeedback(null);
+  modal.classList.remove("hidden");
+
+  try {
+    const resp = await apiFetch("/api/settings");
+    if (resp.status === 401) {
+      modal.classList.add("hidden");
+      return;
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || `Failed to load settings (${resp.status})`);
+    }
+
+    populateSettingsForm(data);
+  } catch (err) {
+    showSettingsFeedback(
+      err instanceof Error ? err.message : String(err),
+      false
+    );
+  }
+}
+
+function populateSettingsForm(data) {
+  const tokenInput = document.getElementById("setting-discord-token");
+  const tokenBadge = document.getElementById("discord-token-status");
+  const channelInput = document.getElementById("setting-channel-id");
+  const raidInput =
+    document.getElementById("settings-raid-device") ||
+    document.getElementById("setting-raid-device");
+  const raidDatalist = document.getElementById("raid-devices-list");
+  const raidHint = document.getElementById("raid-devices-hint");
+  const mountInput = document.getElementById("setting-mount-path");
+  const googleClientInput = document.getElementById("setting-google-client-id");
+  const allowedEmailsInput = document.getElementById(
+    "setting-allowed-google-emails"
+  );
+
+  if (tokenInput) {
+    tokenInput.value = "";
+    tokenInput.placeholder = data.discord_token_configured
+      ? `Configured (${data.discord_token_masked || "********"}) — type to replace`
+      : "Enter Discord Bot Token";
+  }
+
+  if (tokenBadge) {
+    if (data.discord_token_configured) {
+      tokenBadge.textContent = data.discord_token_masked
+        ? `Configured (${data.discord_token_masked})`
+        : "Configured";
+      tokenBadge.classList.add("configured");
+    } else {
+      tokenBadge.textContent = "Not configured";
+      tokenBadge.classList.remove("configured");
+    }
+  }
+
+  if (channelInput) channelInput.value = data.channel_id || "";
+  if (raidInput) raidInput.value = data.raid_device || "auto";
+
+  const availableDevices = Array.isArray(data.available_raid_devices)
+    ? data.available_raid_devices
+    : [];
+
+  if (raidDatalist) {
+    raidDatalist.innerHTML = "";
+    const options = ["auto", ...availableDevices];
+    const seen = new Set();
+    options.forEach((optValue) => {
+      if (!optValue || seen.has(optValue)) return;
+      seen.add(optValue);
+      const optionEl = document.createElement("option");
+      optionEl.value = optValue;
+      optionEl.textContent =
+        optValue === "auto"
+          ? "auto (Auto-detect active md array)"
+          : optValue;
+      raidDatalist.appendChild(optionEl);
     });
   }
 
-  refreshDashboard();
-  refreshTimerId = window.setInterval(refreshDashboard, AUTO_REFRESH_INTERVAL_MS);
+  if (raidHint) {
+    if (availableDevices.length === 0 && !data.resolved_raid_device) {
+      raidHint.textContent = "Detected on host: No RAID arrays detected";
+    } else {
+      const detectedText =
+        availableDevices.length > 0
+          ? availableDevices.join(", ")
+          : "none detected";
+      const resolvedDevice =
+        data.resolved_raid_device || data.raid_device || "none";
+      raidHint.textContent = `Detected arrays: ${detectedText} | Resolved: ${resolvedDevice}`;
+    }
+  }
+
+  if (mountInput) mountInput.value = data.mount_path || "/mnt/media/";
+  if (googleClientInput) googleClientInput.value = data.google_client_id || "";
+  if (allowedEmailsInput) {
+    allowedEmailsInput.value = data.allowed_google_emails || "";
+  }
+}
+
+const populateSettingsModal = populateSettingsForm;
+
+function closeSettingsModal() {
+  const modal = document.getElementById("settings-modal");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function handleSettingsSubmit(event) {
+  event.preventDefault();
+  showSettingsFeedback(null);
+
+  const raidInputEl =
+    document.getElementById("settings-raid-device") ||
+    document.getElementById("setting-raid-device");
+  const tokenVal =
+    document.getElementById("setting-discord-token")?.value.trim() || "";
+  const payload = {
+    channel_id:
+      document.getElementById("setting-channel-id")?.value.trim() || "",
+    raid_device: raidInputEl?.value.trim() || "auto",
+    mount_path:
+      document.getElementById("setting-mount-path")?.value.trim() ||
+      "/mnt/media/",
+    google_client_id:
+      document.getElementById("setting-google-client-id")?.value.trim() || "",
+    allowed_google_emails:
+      document.getElementById("setting-allowed-google-emails")?.value.trim() ||
+      "",
+  };
+
+  // Only overwrite discord_token if user typed a new token
+  if (tokenVal.length > 0) {
+    payload.discord_token = tokenVal;
+  }
+
+  const saveBtn = document.getElementById("save-settings-btn");
+  if (saveBtn) saveBtn.disabled = true;
+
+  try {
+    const resp = await apiFetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || `Failed to save settings (${resp.status})`);
+    }
+
+    populateSettingsForm(data);
+    showSettingsFeedback("Settings saved to SQLite.", true);
+    refreshDashboard();
+  } catch (err) {
+    showSettingsFeedback(
+      err instanceof Error ? err.message : String(err),
+      false
+    );
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+/**
+ * Initialize listeners and run startup authentication check.
+ */
+function initDashboard() {
+  document
+    .getElementById("refresh-btn")
+    ?.addEventListener("click", () => refreshDashboard());
+
+  document
+    .getElementById("auth-setup-form")
+    ?.addEventListener("submit", handleSetupSubmit);
+
+  document
+    .getElementById("auth-login-form")
+    ?.addEventListener("submit", handleLoginSubmit);
+
+  document
+    .getElementById("logout-btn")
+    ?.addEventListener("click", handleLogout);
+
+  document
+    .getElementById("check-update-btn")
+    ?.addEventListener("click", () => checkForUpdates({ silent: false }));
+
+  document
+    .getElementById("apply-update-btn")
+    ?.addEventListener("click", applyReleaseUpdate);
+
+  document
+    .getElementById("settings-btn")
+    ?.addEventListener("click", openSettingsModal);
+
+  document
+    .getElementById("close-settings-btn")
+    ?.addEventListener("click", closeSettingsModal);
+
+  document
+    .getElementById("cancel-settings-btn")
+    ?.addEventListener("click", closeSettingsModal);
+
+  document
+    .getElementById("settings-form")
+    ?.addEventListener("submit", handleSettingsSubmit);
+
+  checkAuthStatus();
 }
 
 document.addEventListener("DOMContentLoaded", initDashboard);
