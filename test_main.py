@@ -1261,6 +1261,27 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn("javascript", js_resp.headers.get("content-type", ""))
         self.assertTrue(len(js_resp.text) > 0)
 
+    def test_ci_workflow_and_systemd_services_configured(self):
+        repo_root = Path(__file__).resolve().parent
+        workflow_file = repo_root / ".github" / "workflows" / "ci-release.yml"
+        raidcheck_service = repo_root / "systemd" / "raidcheck.service"
+        raidcheck_web_service = repo_root / "systemd" / "raidcheck-web.service"
+
+        self.assertTrue(workflow_file.is_file())
+        workflow_content = workflow_file.read_text(encoding="utf-8")
+        self.assertIn("uv run pytest -v", workflow_content)
+        self.assertIn("gh release create", workflow_content)
+
+        self.assertTrue(raidcheck_service.is_file())
+        raidcheck_content = raidcheck_service.read_text(encoding="utf-8")
+        self.assertIn("WantedBy=multi-user.target", raidcheck_content)
+        self.assertIn("main.py", raidcheck_content)
+
+        self.assertTrue(raidcheck_web_service.is_file())
+        raidcheck_web_content = raidcheck_web_service.read_text(encoding="utf-8")
+        self.assertIn("WantedBy=multi-user.target", raidcheck_web_content)
+        self.assertIn("main.py web", raidcheck_web_content)
+
 
 if __name__ == "__main__":
     unittest.main()
