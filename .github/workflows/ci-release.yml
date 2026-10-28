@@ -1,0 +1,83 @@
+name: CI & Auto-Release
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Run Pytest Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run pytest
+        run: uv run pytest -v
+
+  release:
+    name: Tag & Publish GitHub Release
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository with full history and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from pyproject.toml and publish GitHub Release if new
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c '
+          import re, pathlib
+          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          m = re.search(r"^version\s*=\s*\"([^\"]+)\"", text, re.MULTILINE)
+          print(m.group(1) if m else "")
+          ')
+          if [ -z "$VERSION" ]; then
+            echo "Could not determine version from pyproject.toml" >&2
+            exit 1
+          fi
+          TAG="v${VERSION}"
+          echo "Detected version: ${VERSION} (tag: ${TAG})"
+
+          git fetch origin --tags --force
+
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Creating and pushing git tag ${TAG}..."
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Release ${TAG}"
+            git push origin "$TAG"
+          else
+            echo "Git tag ${TAG} already exists."
+          fi
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Creating GitHub Release ${TAG}..."
+            gh release create "$TAG" --generate-notes --title "Release ${TAG}"
+          else
+            echo "GitHub Release ${TAG} already exists."
+          fi

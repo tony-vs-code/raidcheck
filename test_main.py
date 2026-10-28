@@ -1077,7 +1077,14 @@ class FastAPIEndpointTests(unittest.TestCase):
                 return b"Resolved 20 packages\n"
             return b""
 
-        with patch.object(main, "check_output", side_effect=fake_check_output):
+        with (
+            patch.object(
+                main,
+                "get_current_version_info",
+                return_value={"version": "0.1.0", "commit": "abc1234"},
+            ),
+            patch.object(main, "check_output", side_effect=fake_check_output),
+        ):
             check_resp = asgi_get(api.app, "/api/update/check", cookies=self.auth_cookies)
             self.assertEqual(check_resp.status_code, 200)
             check_data = check_resp.json()
