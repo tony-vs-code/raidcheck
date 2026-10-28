@@ -1,11 +1,16 @@
 import asyncio
+import io
 import json
 from pathlib import Path
+import sqlite3
 from subprocess import CalledProcessError
 import tempfile
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlsplit
+
+import discord
 
 import api
 import main
@@ -128,6 +133,13 @@ class RaidFormattingTests(unittest.TestCase):
         self.assertIn("- sda: active sync", text)
         self.assertIn("- sdb: active sync", text)
 
+    def test_format_raid_summary_exception_fallback(self):
+        with patch.object(
+            main, "_extract_raid_summary_data", side_effect=RuntimeError("parse fail")
+        ):
+            text = main.format_raid_summary("degraded", SAMPLE_DETAILS, SAMPLE_DUF)
+        self.assertEqual(text, "RAID Array Degraded\nError parsing details")
+
     def test_extract_raid_summary_data_parses_duf_table_and_fallback(self):
         data = main._extract_raid_summary_data("clean", SAMPLE_DETAILS, SAMPLE_DUF_TABLE)
         self.assertEqual(data["status"], "clean")
@@ -187,11 +199,25 @@ class RaidFormattingTests(unittest.TestCase):
         self.assertLessEqual(len(truncated), main.MAX_DISCORD_MESSAGE_LENGTH)
         self.assertTrue(truncated.endswith("...\n[truncated]"))
 
-    def test_check_raid_status_and_get_duf_output_mocked(self):
-        with patch("main.check_output", return_value=SAMPLE_DETAILS.encode()):
+    def test_check_raid_status_all_state_branches_and_errors(self):
+        for expected_state in [
+            "clean",
+            "active",
+            "degraded",
+            "recovering",
+            "resyncing",
+            "failed",
+        ]:
+            raw_output = f"/dev/md128:\n        State : {expected_state}\n".encode()
+            with patch("main.check_output", return_value=raw_output):
+                status, details = main.check_raid_status()
+                self.assertEqual(status, expected_state)
+                self.assertIn(f"State : {expected_state}", details)
+
+        with patch("main.check_output", return_value=b"/dev/md128:\n        State : weird\n"):
             status, details = main.check_raid_status()
-            self.assertEqual(status, "clean")
-            self.assertIn("Raid Level : raid1", details)
+            self.assertEqual(status, "unknown")
+            self.assertIn("State : weird", details)
 
         with patch(
             "main.check_output",
@@ -203,10 +229,286 @@ class RaidFormattingTests(unittest.TestCase):
 
         with patch(
             "main.check_output",
+            side_effect=FileNotFoundError("No such file or directory: 'mdadm'"),
+        ):
+            status, details = main.check_raid_status()
+            self.assertEqual(status, "error")
+            self.assertIn("mdadm", details)
+
+    def test_get_duf_output_success_and_error_branches(self):
+        with patch("main.check_output", return_value=b"  duf table output  \n"):
+            self.assertEqual(main.get_duf_output(), "duf table output")
+
+        with patch(
+            "main.check_output",
             side_effect=CalledProcessError(1, ["duf"], output=b"duf error"),
         ):
             duf_out = main.get_duf_output()
             self.assertIn("Error getting disk usage: duf error", duf_out)
+
+        with patch(
+            "main.check_output",
+            side_effect=FileNotFoundError("No such file or directory: 'duf'"),
+        ):
+            duf_out = main.get_duf_output()
+            self.assertIn("Error getting disk usage:", duf_out)
+            self.assertIn("duf", duf_out)
+
+
+class DiscordAndRaidCheckTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test_raid_check.sqlite3"
+        self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
+        self.db_patcher.start()
+
+    def tearDown(self):
+        self.db_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_send_message_handles_string_embed_missing_channel_and_exception(self):
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock()
+
+        with (
+            patch.object(main, "CHANNEL_ID", "12345"),
+            patch.object(main.client, "get_channel", return_value=mock_channel),
+        ):
+            result_str = asyncio.run(main.send_message("hello world"))
+            self.assertTrue(result_str)
+            mock_channel.send.assert_awaited_once_with("hello world")
+
+            mock_channel.send.reset_mock()
+            embed = discord.Embed(title="Test Embed")
+            result_embed = asyncio.run(main.send_message(embed))
+            self.assertTrue(result_embed)
+            mock_channel.send.assert_awaited_once_with(embed=embed)
+
+        with (
+            patch.object(main, "CHANNEL_ID", "99999"),
+            patch.object(main.client, "get_channel", return_value=None),
+        ):
+            result_missing = asyncio.run(main.send_message("no channel"))
+            self.assertFalse(result_missing)
+
+        mock_failing_channel = MagicMock()
+        mock_failing_channel.send = AsyncMock(side_effect=RuntimeError("network down"))
+        with (
+            patch.object(main, "CHANNEL_ID", "12345"),
+            patch.object(main.client, "get_channel", return_value=mock_failing_channel),
+        ):
+            result_error = asyncio.run(main.send_message("boom"))
+            self.assertFalse(result_error)
+
+    def test_run_raid_check_clean_sent_vs_throttled_and_degraded_alert(self):
+        with (
+            patch.object(
+                main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)
+            ),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF),
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send,
+        ):
+            # First run sends weekly summary and records state
+            asyncio.run(main.run_raid_check(force=False))
+            self.assertEqual(mock_send.await_count, 1)
+            self.assertIsNotNone(main.get_weekly_notification_state())
+
+            # Second immediate run without force is throttled
+            mock_send.reset_mock()
+            asyncio.run(main.run_raid_check(force=False))
+            self.assertEqual(mock_send.await_count, 0)
+
+            # Forced run sends immediately even when not yet due
+            asyncio.run(main.run_raid_check(force=True))
+            self.assertEqual(mock_send.await_count, 1)
+
+        # Degraded status always sends an alert (weekly=False)
+        with (
+            patch.object(
+                main, "check_raid_status", return_value=("degraded", SAMPLE_DETAILS)
+            ),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF),
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send,
+        ):
+            asyncio.run(main.run_raid_check(force=False))
+            self.assertEqual(mock_send.await_count, 1)
+            history = main.get_notification_history(5)
+            self.assertEqual(history[0][0], "degraded")
+            self.assertEqual(history[0][2], 0)
+
+    def test_run_raid_check_handles_sqlite_errors_gracefully(self):
+        # Error reading weekly notification state
+        with (
+            patch.object(
+                main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)
+            ),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF),
+            patch.object(
+                main,
+                "get_weekly_notification_state",
+                side_effect=sqlite3.Error("read failure"),
+            ),
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send,
+        ):
+            asyncio.run(main.run_raid_check(force=False))
+            self.assertEqual(mock_send.await_count, 0)
+
+        # Error recording weekly notification state
+        with (
+            patch.object(
+                main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)
+            ),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF),
+            patch.object(
+                main, "record_notification", side_effect=sqlite3.Error("write failure")
+            ),
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send,
+        ):
+            asyncio.run(main.run_raid_check(force=True))
+            self.assertEqual(mock_send.await_count, 1)
+
+        # Error recording non-weekly alert notification history
+        with (
+            patch.object(
+                main, "check_raid_status", return_value=("failed", SAMPLE_DETAILS)
+            ),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF),
+            patch.object(
+                main, "record_notification", side_effect=sqlite3.Error("write failure")
+            ),
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send,
+        ):
+            asyncio.run(main.run_raid_check(force=False))
+            self.assertEqual(mock_send.await_count, 1)
+
+
+class CliAndMainTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test_cli.sqlite3"
+        self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
+        self.db_patcher.start()
+
+    def tearDown(self):
+        self.db_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_show_notification_status_empty_future_and_overdue(self):
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            main.show_notification_status()
+        self.assertIn("No successful weekly summary has been recorded yet.", buf.getvalue())
+
+        # Record a recent weekly summary so due_at is in the future
+        now = time.time()
+        main.record_notification("clean", now, weekly=True)
+        buf_future = io.StringIO()
+        with patch("sys.stdout", buf_future):
+            main.show_notification_status()
+        self.assertIn("Last successful weekly summary:", buf_future.getvalue())
+        self.assertIn("Time remaining:", buf_future.getvalue())
+
+        # Record an old weekly summary so due_at is in the past
+        past = now - main.WEEK_SECONDS - 100
+        main.record_notification("active", past, weekly=True)
+        buf_overdue = io.StringIO()
+        with patch("sys.stdout", buf_overdue):
+            main.show_notification_status()
+        self.assertIn(
+            "Refresh status:                due on the next clean/active RAID check",
+            buf_overdue.getvalue(),
+        )
+
+    def test_show_notification_logs_empty_and_populated(self):
+        buf_empty = io.StringIO()
+        with patch("sys.stdout", buf_empty):
+            main.show_notification_logs(10)
+        self.assertIn("No successful notifications have been recorded yet.", buf_empty.getvalue())
+
+        main.record_notification("clean", 1700000000.0, weekly=True)
+        main.record_notification("degraded", 1700000500.0, weekly=False)
+        buf_logs = io.StringIO()
+        with patch("sys.stdout", buf_logs):
+            main.show_notification_logs(10)
+        output = buf_logs.getvalue()
+        self.assertIn("weekly summary", output)
+        self.assertIn("alert", output)
+        self.assertIn("clean", output)
+        self.assertIn("degraded", output)
+
+    def test_main_cli_subcommands_and_validation(self):
+        # status subcommand
+        with (
+            patch("sys.argv", ["main.py", "status"]),
+            patch("sys.stdout", io.StringIO()),
+        ):
+            self.assertEqual(main.main(), 0)
+
+        # logs subcommand
+        with (
+            patch("sys.argv", ["main.py", "logs", "--limit", "5"]),
+            patch("sys.stdout", io.StringIO()),
+        ):
+            self.assertEqual(main.main(), 0)
+
+        # logs with invalid --limit < 1 exits via parser.error
+        with (
+            patch("sys.argv", ["main.py", "logs", "--limit", "0"]),
+            patch("sys.stderr", io.StringIO()),
+        ):
+            with self.assertRaises(SystemExit):
+                main.main()
+
+        # status subcommand when SQLite raises error returns 1
+        with (
+            patch("sys.argv", ["main.py", "status"]),
+            patch.object(
+                main,
+                "show_notification_status",
+                side_effect=sqlite3.Error("corrupt db"),
+            ),
+            patch("sys.stderr", io.StringIO()) as err_buf,
+        ):
+            self.assertEqual(main.main(), 1)
+            self.assertIn("Could not read RAID notification data", err_buf.getvalue())
+
+        # web subcommand invokes uvicorn.run
+        with (
+            patch("sys.argv", ["main.py", "web", "--host", "127.0.0.1", "--port", "9000"]),
+            patch("uvicorn.run") as mock_uvicorn,
+        ):
+            self.assertEqual(main.main(), 0)
+            mock_uvicorn.assert_called_once_with("api:app", host="127.0.0.1", port=9000)
+
+        # Missing DISCORD_TOKEN or CHANNEL_ID returns 1
+        with (
+            patch("sys.argv", ["main.py"]),
+            patch.object(main, "config", side_effect=lambda k, **kw: ""),
+            patch("sys.stderr", io.StringIO()) as err_buf,
+        ):
+            self.assertEqual(main.main(), 1)
+            self.assertIn(
+                "DISCORD_TOKEN and CHANNEL_ID must be set to run the bot.",
+                err_buf.getvalue(),
+            )
+
+        # Invalid log rotation settings return 1
+        def fake_config_invalid_log(key, default=None, cast=None):
+            values = {
+                "DISCORD_TOKEN": "token123",
+                "CHANNEL_ID": "456",
+                "RAID_LOG_MAX_BYTES": 0,
+                "RAID_LOG_BACKUP_COUNT": -1,
+            }
+            return values.get(key, default)
+
+        with (
+            patch("sys.argv", ["main.py"]),
+            patch.object(main, "config", side_effect=fake_config_invalid_log),
+            patch("sys.stderr", io.StringIO()) as err_buf,
+        ):
+            self.assertEqual(main.main(), 1)
+            self.assertIn("RAID_LOG_MAX_BYTES must be positive", err_buf.getvalue())
 
 
 class SqlitePersistenceTests(unittest.TestCase):
@@ -360,6 +662,38 @@ class FastAPIEndpointTests(unittest.TestCase):
 
         invalid_resp = asgi_get(api.app, "/api/history?limit=0")
         self.assertEqual(invalid_resp.status_code, 422)
+
+    def test_api_sqlite_error_and_missing_index_fallbacks(self):
+        with (
+            patch.object(
+                main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)
+            ),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF),
+            patch.object(
+                main,
+                "get_weekly_notification_state",
+                side_effect=sqlite3.Error("db unavailable"),
+            ),
+        ):
+            status_resp = asgi_get(api.app, "/api/status")
+            self.assertEqual(status_resp.status_code, 200)
+            self.assertIsNone(status_resp.json()["notification_state"])
+
+        with patch.object(
+            main,
+            "get_notification_history",
+            side_effect=sqlite3.Error("db unavailable"),
+        ):
+            history_resp = asgi_get(api.app, "/api/history")
+            self.assertEqual(history_resp.status_code, 200)
+            self.assertEqual(history_resp.json(), {"history": []})
+
+        empty_static_dir = Path(self.temp_dir.name) / "empty_static"
+        empty_static_dir.mkdir(parents=True, exist_ok=True)
+        with patch.object(api, "STATIC_DIR", empty_static_dir):
+            fallback_resp = asgi_get(api.app, "/")
+            self.assertEqual(fallback_resp.status_code, 200)
+            self.assertIn("<h1>System Alerts Dashboard</h1>", fallback_resp.text)
 
     def test_get_root_serves_dashboard_html(self):
         response = asgi_get(api.app, "/")
