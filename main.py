@@ -437,11 +437,20 @@ def _resolve_uv_binary() -> str:
     found = shutil.which("uv")
     if found:
         return found
-    for candidate in (
+    candidates = [
         "/root/.local/bin/uv",
+        "/root/.cargo/bin/uv",
         "/usr/local/bin/uv",
+        "/usr/bin/uv",
+        "/snap/bin/uv",
         str(Path.home() / ".local/bin/uv"),
-    ):
+    ]
+    try:
+        candidates.extend(sorted(glob.glob("/home/*/.local/bin/uv")))
+        candidates.extend(sorted(glob.glob("/home/*/.cargo/bin/uv")))
+    except OSError:
+        pass
+    for candidate in candidates:
         try:
             if Path(candidate).is_file():
                 return candidate
@@ -461,11 +470,16 @@ def apply_release_update() -> dict[str, Any]:
         stderr=STDOUT,
     )
     uv_bin = _resolve_uv_binary()
-    check_output(
-        [uv_bin, "sync"],
-        cwd=str(REPO_DIR),
-        stderr=STDOUT,
-    )
+    try:
+        check_output(
+            [uv_bin, "sync"],
+            cwd=str(REPO_DIR),
+            stderr=STDOUT,
+        )
+    except FileNotFoundError:
+        logging.warning(
+            "uv binary not found; skipping uv sync and using existing .venv"
+        )
 
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         systemd_dir = REPO_DIR / "systemd"

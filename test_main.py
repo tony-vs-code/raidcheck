@@ -1109,6 +1109,28 @@ class FastAPIEndpointTests(unittest.TestCase):
                 self.assertIn(["git", "checkout", "-f", "v0.2.0"], executed_cmds)
                 mock_popen.assert_called_once()
 
+        # Verify apply_release_update succeeds even when uv binary raises FileNotFoundError
+        def fake_check_output_no_uv(cmd, *args, **kwargs):
+            if len(cmd) == 2 and cmd[1] == "sync":
+                raise FileNotFoundError(2, "No such file or directory", "uv")
+            return fake_check_output(cmd, *args, **kwargs)
+
+        with (
+            patch.object(
+                main,
+                "get_current_version_info",
+                return_value={"version": "0.1.0", "commit": "abc1234"},
+            ),
+            patch.object(main, "check_output", side_effect=fake_check_output_no_uv),
+            patch("main.subprocess.Popen") as mock_popen,
+        ):
+            no_uv_resp = asgi_post(
+                api.app, "/api/update/apply", cookies=self.auth_cookies
+            )
+            self.assertEqual(no_uv_resp.status_code, 200)
+            self.assertEqual(no_uv_resp.json()["status"], "updating")
+            mock_popen.assert_called_once()
+
         # Verify 500 response when git checkout / uv sync fails during apply
         with patch.object(
             main,
