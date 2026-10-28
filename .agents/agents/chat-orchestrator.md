@@ -22,8 +22,10 @@ agents:
   - qa-agent
 skills:
   - tmux-orchestration
+  - git-auto-push
 preloadSkills:
   - tmux-orchestration
+  - git-auto-push
 ---
 
 # Chat Orchestrator Agent: Multi-Agent Coordinator

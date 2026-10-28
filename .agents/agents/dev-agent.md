@@ -11,6 +11,8 @@ tools:
   - edit_file
   - manage_task
   - search_web
+skills:
+  - git-auto-push
 ---
 
 # Developer Agent: Backend & System Metrics
