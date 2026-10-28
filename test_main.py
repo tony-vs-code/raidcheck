@@ -1060,7 +1060,10 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertEqual(main.get_app_settings()["discord_token"], "new_discord_token_4321")
 
     def test_release_update_check_and_apply_endpoints(self):
+        executed_cmds = []
+
         def fake_check_output(cmd, *args, **kwargs):
+            executed_cmds.append(cmd)
             if cmd[:3] == ["git", "rev-parse", "--short"] and cmd[3] == "HEAD":
                 return b"abc1234\n"
             if cmd[:3] == ["git", "fetch", "origin"]:
@@ -1071,9 +1074,9 @@ class FastAPIEndpointTests(unittest.TestCase):
                 return b"def5678\n"
             if cmd[:3] == ["git", "log", "--oneline"]:
                 return b"def5678 Add settings and update manager\n"
-            if cmd[:2] == ["git", "checkout"]:
+            if cmd[:3] == ["git", "checkout", "-f"]:
                 return b"Previous HEAD position was abc1234\nHEAD is now at def5678\n"
-            if cmd[:2] == ["uv", "sync"]:
+            if len(cmd) == 2 and cmd[1] == "sync":
                 return b"Resolved 20 packages\n"
             return b""
 
@@ -1103,6 +1106,7 @@ class FastAPIEndpointTests(unittest.TestCase):
                 apply_data = apply_resp.json()
                 self.assertEqual(apply_data["status"], "updating")
                 self.assertEqual(apply_data["target_version"], "0.2.0")
+                self.assertIn(["git", "checkout", "-f", "v0.2.0"], executed_cmds)
                 mock_popen.assert_called_once()
 
         # Verify 500 response when git checkout / uv sync fails during apply

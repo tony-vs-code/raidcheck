@@ -433,18 +433,36 @@ def check_for_release_update() -> dict[str, Any]:
     }
 
 
+def _resolve_uv_binary() -> str:
+    found = shutil.which("uv")
+    if found:
+        return found
+    for candidate in (
+        "/root/.local/bin/uv",
+        "/usr/local/bin/uv",
+        str(Path.home() / ".local/bin/uv"),
+    ):
+        try:
+            if Path(candidate).is_file():
+                return candidate
+        except OSError:
+            pass
+    return "uv"
+
+
 def apply_release_update() -> dict[str, Any]:
     info = check_for_release_update()
     target_version = info["latest_version"]
     target_tag = f"v{target_version}"
 
     check_output(
-        ["git", "checkout", target_tag],
+        ["git", "checkout", "-f", target_tag],
         cwd=str(REPO_DIR),
         stderr=STDOUT,
     )
+    uv_bin = _resolve_uv_binary()
     check_output(
-        ["uv", "sync"],
+        [uv_bin, "sync"],
         cwd=str(REPO_DIR),
         stderr=STDOUT,
     )
