@@ -75,14 +75,21 @@ Once running, open [http://localhost:8000](http://localhost:8000) in your browse
     
 ### Run as a service:
 
-1. Create the Discord bot service unit file:
+Ready-to-install unit files (`systemd/raidcheck.service` and `systemd/raidcheck-web.service`) are included in the repository so you can copy them directly without risking copy/paste truncation of the `[Install]` section:
+
+1. Copy the unit files into `/etc/systemd/system/` and reload `systemd`:
 
 ```sh
-sudo nano /etc/systemd/system/raidcheck.service
+sudo cp systemd/*.service /etc/systemd/system/ && sudo systemctl daemon-reload
 ```
 
-2. Add the following content to `/etc/systemd/system/raidcheck.service`:
+> [!NOTE]
+> The unit files assume the project is installed at `/usr/local/bin/raidcheck/` and use the `.venv` created by `uv` (`uv` itself does not need to run inside the service). If your repository lives in a different path, update `WorkingDirectory` and `ExecStart` in `/etc/systemd/system/raidcheck.service` and `/etc/systemd/system/raidcheck-web.service`, then run `sudo systemctl daemon-reload`.
 
+<details>
+<summary>View unit file contents (<code>systemd/raidcheck.service</code> &amp; <code>systemd/raidcheck-web.service</code>)</summary>
+
+**`systemd/raidcheck.service`**:
 ```ini
 [Unit]
 Description=Raidcheck Discord Bot
@@ -99,14 +106,7 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-3. (Optional) Create the FastAPI Web Dashboard service unit file:
-
-```sh
-sudo nano /etc/systemd/system/raidcheck-web.service
-```
-
-4. Add the following content to `/etc/systemd/system/raidcheck-web.service`:
-
+**`systemd/raidcheck-web.service`**:
 ```ini
 [Unit]
 Description=Raidcheck FastAPI Web Dashboard
@@ -122,26 +122,15 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 ```
+</details>
 
-The systemd services use the virtual environment created by `uv`; `uv` itself does not need to run as part of the service.
-
-5. Reload `systemctl`:
-
-```sh
-sudo systemctl daemon-reload
-```
-
-6. Start both services:
+2. Enable and start both services:
 
 ```sh
-sudo systemctl start raidcheck raidcheck-web
+sudo systemctl enable --now raidcheck raidcheck-web
 ```
 
-7. Enable both services to auto-start on boot:
-
-```sh
-sudo systemctl enable raidcheck raidcheck-web
-```
+(Or run `sudo systemctl start raidcheck raidcheck-web` and `sudo systemctl enable raidcheck raidcheck-web` separately.)
 
 Now both the Discord bot and web dashboard will run as services and automatically start on boot. You can check their status using:
 
@@ -166,6 +155,7 @@ sudo systemctl disable raidcheck raidcheck-web
 - `main.py`: Contains the main logic for the Discord bot, CLI subcommands (`status`, `logs`, `web`), and functions to check RAID status, parse storage metrics, and send messages.
 - `api.py`: FastAPI application exposing system metrics (`psutil`), RAID status, notification history, and serving the web dashboard.
 - `static/`: Frontend dashboard static assets (`index.html`, styles, and client scripts).
+- `systemd/`: Ready-to-install systemd service unit files (`raidcheck.service` and `raidcheck-web.service`).
 - `pyproject.toml`: Project metadata and Python dependency definitions managed with `uv`.
 - `test_main.py`: Unit and API test suite for RAID formatting, notification state, and FastAPI endpoints.
 - `.env`: Stores environment variables for the Discord bot token, channel ID, and SQLite database path.
