@@ -15,4 +15,8 @@ dependencies = [
     "multidict==6.0.5",
     "python-decouple==3.8",
     "yarl==1.9.6",
+    "psutil>=6.0.0",
+    "fastapi>=0.112.0",
+    "uvicorn>=0.30.0",
+    "pytest>=8.0.0",
 ]

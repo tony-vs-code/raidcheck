@@ -197,9 +197,14 @@ def check_raid_status() -> Tuple[str, str]:
             return "failed", result
         else:
             return "unknown", result
-    except CalledProcessError as e:
-        logging.error(f"Error checking RAID status: {e.output.decode()}")
-        return "error", e.output.decode()
+    except (CalledProcessError, FileNotFoundError, OSError) as e:
+        error_msg = (
+            e.output.decode()
+            if isinstance(e, CalledProcessError) and e.output
+            else str(e)
+        )
+        logging.error(f"Error checking RAID status: {error_msg}")
+        return "error", error_msg
 
 
 def get_duf_output() -> str:
@@ -210,9 +215,14 @@ def get_duf_output() -> str:
             stderr=STDOUT,
         ).decode()
         return result.strip()
-    except CalledProcessError as e:
-        logging.error(f"Error getting duf output: {e.output.decode()}")
-        return f"Error getting disk usage: {e.output.decode()}"
+    except (CalledProcessError, FileNotFoundError, OSError) as e:
+        error_msg = (
+            e.output.decode()
+            if isinstance(e, CalledProcessError) and e.output
+            else str(e)
+        )
+        logging.error(f"Error getting duf output: {error_msg}")
+        return f"Error getting disk usage: {error_msg}"
 
 
 def _extract_raid_summary_data(status: str, details: str, duf_output: str) -> dict:
@@ -418,7 +428,16 @@ def main() -> int:
     subparsers.add_parser("status", help="Show the next weekly summary due time")
     logs_parser = subparsers.add_parser("logs", help="Show recent sent notifications")
     logs_parser.add_argument("--limit", "-n", type=int, default=20)
+    web_parser = subparsers.add_parser("web", help="Run the FastAPI web dashboard")
+    web_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    web_parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     arguments = parser.parse_args()
+
+    if arguments.command == "web":
+        import uvicorn
+
+        uvicorn.run("api:app", host=arguments.host, port=arguments.port)
+        return 0
 
     if arguments.command:
         if arguments.command == "logs" and arguments.limit < 1:

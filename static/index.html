@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SystemAlerts — RAID &amp; System Monitor</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-container">
+    <!-- 1. Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+            <line x1="6" y1="6" x2="6.01" y2="6"></line>
+            <line x1="6" y1="18" x2="6.01" y2="18"></line>
+          </svg>
+        </div>
+        <div>
+          <h1 class="app-title">SystemAlerts Dashboard</h1>
+          <p class="app-subtitle">RAID Array &amp; System Telemetry Monitor</p>
+        </div>
+      </div>
+
+      <div class="header-controls">
+        <div class="raid-status-pill" id="header-raid-pill">
+          <span class="status-label">RAID STATE</span>
+          <span id="raid-status-badge" class="status-badge status-unknown" data-state="unknown">
+            <span class="status-dot"></span>
+            <span id="raid-status-text">UNKNOWN</span>
+          </span>
+        </div>
+
+        <div class="refresh-group">
+          <div class="refresh-meta">
+            <span id="auto-refresh-indicator" class="auto-refresh-pill" title="Auto-refreshes every 10 seconds">
+              Auto-refresh: 10s
+            </span>
+            <span id="last-updated" class="last-updated">Never updated</span>
+          </div>
+          <button id="refresh-btn" class="btn-refresh" type="button" aria-label="Refresh dashboard data">
+            <svg class="refresh-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            <span>Refresh</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Error Banner -->
+    <div id="error-banner" class="error-banner hidden" role="alert">
+      <span id="error-message">Unable to fetch live status from server.</span>
+    </div>
+
+    <!-- 2. System Metrics Cards -->
+    <section class="section-block" aria-labelledby="system-metrics-heading">
+      <div class="section-header">
+        <h2 id="system-metrics-heading" class="section-title">System Metrics</h2>
+      </div>
+      <div class="metrics-grid">
+        <!-- CPU Card -->
+        <article class="card metric-card">
+          <div class="metric-header">
+            <span class="metric-title">CPU Usage</span>
+            <span id="cpu-percent-value" class="metric-value">--%</span>
+          </div>
+          <div class="progress-track" aria-label="CPU usage bar">
+            <div id="cpu-progress-bar" class="progress-fill" style="width: 0%"></div>
+          </div>
+          <div class="metric-footer">
+            <span id="cpu-subtitle" class="metric-subtext">Real-time processor load</span>
+          </div>
+        </article>
+
+        <!-- Memory Card -->
+        <article class="card metric-card">
+          <div class="metric-header">
+            <span class="metric-title">Memory Usage</span>
+            <span id="memory-percent-value" class="metric-value">--%</span>
+          </div>
+          <div class="progress-track" aria-label="Memory usage bar">
+            <div id="memory-progress-bar" class="progress-fill" style="width: 0%"></div>
+          </div>
+          <div class="metric-footer">
+            <span id="memory-detail" class="metric-subtext">-- / -- used (-- available)</span>
+          </div>
+        </article>
+
+        <!-- Disk Usage Card -->
+        <article class="card metric-card">
+          <div class="metric-header">
+            <span class="metric-title">Disk Usage</span>
+            <span id="disk-percent-value" class="metric-value">--%</span>
+          </div>
+          <div class="progress-track" aria-label="Disk usage bar">
+            <div id="disk-progress-bar" class="progress-fill" style="width: 0%"></div>
+          </div>
+          <div class="metric-footer">
+            <span id="disk-detail" class="metric-subtext">-- / -- used (-- free)</span>
+          </div>
+        </article>
+
+        <!-- System Uptime Card -->
+        <article class="card metric-card">
+          <div class="metric-header">
+            <span class="metric-title">System Uptime</span>
+            <span id="uptime-value" class="metric-value metric-value-uptime">--</span>
+          </div>
+          <div class="uptime-badge-row">
+            <span class="uptime-indicator">ONLINE</span>
+          </div>
+          <div class="metric-footer">
+            <span id="boot-time-detail" class="metric-subtext">Boot time: --</span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- 3. RAID Array Details & Active Disks -->
+    <section class="section-block" aria-labelledby="raid-details-heading">
+      <div class="section-header">
+        <h2 id="raid-details-heading" class="section-title">RAID Array &amp; Storage</h2>
+      </div>
+      <div class="raid-grid">
+        <!-- RAID Array Details Card -->
+        <article class="card raid-details-card">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title">RAID Array Details</h3>
+              <p class="card-subtitle">mdadm array parameters &amp; consistency state</p>
+            </div>
+            <span id="raid-card-badge" class="status-badge status-unknown">UNKNOWN</span>
+          </div>
+
+          <div class="device-counts-strip">
+            <div class="count-box">
+              <span class="count-label">Active</span>
+              <span id="raid-active-devices" class="count-number count-ok">0</span>
+            </div>
+            <div class="count-box">
+              <span class="count-label">Working</span>
+              <span id="raid-working-devices" class="count-number count-ok">0</span>
+            </div>
+            <div class="count-box">
+              <span class="count-label">Failed</span>
+              <span id="raid-failed-devices" class="count-number">0</span>
+            </div>
+            <div class="count-box">
+              <span class="count-label">Spare</span>
+              <span id="raid-spare-devices" class="count-number">0</span>
+            </div>
+          </div>
+
+          <dl class="details-list">
+            <div class="detail-item">
+              <dt>RAID Level</dt>
+              <dd id="raid-level">--</dd>
+            </div>
+            <div class="detail-item">
+              <dt>Array Size</dt>
+              <dd id="raid-array-size">--</dd>
+            </div>
+            <div class="detail-item">
+              <dt>Devices Summary</dt>
+              <dd id="raid-devices-summary">--</dd>
+            </div>
+            <div class="detail-item">
+              <dt>Storage Info (duf)</dt>
+              <dd id="raid-storage-info">--</dd>
+            </div>
+            <div class="detail-item">
+              <dt>Check Status</dt>
+              <dd id="raid-check-status">--</dd>
+            </div>
+            <div class="detail-item">
+              <dt>Full State</dt>
+              <dd id="raid-full-state">--</dd>
+            </div>
+            <div class="detail-item">
+              <dt>Persistence</dt>
+              <dd id="raid-persistence">--</dd>
+            </div>
+            <div class="detail-item">
+              <dt>UUID</dt>
+              <dd id="raid-uuid" class="mono-text">--</dd>
+            </div>
+            <div class="detail-item">
+              <dt>Update Time</dt>
+              <dd id="raid-update-time">--</dd>
+            </div>
+            <div class="detail-item">
+              <dt>Layout / Chunk</dt>
+              <dd id="raid-layout-chunk">--</dd>
+            </div>
+            <div class="detail-item">
+              <dt>Consistency / Events</dt>
+              <dd id="raid-consistency-events">--</dd>
+            </div>
+          </dl>
+        </article>
+
+        <!-- Active Disks Card -->
+        <article class="card active-disks-card">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title">Active Disks</h3>
+              <p class="card-subtitle">Member block devices in the array</p>
+            </div>
+            <span id="disks-count-badge" class="pill-counter">0 disks</span>
+          </div>
+
+          <div class="table-container">
+            <table class="data-table" id="active-disks-table">
+              <thead>
+                <tr>
+                  <th>Device</th>
+                  <th>Path</th>
+                  <th>State</th>
+                </tr>
+              </thead>
+              <tbody id="active-disks-tbody">
+                <tr>
+                  <td colspan="3" class="empty-state">Loading disk devices...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- 4. Weekly Notification State & Notification History -->
+    <section class="section-block" aria-labelledby="notifications-heading">
+      <div class="section-header">
+        <h2 id="notifications-heading" class="section-title">Discord Notifications</h2>
+      </div>
+      <div class="notifications-grid">
+        <!-- Weekly Notification State Card -->
+        <article class="card weekly-state-card">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title">Weekly Notification State</h3>
+              <p class="card-subtitle">Scheduled summary throttling status</p>
+            </div>
+            <span id="weekly-state-badge" class="status-badge status-unknown">--</span>
+          </div>
+
+          <div id="weekly-state-content" class="weekly-state-body">
+            <dl class="details-list single-col">
+              <div class="detail-item">
+                <dt>Last Summary Sent</dt>
+                <dd id="weekly-sent-at">--</dd>
+              </div>
+              <div class="detail-item">
+                <dt>Next Summary Due</dt>
+                <dd id="weekly-due-at">--</dd>
+              </div>
+              <div class="detail-item">
+                <dt>Last Recorded Status</dt>
+                <dd id="weekly-last-status">--</dd>
+              </div>
+              <div class="detail-item">
+                <dt>Schedule Countdown</dt>
+                <dd id="weekly-countdown">--</dd>
+              </div>
+            </dl>
+          </div>
+        </article>
+
+        <!-- Notification History Card -->
+        <article class="card history-card">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title">Notification History</h3>
+              <p class="card-subtitle">Recent alerts &amp; weekly summaries sent to Discord</p>
+            </div>
+            <span id="history-count-badge" class="pill-counter">0 records</span>
+          </div>
+
+          <div class="table-container">
+            <table class="data-table" id="notification-history-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Type</th>
+                  <th>RAID Status</th>
+                </tr>
+              </thead>
+              <tbody id="notification-history-tbody">
+                <tr>
+                  <td colspan="3" class="empty-state">Loading notification history...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

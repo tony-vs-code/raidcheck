@@ -52,16 +52,38 @@ The bot checks RAID status every 2 hours and sends a clean or active summary at 
     ```
 
 The status and history commands do not require Discord credentials. To follow the application log file while the bot runs and across rotations, use `sudo tail -F /var/log/raid_monitor.log`. Rotated files are kept alongside it as `raid_monitor.log.1` through `raid_monitor.log.5`. For service output, use `sudo journalctl -u raidcheck -f`.
+
+### Run the FastAPI web dashboard:
+
+    ```sh
+    uv run main.py web --host 0.0.0.0 --port 8000
+    ```
+
+Once running, open [http://localhost:8000](http://localhost:8000) in your browser to view the dashboard locally. Real-time system metrics (`psutil` CPU, memory, disk usage, and uptime) and notification history work out-of-the-box on any machine, even in local development environments where `mdadm` or `duf` are not installed.
+
+### API Endpoints
+
+- `GET /`: Serves the web dashboard (`static/index.html`), with static assets mounted at `/static`.
+- `GET /api/status`: Returns a JSON payload with `raid` summary details, real-time `system` metrics (`cpu_percent`, `memory`, `disk`, `boot_time`), and `notification_state` (`sent_at`, `sent_at_formatted`, `due_at`, `due_at_formatted`, `status`).
+- `GET /api/history`: Returns recent notification history (`?limit=20` by default) as `{"history": [{"status", "sent_at", "sent_at_formatted", "weekly", "kind"}]}`.
+
+### Run the test suite:
+
+    ```sh
+    uv run pytest -v
+    ```
     
 ### Run as a service:
 
-1. Create a new service unit file using a text editor:
+1. Create the Discord bot service unit file:
 
-```sudo nano /etc/systemd/system/raidcheck.service```
-
-2. Add the following content to the file:
-
+```sh
+sudo nano /etc/systemd/system/raidcheck.service
 ```
+
+2. Add the following content to `/etc/systemd/system/raidcheck.service`:
+
+```ini
 [Unit]
 Description=Raidcheck Discord Bot
 After=network.target
@@ -77,49 +99,76 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-The systemd service uses the virtual environment created by `uv`; `uv` itself does not need to run as part of the service.
+3. (Optional) Create the FastAPI Web Dashboard service unit file:
 
-3. Reload systemctl
+```sh
+sudo nano /etc/systemd/system/raidcheck-web.service
+```
+
+4. Add the following content to `/etc/systemd/system/raidcheck-web.service`:
+
+```ini
+[Unit]
+Description=Raidcheck FastAPI Web Dashboard
+After=network.target
+
+[Service]
+User=root
+Group=root
+WorkingDirectory=/usr/local/bin/raidcheck/
+ExecStart=/usr/local/bin/raidcheck/.venv/bin/python /usr/local/bin/raidcheck/main.py web --host 0.0.0.0 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The systemd services use the virtual environment created by `uv`; `uv` itself does not need to run as part of the service.
+
+5. Reload `systemctl`:
 
 ```sh
 sudo systemctl daemon-reload
 ```
 
-4. Start the service
+6. Start both services:
 
 ```sh
-sudo systemctl start raidcheck
+sudo systemctl start raidcheck raidcheck-web
 ```
 
-5. Enable the service to auto start
+7. Enable both services to auto-start on boot:
 
 ```sh
-sudo systemctl enable raidcheck
+sudo systemctl enable raidcheck raidcheck-web
 ```
 
-Now the bot will run as a service and automatically start on boot. You can check the status of the service using the following command:
+Now both the Discord bot and web dashboard will run as services and automatically start on boot. You can check their status using:
 
 ```sh
-sudo systemctl status raidcheck
+sudo systemctl status raidcheck raidcheck-web
 ```
 
-To stop the bot service, use:
+To stop the services, use:
 
 ```sh
-sudo systemctl stop raidcheck
+sudo systemctl stop raidcheck raidcheck-web
 ```
 
-To disable the bot service from starting on boot, use:
+To disable the services from starting on boot, use:
 
 ```sh
-sudo systemctl disable raidcheck
+sudo systemctl disable raidcheck raidcheck-web
 ```
 
 ## Code Overview
 
-- `main.py`: Contains the main logic for the Discord bot, including functions to check RAID status and send messages.
-- `.env`: Stores environment variables for the Discord bot token and channel ID.
-- `requirements.txt`: Lists the Python dependencies for the project.
+- `main.py`: Contains the main logic for the Discord bot, CLI subcommands (`status`, `logs`, `web`), and functions to check RAID status, parse storage metrics, and send messages.
+- `api.py`: FastAPI application exposing system metrics (`psutil`), RAID status, notification history, and serving the web dashboard.
+- `static/`: Frontend dashboard static assets (`index.html`, styles, and client scripts).
+- `pyproject.toml`: Project metadata and Python dependency definitions managed with `uv`.
+- `test_main.py`: Unit and API test suite for RAID formatting, notification state, and FastAPI endpoints.
+- `.env`: Stores environment variables for the Discord bot token, channel ID, and SQLite database path.
 
 ## Functions
 
