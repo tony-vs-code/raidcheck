@@ -1394,10 +1394,6 @@ async function openSettingsModal() {
 }
 
 function populateSettingsForm(data) {
-  const tokenInput = document.getElementById("setting-discord-token");
-  const tokenBadge = document.getElementById("discord-token-status");
-  const enabledInput = document.getElementById("setting-discord-enabled");
-  const channelInput = document.getElementById("setting-channel-id");
   const raidInput =
     document.getElementById("settings-raid-device") ||
     document.getElementById("setting-raid-device");
@@ -1409,30 +1405,6 @@ function populateSettingsForm(data) {
     "setting-allowed-google-emails"
   );
 
-  if (enabledInput) {
-    enabledInput.checked = Boolean(data.discord_enabled);
-  }
-
-  if (tokenInput) {
-    tokenInput.value = "";
-    tokenInput.placeholder = data.discord_token_configured
-      ? `Configured (${data.discord_token_masked || "********"}) — type to replace`
-      : "Enter Discord Bot Token";
-  }
-
-  if (tokenBadge) {
-    if (data.discord_token_configured) {
-      tokenBadge.textContent = data.discord_token_masked
-        ? `Configured (${data.discord_token_masked})`
-        : "Configured";
-      tokenBadge.classList.add("configured");
-    } else {
-      tokenBadge.textContent = "Not configured";
-      tokenBadge.classList.remove("configured");
-    }
-  }
-
-  if (channelInput) channelInput.value = data.channel_id || "";
   if (raidInput) raidInput.value = data.raid_device || "auto";
 
   const availableDevices = Array.isArray(data.available_raid_devices)
@@ -1480,8 +1452,7 @@ function populateSettingsForm(data) {
     syncIntervalSelects(data.refresh_intervals);
   }
 
-  cachedDiscordSettings = data;
-  renderDiscordStatusCard(data);
+  populateDiscordForm(data);
 }
 
 const populateSettingsModal = populateSettingsForm;
@@ -1498,13 +1469,7 @@ async function handleSettingsSubmit(event) {
   const raidInputEl =
     document.getElementById("settings-raid-device") ||
     document.getElementById("setting-raid-device");
-  const tokenVal =
-    document.getElementById("setting-discord-token")?.value.trim() || "";
-  const enabledInput = document.getElementById("setting-discord-enabled");
   const payload = {
-    discord_enabled: Boolean(enabledInput ? enabledInput.checked : false),
-    channel_id:
-      document.getElementById("setting-channel-id")?.value.trim() || "",
     raid_device: raidInputEl?.value.trim() || "auto",
     mount_path:
       document.getElementById("setting-mount-path")?.value.trim() ||
@@ -1515,11 +1480,6 @@ async function handleSettingsSubmit(event) {
       document.getElementById("setting-allowed-google-emails")?.value.trim() ||
       "",
   };
-
-  // Only overwrite discord_token if user typed a new token
-  if (tokenVal.length > 0) {
-    payload.discord_token = tokenVal;
-  }
 
   const saveBtn = document.getElementById("save-settings-btn");
   if (saveBtn) saveBtn.disabled = true;
@@ -1536,8 +1496,6 @@ async function handleSettingsSubmit(event) {
     }
 
     populateSettingsForm(data);
-    cachedDiscordSettings = data;
-    renderDiscordStatusCard(data);
     showSettingsFeedback("Settings saved to SQLite.", true);
     handleManualRefresh();
   } catch (err) {
@@ -1564,24 +1522,54 @@ async function fetchDiscordSettings() {
     const resp = await apiFetch("/api/settings");
     if (!resp.ok) return;
     const data = await resp.json().catch(() => ({}));
-    cachedDiscordSettings = data;
-    renderDiscordStatusCard(data);
+    populateDiscordForm(data);
   } catch (err) {
     console.warn("Failed to fetch Discord settings:", err);
   }
 }
 
 /**
- * Render Discord Status & Controls card in Notifications view.
+ * Render Discord Configuration & Setup card in Notifications view.
  */
-function renderDiscordStatusCard(settings) {
+function populateDiscordForm(settings) {
   if (!settings) return;
-  const badgeEl = document.getElementById("discord-status-badge");
-  const channelEl = document.getElementById("discord-channel-display");
-  const tokenEl = document.getElementById("discord-token-display");
+  cachedDiscordSettings = settings;
 
-  if (badgeEl) {
-    badgeEl.classList.remove(
+  const toggle = document.getElementById("discord-enabled-toggle");
+  const tokenInput = document.getElementById("discord-token-input");
+  const tokenBadge = document.getElementById("discord-token-status");
+  const channelInput = document.getElementById("discord-channel-input");
+  const statusBadge = document.getElementById("discord-status-badge");
+
+  if (toggle) {
+    toggle.checked = Boolean(settings.discord_enabled);
+  }
+
+  if (tokenInput) {
+    tokenInput.value = "";
+    tokenInput.placeholder = settings.discord_token_configured
+      ? `Configured (${settings.discord_token_masked || "********"}) — type to replace`
+      : "Leave blank to keep existing token";
+  }
+
+  if (tokenBadge) {
+    if (settings.discord_token_configured) {
+      tokenBadge.textContent = settings.discord_token_masked
+        ? `Configured (${settings.discord_token_masked})`
+        : "Configured";
+      tokenBadge.classList.add("configured");
+    } else {
+      tokenBadge.textContent = "Not configured";
+      tokenBadge.classList.remove("configured");
+    }
+  }
+
+  if (channelInput) {
+    channelInput.value = settings.channel_id || "";
+  }
+
+  if (statusBadge) {
+    statusBadge.classList.remove(
       "status-clean",
       "status-degraded",
       "status-unknown",
@@ -1589,36 +1577,26 @@ function renderDiscordStatusCard(settings) {
       "status-disabled"
     );
     if (settings.discord_enabled) {
-      badgeEl.classList.add("status-clean", "status-enabled");
-      badgeEl.textContent = "ENABLED";
-      badgeEl.setAttribute("data-state", "enabled");
+      statusBadge.classList.add("status-clean", "status-enabled");
+      statusBadge.textContent = "ENABLED";
+      statusBadge.setAttribute("data-state", "enabled");
     } else {
-      badgeEl.classList.add("status-degraded", "status-disabled");
-      badgeEl.textContent = "DISABLED";
-      badgeEl.setAttribute("data-state", "disabled");
-    }
-  }
-
-  if (channelEl) {
-    channelEl.textContent = settings.channel_id || "Not configured";
-  }
-
-  if (tokenEl) {
-    if (settings.discord_token_configured) {
-      tokenEl.textContent = settings.discord_token_masked
-        ? `Configured (${settings.discord_token_masked})`
-        : "Configured";
-    } else {
-      tokenEl.textContent = "Not configured";
+      statusBadge.classList.add("status-degraded", "status-disabled");
+      statusBadge.textContent = "DISABLED";
+      statusBadge.setAttribute("data-state", "disabled");
     }
   }
 }
 
+const renderDiscordStatusCard = populateDiscordForm;
+
 /**
- * Show feedback message below test notification button.
+ * Show feedback message in Discord setup card (#discord-feedback).
  */
-function showTestNotificationFeedback(message, isSuccess = true) {
-  const el = document.getElementById("test-notification-feedback");
+function showDiscordFeedback(message, isSuccess = true) {
+  const el =
+    document.getElementById("discord-feedback") ||
+    document.getElementById("test-notification-feedback");
   if (!el) return;
   if (!message) {
     el.textContent = "";
@@ -1629,6 +1607,59 @@ function showTestNotificationFeedback(message, isSuccess = true) {
   el.textContent = message;
   el.classList.remove("hidden", "feedback-success", "feedback-error");
   el.classList.add(isSuccess ? "feedback-success" : "feedback-error");
+}
+
+const showTestNotificationFeedback = showDiscordFeedback;
+
+/**
+ * Save Discord Configuration from Notifications tab.
+ */
+async function handleSaveDiscordSettings() {
+  const saveBtn = document.getElementById("save-discord-btn");
+  if (saveBtn) saveBtn.disabled = true;
+  showDiscordFeedback(null);
+
+  const toggle = document.getElementById("discord-enabled-toggle");
+  const channelInput = document.getElementById("discord-channel-input");
+  const tokenInput = document.getElementById("discord-token-input");
+
+  const payload = {
+    discord_enabled: Boolean(toggle ? toggle.checked : false),
+    channel_id: channelInput ? channelInput.value.trim() : "",
+  };
+
+  const tokenVal = tokenInput ? tokenInput.value.trim() : "";
+  if (tokenVal.length > 0) {
+    payload.discord_token = tokenVal;
+  }
+
+  try {
+    const resp = await apiFetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json().catch(() => ({}));
+
+    if (resp.status === 401) {
+      showDiscordFeedback("Authentication required. Please sign in again.", false);
+      return;
+    }
+
+    if (!resp.ok) {
+      throw new Error(data.detail || `Failed to save Discord settings (${resp.status})`);
+    }
+
+    populateDiscordForm(data);
+    showDiscordFeedback("Discord configuration saved successfully.", true);
+  } catch (err) {
+    showDiscordFeedback(
+      err instanceof Error ? err.message : String(err),
+      false
+    );
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
 }
 
 /**
@@ -1650,7 +1681,7 @@ async function handleSendTestNotification() {
     <span>Sending test notification...</span>
   `;
 
-  showTestNotificationFeedback(null);
+  showDiscordFeedback(null);
 
   try {
     const resp = await apiFetch("/api/notifications/test", {
@@ -1660,23 +1691,23 @@ async function handleSendTestNotification() {
     const data = await resp.json().catch(() => ({}));
 
     if (resp.status === 401) {
-      showTestNotificationFeedback("Authentication required. Please sign in again.", false);
+      showDiscordFeedback("Authentication required. Please sign in again.", false);
       return;
     }
 
     if (!resp.ok) {
       const errMsg = data.detail || data.message || `Server returned error (${resp.status})`;
-      showTestNotificationFeedback(errMsg, false);
+      showDiscordFeedback(errMsg, false);
       return;
     }
 
     if (data.success) {
-      showTestNotificationFeedback(
+      showDiscordFeedback(
         data.message || "Test notification sent successfully to Discord!",
         true
       );
     } else {
-      showTestNotificationFeedback(
+      showDiscordFeedback(
         data.message || "Failed to send test notification.",
         false
       );
@@ -1685,7 +1716,7 @@ async function handleSendTestNotification() {
     // Automatically refresh notification history so the new test log appears immediately
     await refreshNotificationHistory();
   } catch (err) {
-    showTestNotificationFeedback(
+    showDiscordFeedback(
       `Error sending test notification: ${err instanceof Error ? err.message : String(err)}`,
       false
     );
@@ -1787,6 +1818,10 @@ function initDashboard() {
   document
     .getElementById("send-test-notification-btn")
     ?.addEventListener("click", handleSendTestNotification);
+
+  document
+    .getElementById("save-discord-btn")
+    ?.addEventListener("click", handleSaveDiscordSettings);
 
   window.addEventListener("hashchange", syncTabFromHash);
   syncTabFromHash();

@@ -2,12 +2,14 @@ import argparse
 import glob
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import shutil
 import subprocess
 import sys
 import time
+import aiohttp
 import discord
 import logging
 from logging.handlers import RotatingFileHandler
@@ -27,6 +29,7 @@ RAID_STATE_DB = Path(
 WEEK_SECONDS = 7 * 24 * 60 * 60
 SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 CHANNEL_ID = ""
+_last_send_error: str = ""
 
 APP_SETTING_KEYS = (
     "discord_token",
@@ -54,23 +57,96 @@ def enforce_discord_message_limit(message: str) -> str:
 
 
 async def send_message(message: str | discord.Embed) -> bool:
+    global _last_send_error
     settings = get_app_settings()
     if settings.get("discord_enabled", "false").strip().lower() != "true":
+        _last_send_error = "Discord notifications are disabled in settings."
         logging.info("Discord notifications are disabled; not attempting to send message.")
         return False
-    try:
-        effective_channel_id = CHANNEL_ID or settings.get("channel_id", "")
-        channel = client.get_channel(int(effective_channel_id))
-        if channel:
+
+    discord_token = (
+        settings.get("discord_token", "").strip()
+        or str(config("DISCORD_TOKEN", default="") or "").strip()
+    )
+    effective_channel_id = (CHANNEL_ID or settings.get("channel_id", "")).strip()
+
+    if not discord_token:
+        _last_send_error = "Discord token is not configured."
+        logging.error("Discord token is not configured; cannot send message.")
+        return False
+
+    if not effective_channel_id:
+        _last_send_error = "Discord channel ID is not configured."
+        logging.error("Discord channel ID is not configured; cannot send message.")
+        return False
+
+    channel = None
+    if client.is_ready():
+        try:
+            channel = client.get_channel(int(effective_channel_id))
+        except (ValueError, TypeError):
+            channel = None
+    else:
+        try:
+            channel = client.get_channel(int(effective_channel_id))
+        except Exception:
+            channel = None
+
+    if channel:
+        try:
             if isinstance(message, discord.Embed):
                 await channel.send(embed=message)
             else:
                 await channel.send(message)
             return True
-        else:
-            logging.error(f"Channel with ID {effective_channel_id} not found.")
+        except Exception as e:
+            _last_send_error = f"Discord client error: {e}"
+            logging.error(f"Failed to send message via Discord client: {e}")
+            return False
+
+    # Client is not ready or channel is None (e.g. running in web mode)
+    url = f"https://discord.com/api/v10/channels/{effective_channel_id}/messages"
+    headers = {
+        "Authorization": f"Bot {discord_token}",
+        "Content-Type": "application/json",
+    }
+    payload = (
+        {"embeds": [message.to_dict()]}
+        if isinstance(message, discord.Embed)
+        else {"content": str(message)}
+    )
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload) as resp:
+                if resp.status in (200, 201):
+                    return True
+                resp_body = await resp.text()
+                detail_msg = resp_body
+                try:
+                    data = json.loads(resp_body)
+                    if isinstance(data, dict) and "message" in data:
+                        detail_msg = data["message"]
+                except Exception:
+                    pass
+
+                if resp.status == 401:
+                    _last_send_error = f"Discord API error 401: Unauthorized ({detail_msg})"
+                elif resp.status == 403:
+                    _last_send_error = f"Discord API error 403: Forbidden ({detail_msg})"
+                elif resp.status == 404:
+                    _last_send_error = f"Discord API error 404: Unknown Channel ({detail_msg})"
+                else:
+                    _last_send_error = f"Discord API error {resp.status}: {detail_msg}"
+
+                logging.error(
+                    f"Discord REST API error {resp.status} for channel {effective_channel_id}: {resp_body}"
+                )
+                return False
     except Exception as e:
-        logging.error(f"Failed to send message: {e}")
+        _last_send_error = f"Discord REST request failed: {e}"
+        logging.error(f"Failed to send message via Discord REST API: {e}")
+        return False
     return False
 
 
@@ -405,7 +481,11 @@ def get_current_version_info() -> dict[str, str]:
     except (CalledProcessError, FileNotFoundError, OSError):
         pass
 
-    return {"version": version, "commit": commit}
+    return {
+        "version": version,
+        "commit": commit,
+        "current_version": version,
+    }
 
 
 def check_for_release_update() -> dict[str, Any]:
@@ -623,13 +703,25 @@ def format_timestamp(timestamp: float) -> str:
 
 
 async def send_test_notification() -> tuple[bool, str]:
+    global _last_send_error
+    _last_send_error = ""
+
     settings = get_app_settings()
     if settings.get("discord_enabled", "false").strip().lower() != "true":
         msg = "Discord notifications are disabled in settings."
         logging.info(msg)
         return False, msg
 
-    effective_channel_id = CHANNEL_ID or settings.get("channel_id", "")
+    discord_token = (
+        settings.get("discord_token", "").strip()
+        or str(config("DISCORD_TOKEN", default="") or "").strip()
+    )
+    if not discord_token:
+        msg = "Discord token is not configured."
+        logging.error(msg)
+        return False, msg
+
+    effective_channel_id = (CHANNEL_ID or settings.get("channel_id", "")).strip()
     if not effective_channel_id:
         msg = "Discord channel ID is not configured."
         logging.error(msg)
@@ -655,7 +747,8 @@ async def send_test_notification() -> tuple[bool, str]:
             logging.warning(f"Could not record test notification in SQLite: {exc}")
         return True, "Test notification sent successfully."
     else:
-        return False, "Failed to send test notification to Discord."
+        err = _last_send_error or "Failed to send test notification to Discord."
+        return False, err
 
 
 def should_send_weekly_summary(

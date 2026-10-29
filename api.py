@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+import re
 import sqlite3
 from subprocess import CalledProcessError
 from typing import Any, Optional
@@ -659,16 +660,51 @@ def api_update_apply(_user: str = Depends(require_auth)) -> dict[str, Any]:
         ) from exc
 
 
+class CacheControlStaticFiles(StaticFiles):
+    def file_response(
+        self,
+        full_path: Any,
+        stat_result: Any,
+        scope: Any,
+        status_code: int = 200,
+    ) -> Response:
+        response = super().file_response(
+            full_path, stat_result, scope, status_code=status_code
+        )
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
+
 @app.get("/")
 def serve_index():
+    headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
     index_file = STATIC_DIR / "index.html"
     if index_file.is_file():
-        return FileResponse(index_file)
+        content = index_file.read_text(encoding="utf-8")
+        current_version = main.get_current_version_info()["current_version"]
+        content = re.sub(
+            r"/static/styles\.css(\?[^\"'>\s]*)?",
+            f"/static/styles.css?v={current_version}",
+            content,
+        )
+        content = re.sub(
+            r"/static/app\.js(\?[^\"'>\s]*)?",
+            f"/static/app.js?v={current_version}",
+            content,
+        )
+        return HTMLResponse(content=content, status_code=200, headers=headers)
     return HTMLResponse(
         content="<!DOCTYPE html><html><head><title>System Alerts</title></head>"
         "<body><h1>System Alerts Dashboard</h1></body></html>",
         status_code=200,
+        headers=headers,
     )
 
 
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount(
+    "/static", CacheControlStaticFiles(directory=str(STATIC_DIR)), name="static"
+)

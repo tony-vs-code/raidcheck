@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.error import URLError
 from urllib.parse import urlsplit
 
+import aiohttp
 import discord
 
 import api
@@ -688,6 +689,136 @@ class DiscordAndRaidCheckTests(unittest.TestCase):
             self.assertFalse(success)
             self.assertEqual(mock_send_fail.await_count, 1)
             self.assertIn("failed", msg.lower())
+
+    def test_discord_rest_fallback_and_detailed_error_reporting(self):
+        # 1. Missing token
+        main.update_app_settings({"discord_enabled": "true", "channel_id": "123456", "discord_token": ""})
+        with (
+            patch.object(main, "CHANNEL_ID", "123456"),
+            patch.object(main, "config", side_effect=lambda k, default="": ""),
+            patch.object(main.client, "is_ready", return_value=False),
+            patch.object(main.client, "get_channel", return_value=None),
+        ):
+            success, msg = asyncio.run(main.send_test_notification())
+            self.assertFalse(success)
+            self.assertIn("token", msg.lower())
+
+        # 2. REST 200 success
+        main.update_app_settings({"discord_enabled": "true", "channel_id": "123456", "discord_token": "valid_token"})
+        mock_resp_200 = MagicMock()
+        mock_resp_200.status = 200
+        mock_resp_200.text = AsyncMock(return_value='{"id": "msg123"}')
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_resp_200), __aexit__=AsyncMock()))
+
+        with (
+            patch.object(main.client, "is_ready", return_value=False),
+            patch.object(main.client, "get_channel", return_value=None),
+            patch("aiohttp.ClientSession", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_session), __aexit__=AsyncMock())),
+        ):
+            # Test string message
+            sent_str = asyncio.run(main.send_message("rest text message"))
+            self.assertTrue(sent_str)
+            mock_session.post.assert_called_once()
+            call_kwargs = mock_session.post.call_args.kwargs
+            self.assertEqual(call_kwargs["json"], {"content": "rest text message"})
+            self.assertEqual(call_kwargs["headers"]["Authorization"], "Bot valid_token")
+
+            # Test send_test_notification with REST 200
+            mock_session.post.reset_mock()
+            success_test, msg_test = asyncio.run(main.send_test_notification())
+            self.assertTrue(success_test)
+            self.assertIn("success", msg_test.lower())
+
+        # 3. REST 401 Unauthorized
+        mock_resp_401 = MagicMock()
+        mock_resp_401.status = 401
+        mock_resp_401.text = AsyncMock(return_value='{"message": "401: Unauthorized", "code": 0}')
+        mock_session_401 = MagicMock()
+        mock_session_401.post = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_resp_401), __aexit__=AsyncMock()))
+
+        with (
+            patch.object(main.client, "is_ready", return_value=False),
+            patch.object(main.client, "get_channel", return_value=None),
+            patch("aiohttp.ClientSession", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_session_401), __aexit__=AsyncMock())),
+        ):
+            success_401, msg_401 = asyncio.run(main.send_test_notification())
+            self.assertFalse(success_401)
+            self.assertIn("401", msg_401)
+            self.assertIn("unauthorized", msg_401.lower())
+
+        # 4. REST 404 Unknown Channel
+        mock_resp_404 = MagicMock()
+        mock_resp_404.status = 404
+        mock_resp_404.text = AsyncMock(return_value='{"message": "Unknown Channel", "code": 10003}')
+        mock_session_404 = MagicMock()
+        mock_session_404.post = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_resp_404), __aexit__=AsyncMock()))
+
+        with (
+            patch.object(main.client, "is_ready", return_value=False),
+            patch.object(main.client, "get_channel", return_value=None),
+            patch("aiohttp.ClientSession", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_session_404), __aexit__=AsyncMock())),
+        ):
+            success_404, msg_404 = asyncio.run(main.send_test_notification())
+            self.assertFalse(success_404)
+            self.assertIn("404", msg_404)
+            self.assertIn("unknown channel", msg_404.lower())
+
+        # 5. REST 403 Forbidden
+        mock_resp_403 = MagicMock()
+        mock_resp_403.status = 403
+        mock_resp_403.text = AsyncMock(return_value='{"message": "Missing Permissions", "code": 50013}')
+        mock_session_403 = MagicMock()
+        mock_session_403.post = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_resp_403), __aexit__=AsyncMock()))
+
+        with (
+            patch.object(main.client, "is_ready", return_value=False),
+            patch.object(main.client, "get_channel", return_value=None),
+            patch("aiohttp.ClientSession", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_session_403), __aexit__=AsyncMock())),
+        ):
+            success_403, msg_403 = asyncio.run(main.send_test_notification())
+            self.assertFalse(success_403)
+            self.assertIn("403", msg_403)
+            self.assertIn("forbidden", msg_403.lower())
+            self.assertIn("Missing Permissions", msg_403)
+
+        # 6. REST network exception handling and descriptive message
+        mock_session_exc = MagicMock()
+        mock_session_exc.post = MagicMock(side_effect=aiohttp.ClientError("connection refused"))
+
+        with (
+            patch.object(main.client, "is_ready", return_value=False),
+            patch.object(main.client, "get_channel", return_value=None),
+            patch("aiohttp.ClientSession", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_session_exc), __aexit__=AsyncMock(return_value=False))),
+        ):
+            success_exc, msg_exc = asyncio.run(main.send_test_notification())
+            self.assertFalse(success_exc)
+            self.assertIn("request failed", msg_exc.lower())
+            self.assertIn("connection refused", msg_exc)
+
+            sent_exc = asyncio.run(main.send_message("rest fail"))
+            self.assertFalse(sent_exc)
+            self.assertIn("request failed", main._last_send_error.lower())
+
+        # 7. REST 200 with discord.Embed
+        test_embed = discord.Embed(title="Embed Title", description="Embed Description")
+        mock_resp_embed = MagicMock()
+        mock_resp_embed.status = 200
+        mock_resp_embed.text = AsyncMock(return_value='{"id": "msg_embed"}')
+        mock_session_embed = MagicMock()
+        mock_session_embed.post = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_resp_embed), __aexit__=AsyncMock()))
+
+        with (
+            patch.object(main.client, "is_ready", return_value=False),
+            patch.object(main.client, "get_channel", return_value=None),
+            patch("aiohttp.ClientSession", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_session_embed), __aexit__=AsyncMock())),
+        ):
+            sent_embed = asyncio.run(main.send_message(test_embed))
+            self.assertTrue(sent_embed)
+            mock_session_embed.post.assert_called_once()
+            call_kwargs = mock_session_embed.post.call_args.kwargs
+            self.assertIn("embeds", call_kwargs["json"])
+            self.assertEqual(call_kwargs["json"]["embeds"][0]["title"], "Embed Title")
 
 
 class CliAndMainTests(unittest.TestCase):
@@ -1550,6 +1681,15 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/html", response.headers.get("content-type", ""))
         self.assertIn("<html", response.text.lower())
+        self.assertEqual(
+            response.headers.get("cache-control"), "no-cache, no-store, must-revalidate"
+        )
+        self.assertEqual(response.headers.get("pragma"), "no-cache")
+        self.assertEqual(response.headers.get("expires"), "0")
+
+        current_ver = main.get_current_version_info()["current_version"]
+        self.assertIn(f"/static/styles.css?v={current_ver}", response.text)
+        self.assertIn(f"/static/app.js?v={current_ver}", response.text)
 
     def test_static_assets_and_dashboard_elements_served(self):
         index_resp = asgi_get(api.app, "/")
@@ -1567,29 +1707,43 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="nav-tab-overview"', index_resp.text)
         self.assertIn('id="nav-tab-notifications"', index_resp.text)
         self.assertIn(">Overview</span>", index_resp.text)
-        self.assertIn(">Notifications &amp; Logs</span>", index_resp.text)
+        self.assertIn(">Notifications</span>", index_resp.text)
         self.assertIn('id="view-overview"', index_resp.text)
         self.assertIn('id="view-notifications"', index_resp.text)
 
-        # Test notification button, feedback container, and Discord controls card
+        # Notifications tab ('Notifications'), view panels, and Discord setup card
+        self.assertIn('id="discord-config-form"', index_resp.text)
+        self.assertIn('id="save-discord-btn"', index_resp.text)
         self.assertIn('id="send-test-notification-btn"', index_resp.text)
-        self.assertIn('id="test-notification-feedback"', index_resp.text)
+        self.assertIn('id="discord-feedback"', index_resp.text)
         self.assertIn('id="discord-status-badge"', index_resp.text)
-        self.assertIn('id="discord-channel-display"', index_resp.text)
-        self.assertIn('id="discord-token-display"', index_resp.text)
-
-        # Discord enabled toggle switch in settings modal
-        self.assertIn('id="setting-discord-enabled"', index_resp.text)
+        self.assertIn('id="discord-channel-input"', index_resp.text)
+        self.assertIn('id="discord-token-input"', index_resp.text)
+        self.assertIn('id="discord-enabled-toggle"', index_resp.text)
         self.assertIn('name="discord_enabled"', index_resp.text)
+
+        # Settings modal should NOT contain Discord fields
+        modal_start = index_resp.text.find('id="settings-modal"')
+        self.assertGreater(modal_start, -1)
+        modal_end = index_resp.text.find('</form>', modal_start)
+        self.assertGreater(modal_end, modal_start)
+        settings_modal_html = index_resp.text[modal_start:modal_end]
+        self.assertNotIn("setting-discord-token", settings_modal_html)
+        self.assertNotIn("setting-channel-id", settings_modal_html)
+        self.assertNotIn("setting-discord-enabled", settings_modal_html)
+        self.assertNotIn('name="discord_token"', settings_modal_html)
+        self.assertNotIn('name="discord_enabled"', settings_modal_html)
 
         css_resp = asgi_get(api.app, "/static/styles.css")
         self.assertEqual(css_resp.status_code, 200)
         self.assertIn("text/css", css_resp.headers.get("content-type", ""))
+        self.assertEqual(css_resp.headers.get("cache-control"), "no-cache, must-revalidate")
         self.assertTrue(len(css_resp.text) > 0)
 
         js_resp = asgi_get(api.app, "/static/app.js")
         self.assertEqual(js_resp.status_code, 200)
         self.assertIn("javascript", js_resp.headers.get("content-type", ""))
+        self.assertEqual(js_resp.headers.get("cache-control"), "no-cache, must-revalidate")
         self.assertTrue(len(js_resp.text) > 0)
 
     def test_ci_workflow_and_systemd_services_configured(self):

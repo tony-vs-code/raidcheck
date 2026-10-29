@@ -1139,11 +1139,12 @@ body {
 /* Notifications Grid & Cards */
 .notifications-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 380px) 1fr;
+  grid-template-columns: minmax(360px, 440px) 1fr;
   gap: 18px;
   align-items: start;
 }
 
+.discord-setup-card,
 .discord-status-card {
   grid-column: 1;
 }
@@ -1157,46 +1158,48 @@ body {
   grid-row: 1 / span 2;
 }
 
+.discord-setup-card .card-body,
 .discord-status-card .card-body {
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
-.test-notification-actions {
+.discord-config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.discord-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
   margin-top: 4px;
 }
 
-#send-test-notification-btn {
+.discord-actions-row .btn-primary,
+.discord-actions-row .btn-secondary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  width: 100%;
-  padding: 10px 16px;
+  padding: 10px 14px;
   font-weight: 600;
-  font-size: 0.9rem;
-  border-radius: var(--radius-sm);
-  background: var(--accent-primary);
-  color: #0b0f19;
-  border: none;
-  cursor: pointer;
-  transition: all 0.2s ease;
+  font-size: 0.88rem;
+  flex: 1 1 calc(50% - 10px);
+  min-width: 140px;
 }
 
-#send-test-notification-btn:hover:not(:disabled) {
-  background: #7dd3fc;
-  box-shadow: 0 2px 12px rgba(56, 189, 248, 0.35);
-}
-
-#send-test-notification-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
+.discord-actions-row button.loading,
 #send-test-notification-btn.loading {
   opacity: 0.75;
   cursor: wait;
+}
+
+#discord-feedback {
+  margin-top: 6px;
 }
 
 .test-feedback-alert {
@@ -1207,12 +1210,14 @@ body {
   margin-top: 4px;
 }
 
+.auth-alert.feedback-success,
 .test-feedback-alert.feedback-success {
   background: var(--state-clean-bg);
   color: var(--state-clean);
   border: 1px solid rgba(16, 185, 129, 0.35);
 }
 
+.auth-alert.feedback-error,
 .test-feedback-alert.feedback-error {
   background: var(--state-failed-bg);
   color: #f87171;
@@ -1273,6 +1278,7 @@ body {
   .notifications-grid {
     grid-template-columns: 1fr;
   }
+  .discord-setup-card,
   .discord-status-card,
   .weekly-state-card,
   .history-card {

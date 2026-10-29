@@ -3,8 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>SystemAlerts — RAID &amp; System Monitor</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=0.5.0" />
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
@@ -73,7 +76,7 @@
       <div class="modal-header">
         <div>
           <h2 id="settings-modal-title" class="modal-title">Application Settings</h2>
-          <p class="modal-subtitle">Configure Discord alerts, RAID paths, and Google OAuth in SQLite</p>
+          <p class="modal-subtitle">Configure RAID storage parameters and Google OAuth in SQLite</p>
         </div>
         <button id="close-settings-btn" type="button" class="btn-icon-close" aria-label="Close settings modal">&times;</button>
       </div>
@@ -82,49 +85,6 @@
 
       <form id="settings-form" class="settings-form">
         <div class="settings-grid">
-          <div class="form-group full-width toggle-group">
-            <div class="toggle-container">
-              <label class="toggle-switch" for="setting-discord-enabled">
-                <input
-                  type="checkbox"
-                  id="setting-discord-enabled"
-                  name="discord_enabled"
-                  class="toggle-input"
-                />
-                <span class="toggle-slider"></span>
-              </label>
-              <div class="toggle-label-group">
-                <label for="setting-discord-enabled" class="toggle-label">Discord Notifications Enabled</label>
-                <small class="form-hint">Master switch to enable or pause sending alerts and weekly summaries to Discord.</small>
-              </div>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="setting-discord-token">
-              Discord Bot Token
-              <span id="discord-token-status" class="token-status-badge">Not configured</span>
-            </label>
-            <input
-              id="setting-discord-token"
-              name="discord_token"
-              type="password"
-              autocomplete="off"
-              placeholder="Leave blank to keep existing token"
-            />
-            <small class="form-hint">Only overwritten if you enter a new token above.</small>
-          </div>
-
-          <div class="form-group">
-            <label for="setting-channel-id">Discord Channel ID</label>
-            <input
-              id="setting-channel-id"
-              name="channel_id"
-              type="text"
-              placeholder="e.g. 123456789012345678"
-            />
-          </div>
-
           <div class="form-group">
             <label for="settings-raid-device">RAID Device</label>
             <input
@@ -275,7 +235,7 @@
           <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
           <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
         </svg>
-        <span>Notifications &amp; Logs</span>
+        <span>Notifications</span>
       </button>
     </nav>
 
@@ -520,12 +480,12 @@
     </section>
     </div>
 
-    <!-- View Panel: Notifications & Logs (#view-notifications) -->
+    <!-- View Panel: Notifications (#view-notifications) -->
     <div id="view-notifications" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-notifications">
-      <!-- 4. Discord Notifications & History Section -->
+      <!-- 4. Notifications & History Section -->
       <section class="section-block" aria-labelledby="notifications-heading">
         <div class="section-header">
-          <h2 id="notifications-heading" class="section-title">Discord Notifications &amp; Logs</h2>
+          <h2 id="notifications-heading" class="section-title">Notifications</h2>
           <div class="module-toolbar">
             <select id="notifications-interval-select" class="module-interval-select" aria-label="Notifications refresh rate">
               <option value="15">15s</option>
@@ -545,39 +505,82 @@
           </div>
         </div>
         <div class="notifications-grid">
-          <!-- Discord Status & Test Card -->
-          <article class="card discord-status-card">
+          <!-- Discord Configuration & Setup Card -->
+          <article class="card discord-setup-card">
             <div class="card-header">
               <div>
-                <h3 class="card-title">Discord Status &amp; Test</h3>
-                <p class="card-subtitle">Alert delivery state &amp; manual test dispatch</p>
+                <h3 class="card-title">Discord Configuration &amp; Setup</h3>
+                <p class="card-subtitle">Manage webhook / bot credentials and test notification delivery</p>
               </div>
               <span id="discord-status-badge" class="status-badge status-unknown">UNKNOWN</span>
             </div>
 
             <div class="card-body">
-              <dl class="details-list single-col">
-                <div class="detail-item">
-                  <dt>Configured Channel ID</dt>
-                  <dd id="discord-channel-display" class="mono-text">--</dd>
+              <form id="discord-config-form" class="discord-config-form" onsubmit="return false;">
+                <div class="form-group toggle-group">
+                  <div class="toggle-container">
+                    <label class="toggle-switch" for="discord-enabled-toggle">
+                      <input
+                        type="checkbox"
+                        id="discord-enabled-toggle"
+                        name="discord_enabled"
+                        class="toggle-input"
+                      />
+                      <span class="toggle-slider"></span>
+                    </label>
+                    <div class="toggle-label-group">
+                      <label for="discord-enabled-toggle" class="toggle-label">Enable Discord Notifications</label>
+                      <small class="form-hint">Master switch to enable or pause Discord alerting and weekly summaries.</small>
+                    </div>
+                  </div>
                 </div>
-                <div class="detail-item">
-                  <dt>Bot Token</dt>
-                  <dd id="discord-token-display">--</dd>
+
+                <div class="form-group">
+                  <label for="discord-token-input">
+                    Discord Bot Token
+                    <span id="discord-token-status" class="token-status-badge">Not configured</span>
+                  </label>
+                  <input
+                    id="discord-token-input"
+                    name="discord_token"
+                    type="password"
+                    autocomplete="off"
+                    placeholder="Leave blank to keep existing token"
+                  />
+                  <small class="form-hint">Only overwritten if you enter a new token above.</small>
                 </div>
-              </dl>
 
-              <div class="test-notification-actions">
-                <button id="send-test-notification-btn" class="btn-primary" type="button">
-                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <line x1="22" y1="2" x2="11" y2="13"></line>
-                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                  </svg>
-                  <span>Send Test Notification</span>
-                </button>
-              </div>
+                <div class="form-group">
+                  <label for="discord-channel-input">Discord Channel ID</label>
+                  <input
+                    id="discord-channel-input"
+                    name="channel_id"
+                    type="text"
+                    placeholder="e.g. 123456789012345678"
+                  />
+                  <small class="form-hint">Target Discord text channel ID where alerts are delivered.</small>
+                </div>
 
-              <div id="test-notification-feedback" class="test-feedback-alert hidden" role="status"></div>
+                <div class="discord-actions-row">
+                  <button id="save-discord-btn" class="btn-primary" type="button">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                      <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                      <polyline points="7 3 7 8 15 8"></polyline>
+                    </svg>
+                    <span>Save Discord Settings</span>
+                  </button>
+                  <button id="send-test-notification-btn" class="btn-secondary" type="button">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <line x1="22" y1="2" x2="11" y2="13"></line>
+                      <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                    <span>Send Test Notification</span>
+                  </button>
+                </div>
+
+                <div id="discord-feedback" class="auth-alert hidden" role="status"></div>
+              </form>
             </div>
           </article>
 
@@ -645,6 +648,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=0.5.0"></script>
 </body>
 </html>
