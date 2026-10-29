@@ -777,7 +777,7 @@ function closeWebSocket() {
 function setModuleLastUpdated(moduleName) {
   const el = document.getElementById(`${moduleName}-last-updated`);
   if (el) {
-    el.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    el.textContent = `Updated ${formatTimeOnly(new Date())}`;
   }
   const btn = document.getElementById(`refresh-${moduleName}-btn`);
   if (btn) {
@@ -796,13 +796,14 @@ function updateRaidAdaptiveBadge(isAdaptive) {
 }
 
 /**
- * Sync the three per-module interval <select> dropdowns from server settings.
+ * Sync the per-module interval <select> dropdowns from server settings.
  */
 function syncIntervalSelects(intervals) {
   if (!intervals || typeof intervals !== "object") return;
   const sysEl = document.getElementById("system-interval-select");
   const raidEl = document.getElementById("raid-interval-select");
   const notifEl = document.getElementById("notifications-interval-select");
+  const dockerEl = document.getElementById("docker-interval-select");
 
   if (sysEl && intervals.system !== undefined && intervals.system !== null) {
     sysEl.value = String(intervals.system);
@@ -816,6 +817,13 @@ function syncIntervalSelects(intervals) {
     intervals.notifications !== null
   ) {
     notifEl.value = String(intervals.notifications);
+  }
+  if (
+    dockerEl &&
+    intervals.docker !== undefined &&
+    intervals.docker !== null
+  ) {
+    dockerEl.value = String(intervals.docker);
   }
 }
 
@@ -832,11 +840,15 @@ async function handleIntervalChange() {
   const notifVal = Number(
     document.getElementById("notifications-interval-select")?.value ?? 60
   );
+  const dockerVal = Number(
+    document.getElementById("docker-interval-select")?.value ?? 5
+  );
 
   const intervals = {
     system: sysVal,
     raid: raidVal,
     notifications: notifVal,
+    docker: dockerVal,
   };
 
   if (
@@ -863,6 +875,7 @@ async function handleIntervalChange() {
         refresh_system_sec: sysVal,
         refresh_raid_sec: raidVal,
         refresh_notifications_sec: notifVal,
+        refresh_docker_sec: dockerVal,
       }),
     });
   } catch (err) {
@@ -886,13 +899,30 @@ function requestModuleRefresh(moduleName) {
       wsConnection.send(
         JSON.stringify({ action: "refresh_module", module: moduleName })
       );
+      if (moduleName === "docker" && currentViewTab === "containers") {
+        refreshDockerSubtab(currentDockerSubtab);
+      }
       return;
     } catch {
       // Fall back below
     }
   }
 
-  refreshDashboard();
+  if (moduleName === "docker") {
+    fetchDockerStatus();
+    if (currentViewTab === "containers") {
+      refreshDockerSubtab(currentDockerSubtab);
+    }
+  } else {
+    refreshDashboard();
+  }
+}
+
+/**
+ * Request instant Docker module refresh over WebSocket or HTTP.
+ */
+function requestDockerRefresh() {
+  requestModuleRefresh("docker");
 }
 
 /**
@@ -974,6 +1004,13 @@ function handleWebSocketMessage(rawData) {
     if (msg.version || msg.version_info) {
       updateVersionBadge(msg.version_info || msg.version);
     }
+    if (msg.docker || msg.module === "docker" || msg.module === "containers") {
+      renderDockerStatus(msg.docker || msg);
+      setModuleLastUpdated("docker");
+      if (currentViewTab === "containers") {
+        refreshDockerSubtab(currentDockerSubtab);
+      }
+    }
   } else {
     // 'snapshot' or full payload
     if (msg.refresh_intervals) {
@@ -1004,13 +1041,20 @@ function handleWebSocketMessage(rawData) {
     if (msg.version || msg.version_info) {
       updateVersionBadge(msg.version_info || msg.version);
     }
+    if (msg.docker) {
+      renderDockerStatus(msg.docker);
+      setModuleLastUpdated("docker");
+      if (currentViewTab === "containers") {
+        refreshDockerSubtab(currentDockerSubtab);
+      }
+    }
   }
 
   setErrorState(null);
 
   const lastUpdatedEl = document.getElementById("last-updated");
   if (lastUpdatedEl) {
-    lastUpdatedEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    lastUpdatedEl.textContent = `Updated ${formatTimeOnly(new Date())}`;
   }
 }
 
@@ -2018,6 +2062,121 @@ function refreshDockerSubtab(subtabName) {
 }
 
 /**
+ * Render Docker daemon status, quick stats, and navigation/subtab badges.
+ */
+function renderDockerStatus(data) {
+  if (!data || typeof data !== "object") return;
+  dockerStatusCache = data;
+
+  const daemonBadge = document.getElementById("docker-daemon-badge");
+  const installBanner = document.getElementById("docker-install-banner");
+  const stoppedBanner = document.getElementById("docker-stopped-banner");
+  const versionInfo = document.getElementById("docker-version-info");
+  const lastUpdated = document.getElementById("docker-last-updated");
+
+  if (daemonBadge) {
+    daemonBadge.className = "status-badge";
+    if (!data.installed) {
+      daemonBadge.classList.add("status-failed");
+      daemonBadge.textContent = "NOT INSTALLED";
+    } else if (!data.running) {
+      daemonBadge.classList.add("status-degraded");
+      daemonBadge.textContent = "STOPPED";
+    } else {
+      daemonBadge.classList.add("status-clean");
+      daemonBadge.textContent = "RUNNING";
+    }
+  }
+
+  if (installBanner) {
+    if (!data.installed) {
+      installBanner.classList.remove("hidden");
+    } else {
+      installBanner.classList.add("hidden");
+    }
+  }
+
+  if (stoppedBanner) {
+    if (data.installed && !data.running) {
+      stoppedBanner.classList.remove("hidden");
+    } else {
+      stoppedBanner.classList.add("hidden");
+    }
+  }
+
+  if (versionInfo) {
+    const v = data.version || "--";
+    const cv = data.compose_version || "--";
+    versionInfo.textContent = `Docker: ${v} | Compose: ${cv}`;
+  }
+
+  if (lastUpdated) {
+    const now = new Date();
+    lastUpdated.textContent = `Updated ${formatTimeOnly(now)}`;
+  }
+
+  const stats = data.stats || {};
+  const stacksCount = stats.stacks ?? 0;
+  const containersCount = stats.containers ?? 0;
+  const runningCount = stats.running ?? 0;
+  const stoppedCount = stats.stopped ?? 0;
+  const imagesCount = stats.images ?? 0;
+  const volumesCount = stats.volumes ?? 0;
+  const networksCount = stats.networks ?? 0;
+
+  const sVal = document.getElementById("docker-stat-stacks");
+  const cVal = document.getElementById("docker-stat-containers");
+  const rVal = document.getElementById("docker-stat-running");
+  const stVal = document.getElementById("docker-stat-stopped");
+  const cDetail = document.getElementById("docker-stat-containers-detail");
+  const iVal = document.getElementById("docker-stat-images");
+  const vVal = document.getElementById("docker-stat-volumes");
+  const nVal = document.getElementById("docker-stat-networks");
+
+  if (sVal) sVal.textContent = stacksCount;
+  if (cVal) cVal.textContent = containersCount;
+  if (rVal) rVal.textContent = runningCount;
+  if (stVal) stVal.textContent = stoppedCount;
+  if (cDetail && (!rVal || !stVal)) {
+    cDetail.textContent = `${runningCount} running, ${stoppedCount} stopped`;
+  }
+  if (iVal) iVal.textContent = imagesCount;
+  if (vVal) vVal.textContent = volumesCount;
+  if (nVal) nVal.textContent = networksCount;
+
+  // Main navigation tab badge: active (running) containers
+  const navBadge = document.getElementById("nav-tab-containers-badge");
+  if (navBadge) {
+    navBadge.textContent = runningCount;
+  }
+
+  // Subtab badges
+  const bStacks = document.getElementById("subtab-badge-stacks");
+  const bContainers = document.getElementById("subtab-badge-containers");
+  const bImages = document.getElementById("subtab-badge-images");
+  const bVolumes = document.getElementById("subtab-badge-volumes");
+  const bNetworks = document.getElementById("subtab-badge-networks");
+  const bUpdates = document.getElementById("subtab-badge-updates");
+
+  if (bStacks) bStacks.textContent = stacksCount;
+  if (bContainers) bContainers.textContent = containersCount;
+  if (bImages) bImages.textContent = imagesCount;
+  if (bVolumes) bVolumes.textContent = volumesCount;
+  if (bNetworks) bNetworks.textContent = networksCount;
+  if (bUpdates && stats.updates !== undefined && stats.updates !== null) {
+    bUpdates.textContent = stats.updates;
+    if (stats.updates > 0) {
+      bUpdates.classList.remove("hidden");
+    } else {
+      bUpdates.classList.add("hidden");
+    }
+  }
+
+  const refreshBtn = document.getElementById("refresh-docker-btn");
+  if (refreshBtn) refreshBtn.classList.remove("loading");
+}
+
+/**
  * Fetch Docker daemon status and quick stats.
  */
 async function fetchDockerStatus() {
@@ -2028,89 +2187,7 @@ async function fetchDockerStatus() {
     const resp = await apiFetch("/api/docker/status");
     if (!resp.ok) return;
     const data = await resp.json();
-    dockerStatusCache = data;
-
-    const daemonBadge = document.getElementById("docker-daemon-badge");
-    const installBanner = document.getElementById("docker-install-banner");
-    const stoppedBanner = document.getElementById("docker-stopped-banner");
-    const versionInfo = document.getElementById("docker-version-info");
-    const lastUpdated = document.getElementById("docker-last-updated");
-
-    if (daemonBadge) {
-      daemonBadge.className = "status-badge";
-      if (!data.installed) {
-        daemonBadge.classList.add("status-failed");
-        daemonBadge.textContent = "NOT INSTALLED";
-      } else if (!data.running) {
-        daemonBadge.classList.add("status-degraded");
-        daemonBadge.textContent = "STOPPED";
-      } else {
-        daemonBadge.classList.add("status-clean");
-        daemonBadge.textContent = "RUNNING";
-      }
-    }
-
-    if (installBanner) {
-      if (!data.installed) {
-        installBanner.classList.remove("hidden");
-      } else {
-        installBanner.classList.add("hidden");
-      }
-    }
-
-    if (stoppedBanner) {
-      if (data.installed && !data.running) {
-        stoppedBanner.classList.remove("hidden");
-      } else {
-        stoppedBanner.classList.add("hidden");
-      }
-    }
-
-    if (versionInfo) {
-      const v = data.version || "--";
-      const cv = data.compose_version || "--";
-      versionInfo.textContent = `Docker: ${v} | Compose: ${cv}`;
-    }
-
-    if (lastUpdated) {
-      const now = new Date();
-      lastUpdated.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    }
-
-    const stats = data.stats || {};
-    const stacksCount = stats.stacks ?? 0;
-    const containersCount = stats.containers ?? 0;
-    const runningCount = stats.running ?? 0;
-    const stoppedCount = stats.stopped ?? 0;
-    const imagesCount = stats.images ?? 0;
-    const volumesCount = stats.volumes ?? 0;
-    const networksCount = stats.networks ?? 0;
-
-    const sVal = document.getElementById("docker-stat-stacks");
-    const cVal = document.getElementById("docker-stat-containers");
-    const cDetail = document.getElementById("docker-stat-containers-detail");
-    const iVal = document.getElementById("docker-stat-images");
-    const vVal = document.getElementById("docker-stat-volumes");
-    const nVal = document.getElementById("docker-stat-networks");
-
-    if (sVal) sVal.textContent = stacksCount;
-    if (cVal) cVal.textContent = containersCount;
-    if (cDetail) cDetail.textContent = `${runningCount} running, ${stoppedCount} stopped`;
-    if (iVal) iVal.textContent = imagesCount;
-    if (vVal) vVal.textContent = volumesCount;
-    if (nVal) nVal.textContent = networksCount;
-
-    const bStacks = document.getElementById("subtab-badge-stacks");
-    const bContainers = document.getElementById("subtab-badge-containers");
-    const bImages = document.getElementById("subtab-badge-images");
-    const bVolumes = document.getElementById("subtab-badge-volumes");
-    const bNetworks = document.getElementById("subtab-badge-networks");
-
-    if (bStacks) bStacks.textContent = stacksCount;
-    if (bContainers) bContainers.textContent = containersCount;
-    if (bImages) bImages.textContent = imagesCount;
-    if (bVolumes) bVolumes.textContent = volumesCount;
-    if (bNetworks) bNetworks.textContent = networksCount;
+    renderDockerStatus(data);
   } catch (err) {
     console.warn("Failed to fetch Docker status:", err);
   } finally {
@@ -3472,8 +3549,7 @@ function initDashboard() {
   document
     .getElementById("refresh-docker-btn")
     ?.addEventListener("click", () => {
-      fetchDockerStatus();
-      refreshDockerSubtab(currentDockerSubtab);
+      requestDockerRefresh();
     });
 
   // Stacks
@@ -3658,6 +3734,10 @@ function initDashboard() {
 
   document
     .getElementById("notifications-interval-select")
+    ?.addEventListener("change", handleIntervalChange);
+
+  document
+    .getElementById("docker-interval-select")
     ?.addEventListener("change", handleIntervalChange);
 
   document

@@ -86,6 +86,7 @@ class SettingsUpdateRequest(BaseModel):
     refresh_system_sec: Optional[int | str] = None
     refresh_raid_sec: Optional[int | str] = None
     refresh_notifications_sec: Optional[int | str] = None
+    refresh_docker_sec: Optional[int | str] = None
     docker_auto_update_frequency: Optional[str] = None
     timezone: Optional[str] = None
 
@@ -300,6 +301,7 @@ def _build_full_snapshot() -> dict[str, Any]:
         "settings": {
             "timezone": tz,
         },
+        "docker": main.docker_mgr.get_status(),
     }
 
 
@@ -333,6 +335,12 @@ def _build_module_update(module_name: str) -> dict[str, Any]:
             "module": "notifications",
             "notification_state": _get_formatted_notification_state(),
             "history": _get_formatted_history(20),
+        }
+    if mod in ("docker", "containers"):
+        return {
+            "type": "module_update",
+            "module": "docker",
+            "docker": main.docker_mgr.get_status(),
         }
     return _build_full_snapshot()
 
@@ -542,7 +550,7 @@ async def api_websocket(websocket: WebSocket) -> None:
         initial_snapshot = _build_full_snapshot()
         last_raid_status = initial_snapshot.get("raid", {}).get("status", "unknown")
         await websocket.send_json(initial_snapshot)
-        elapsed = {"system": 0, "raid": 0, "notifications": 0}
+        elapsed = {"system": 0, "raid": 0, "notifications": 0, "docker": 0}
         while True:
             try:
                 raw_text = await asyncio.wait_for(
@@ -559,7 +567,7 @@ async def api_websocket(websocket: WebSocket) -> None:
                         last_raid_status = snap.get("raid", {}).get(
                             "status", last_raid_status
                         )
-                        elapsed = {"system": 0, "raid": 0, "notifications": 0}
+                        elapsed = {"system": 0, "raid": 0, "notifications": 0, "docker": 0}
                         await websocket.send_json(snap)
                     elif action == "refresh_module":
                         mod_payload = _build_module_update(
@@ -584,14 +592,15 @@ async def api_websocket(websocket: WebSocket) -> None:
                             ("system", "refresh_system_sec"),
                             ("raid", "refresh_raid_sec"),
                             ("notifications", "refresh_notifications_sec"),
+                            ("docker", "refresh_docker_sec"),
                         ):
-                            if (
-                                key_short in raw_intervals
-                                and raw_intervals[key_short] is not None
-                            ):
+                            val = raw_intervals.get(key_short)
+                            if val is None:
+                                val = raw_intervals.get(setting_key)
+                            if val is not None:
                                 try:
                                     interval_updates[setting_key] = str(
-                                        max(0, int(raw_intervals[key_short]))
+                                        max(0, int(val))
                                     )
                                 except (ValueError, TypeError):
                                     pass
@@ -608,6 +617,7 @@ async def api_websocket(websocket: WebSocket) -> None:
                 elapsed["system"] += 1
                 elapsed["raid"] += 1
                 elapsed["notifications"] += 1
+                elapsed["docker"] += 1
 
                 if (
                     intervals["system"] > 0
@@ -640,6 +650,14 @@ async def api_websocket(websocket: WebSocket) -> None:
                 ):
                     elapsed["notifications"] = 0
                     await websocket.send_json(_build_module_update("notifications"))
+
+                docker_interval = intervals.get("docker", 5)
+                if (
+                    docker_interval > 0
+                    and elapsed["docker"] >= docker_interval
+                ):
+                    elapsed["docker"] = 0
+                    await websocket.send_json(_build_module_update("docker"))
     except WebSocketDisconnect:
         pass
     finally:
@@ -688,6 +706,13 @@ def api_update_settings(
         try:
             updates["refresh_notifications_sec"] = str(
                 max(0, int(payload.refresh_notifications_sec))
+            )
+        except (ValueError, TypeError):
+            pass
+    if payload.refresh_docker_sec is not None:
+        try:
+            updates["refresh_docker_sec"] = str(
+                max(0, int(payload.refresh_docker_sec))
             )
         except (ValueError, TypeError):
             pass

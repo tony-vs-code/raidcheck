@@ -1058,7 +1058,10 @@ class SqlitePersistenceTests(unittest.TestCase):
     def test_refresh_intervals_defaults_and_custom_settings(self):
         # 1. Default intervals
         intervals = main.get_refresh_intervals()
-        self.assertEqual(intervals, {"system": 1, "raid": 15, "notifications": 60})
+        self.assertEqual(
+            intervals,
+            {"system": 1, "raid": 15, "notifications": 60, "docker": 5},
+        )
 
         # 2. Custom SQLite settings including 0 for paused
         main.update_app_settings(
@@ -1066,10 +1069,14 @@ class SqlitePersistenceTests(unittest.TestCase):
                 "refresh_system_sec": "5",
                 "refresh_raid_sec": "0",
                 "refresh_notifications_sec": "120",
+                "refresh_docker_sec": "10",
             }
         )
         custom = main.get_refresh_intervals()
-        self.assertEqual(custom, {"system": 5, "raid": 0, "notifications": 120})
+        self.assertEqual(
+            custom,
+            {"system": 5, "raid": 0, "notifications": 120, "docker": 10},
+        )
 
         # 3. Direct dictionary argument support and fallback for invalid values
         override = main.get_refresh_intervals(
@@ -1077,11 +1084,13 @@ class SqlitePersistenceTests(unittest.TestCase):
                 "refresh_system_sec": "invalid",
                 "refresh_raid_sec": "30",
                 "refresh_notifications_sec": "-5",
+                "refresh_docker_sec": "abc",
             }
         )
         self.assertEqual(override["system"], 1)  # fallback to default
         self.assertEqual(override["raid"], 30)
         self.assertEqual(override["notifications"], 0)  # max(0, -5) -> 0
+        self.assertEqual(override["docker"], 5)  # fallback to default
 
     def test_app_settings_env_seed_update_and_fallback(self):
         env_values = {
@@ -1745,6 +1754,9 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="docker-stopped-banner"', index_resp.text)
         self.assertIn('id="docker-daemon-badge"', index_resp.text)
         self.assertIn('id="docker-version-info"', index_resp.text)
+        self.assertIn('id="docker-interval-select"', index_resp.text)
+        self.assertIn('id="docker-status-dot"', index_resp.text)
+        self.assertIn('id="nav-tab-containers-badge"', index_resp.text)
         self.assertIn('id="refresh-docker-btn"', index_resp.text)
         self.assertIn('id="docker-stat-stacks"', index_resp.text)
         self.assertIn('id="docker-stat-containers"', index_resp.text)
@@ -1934,13 +1946,14 @@ class FastAPIEndpointTests(unittest.TestCase):
             self.assertEqual(intervals_msg["type"], "intervals_updated")
             self.assertEqual(
                 intervals_msg["refresh_intervals"],
-                {"system": 2, "raid": 30, "notifications": 120},
+                {"system": 2, "raid": 30, "notifications": 120, "docker": 5},
             )
 
             # Verify persisted in SQLite
             persisted = main.get_refresh_intervals()
             self.assertEqual(
-                persisted, {"system": 2, "raid": 30, "notifications": 120}
+                persisted,
+                {"system": 2, "raid": 30, "notifications": 120, "docker": 5},
             )
 
         # 2. Test WebSocket refresh_module 'raid' when status is 'degraded' (adaptive_fast=True, effective_interval=5)
@@ -1993,6 +2006,37 @@ class FastAPIEndpointTests(unittest.TestCase):
             self.assertIn("notification_state", notif_module_msg)
             self.assertIn("history", notif_module_msg)
             self.assertGreaterEqual(len(notif_module_msg["history"]), 1)
+
+        # 4. Test WebSocket refresh_module 'docker'
+        with (
+            patch.object(
+                main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)
+            ),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF_TABLE),
+            patch.object(
+                main.docker_mgr,
+                "get_status",
+                return_value={"installed": True, "running": True, "version": "29.0.0"},
+            ),
+        ):
+            ws_docker = asgi_ws(
+                api.app,
+                "/api/ws",
+                cookies=self.auth_cookies,
+                client_messages=[
+                    {"action": "refresh_module", "module": "docker"},
+                ],
+            )
+            self.assertTrue(ws_docker.accepted)
+            self.assertEqual(len(ws_docker.messages), 2)  # snapshot, module_update
+            snapshot_msg = ws_docker.messages[0]
+            self.assertIn("docker", snapshot_msg)
+            self.assertEqual(snapshot_msg["docker"]["version"], "29.0.0")
+
+            docker_mod_msg = ws_docker.messages[1]
+            self.assertEqual(docker_mod_msg["type"], "module_update")
+            self.assertEqual(docker_mod_msg["module"], "docker")
+            self.assertEqual(docker_mod_msg["docker"]["version"], "29.0.0")
 
 
 

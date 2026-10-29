@@ -43,6 +43,7 @@ APP_SETTING_KEYS = (
     "refresh_system_sec",
     "refresh_raid_sec",
     "refresh_notifications_sec",
+    "refresh_docker_sec",
     "docker_auto_update_frequency",
     "docker_auto_update_schedule",
     "timezone",
@@ -366,6 +367,7 @@ def _default_app_settings_from_env() -> dict[str, str]:
         "refresh_notifications_sec": str(
             config("REFRESH_NOTIFICATIONS_SEC", default="60") or "60"
         ),
+        "refresh_docker_sec": str(config("REFRESH_DOCKER_SEC", default="5") or "5"),
         "docker_auto_update_frequency": str(
             config("DOCKER_AUTO_UPDATE_FREQUENCY", default="disabled") or "disabled"
         ),
@@ -405,6 +407,7 @@ def get_refresh_intervals(
         "notifications": _parse_interval_sec(
             settings.get("refresh_notifications_sec"), 60
         ),
+        "docker": _parse_interval_sec(settings.get("refresh_docker_sec"), 5),
     }
 
 
@@ -2460,6 +2463,7 @@ async def run_scheduled_docker_updates(
 
 
 docker_manager = DockerManager()
+docker_mgr = docker_manager
 get_docker_status = docker_manager.get_status
 install_docker = docker_manager.install_docker
 list_docker_stacks = docker_manager.list_stacks

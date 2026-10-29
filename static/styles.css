@@ -112,6 +112,30 @@ body {
   flex-shrink: 0;
 }
 
+.nav-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: var(--accent-primary);
+  margin-left: 2px;
+  transition: all 0.2s ease;
+}
+
+.nav-tab.active .nav-tab-badge {
+  background: var(--accent-primary);
+  color: #0f172a;
+  border-color: var(--accent-primary);
+}
+
 /* View Panels */
 .view-panel {
   display: block;
@@ -1430,23 +1454,35 @@ body {
   background: rgba(56, 189, 248, 0.08);
 }
 
-.subnav-badge {
+.subnav-badge,
+.subtab-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 1px 7px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
   border-radius: 999px;
   font-size: 0.7rem;
   font-weight: 700;
+  line-height: 1;
   background: var(--bg-card-elevated);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
+  transition: all 0.2s ease;
+}
+
+.subnav-tab.active .subnav-badge,
+.subnav-tab.active .subtab-badge {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: var(--accent-primary);
 }
 
 .subnav-badge-warn {
-  background: rgba(245, 158, 11, 0.2);
-  color: #fbbf24;
-  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.2) !important;
+  color: #fbbf24 !important;
+  border-color: rgba(245, 158, 11, 0.4) !important;
 }
 
 /* Subviews & Toolbars */
