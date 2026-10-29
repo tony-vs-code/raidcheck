@@ -490,6 +490,13 @@ class DiscordAndRaidCheckTests(unittest.TestCase):
         self.db_path = Path(self.temp_dir.name) / "test_raid_check.sqlite3"
         self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
         self.db_patcher.start()
+        main.update_app_settings(
+            {
+                "discord_enabled": "true",
+                "discord_token": "test_token",
+                "channel_id": "12345",
+            }
+        )
 
     def tearDown(self):
         self.db_patcher.stop()
@@ -653,7 +660,9 @@ class DiscordAndRaidCheckTests(unittest.TestCase):
 
     def test_send_test_notification_success_and_failure_branches(self):
         # Disabled in settings
-        main.update_app_settings({"discord_enabled": "false", "channel_id": "12345"})
+        main.update_app_settings(
+            {"discord_enabled": "false", "discord_token": "test_token", "channel_id": "12345"}
+        )
         success, msg = asyncio.run(main.send_test_notification())
         self.assertFalse(success)
         self.assertIn("disabled", msg.lower())
@@ -664,7 +673,11 @@ class DiscordAndRaidCheckTests(unittest.TestCase):
             patch.object(
                 main,
                 "get_app_settings",
-                return_value={"discord_enabled": "true", "channel_id": ""},
+                return_value={
+                    "discord_enabled": "true",
+                    "discord_token": "test_token",
+                    "channel_id": "",
+                },
             ),
         ):
             success, msg = asyncio.run(main.send_test_notification())
@@ -672,7 +685,9 @@ class DiscordAndRaidCheckTests(unittest.TestCase):
             self.assertIn("channel", msg.lower())
 
         # Enabled and channel ID configured, send_message succeeds
-        main.update_app_settings({"discord_enabled": "true", "channel_id": "99999"})
+        main.update_app_settings(
+            {"discord_enabled": "true", "discord_token": "test_token", "channel_id": "99999"}
+        )
         with patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send:
             success, msg = asyncio.run(main.send_test_notification())
             self.assertTrue(success)
