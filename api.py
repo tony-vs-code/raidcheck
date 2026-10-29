@@ -77,6 +77,7 @@ class GoogleAuthRequest(BaseModel):
 class SettingsUpdateRequest(BaseModel):
     discord_token: Optional[str] = None
     channel_id: Optional[str] = None
+    discord_enabled: Optional[bool] = None
     raid_device: Optional[str] = None
     mount_path: Optional[str] = None
     google_client_id: Optional[str] = None
@@ -222,7 +223,11 @@ def _get_formatted_history(limit: int = 20) -> list[dict[str, Any]]:
             "sent_at": float(sent_at),
             "sent_at_formatted": main.format_timestamp(float(sent_at)),
             "weekly": bool(weekly),
-            "kind": "weekly summary" if weekly else "alert",
+            "kind": (
+                "test notification"
+                if status == "test"
+                else ("weekly summary" if weekly else "alert")
+            ),
         }
         for status, sent_at, weekly in rows
     ]
@@ -294,11 +299,13 @@ def _format_settings_response(settings: dict[str, str]) -> dict[str, Any]:
     else:
         discord_token_masked = ""
 
+    discord_enabled = settings.get("discord_enabled", "false").strip().lower() == "true"
     configured_raid_device = settings.get("raid_device", "auto") or "auto"
     return {
         "channel_id": settings.get("channel_id", ""),
         "discord_token_configured": discord_token_configured,
         "discord_token_masked": discord_token_masked,
+        "discord_enabled": discord_enabled,
         "raid_device": configured_raid_device,
         "available_raid_devices": main.discover_raid_devices(),
         "resolved_raid_device": main.resolve_raid_device(configured_raid_device),
@@ -435,6 +442,14 @@ def api_history(
     _user: str = Depends(require_auth),
 ) -> dict[str, list[dict[str, Any]]]:
     return {"history": _get_formatted_history(limit)}
+
+
+@app.post("/api/notifications/test")
+async def api_send_test_notification(
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    success, message = await main.send_test_notification()
+    return {"success": success, "message": message}
 
 
 def _extract_ws_token(websocket: WebSocket) -> Optional[str]:
@@ -588,6 +603,8 @@ def api_update_settings(
         updates["discord_token"] = payload.discord_token.strip()
     if payload.channel_id is not None:
         updates["channel_id"] = payload.channel_id.strip()
+    if payload.discord_enabled is not None:
+        updates["discord_enabled"] = "true" if payload.discord_enabled else "false"
     if payload.raid_device is not None and payload.raid_device.strip() != "":
         updates["raid_device"] = payload.raid_device.strip()
     if payload.mount_path is not None and payload.mount_path.strip() != "":

@@ -614,6 +614,81 @@ class DiscordAndRaidCheckTests(unittest.TestCase):
             asyncio.run(main.run_raid_check(force=False))
             self.assertEqual(mock_send.await_count, 1)
 
+    def test_discord_enabled_setting_controls_sending_and_logging(self):
+        # 1. When discord_enabled is explicitly 'false', send_message skips sending and logs
+        main.update_app_settings({"discord_enabled": "false", "channel_id": "12345"})
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock()
+        with (
+            patch.object(main.client, "get_channel", return_value=mock_channel),
+            self.assertLogs(level="INFO") as log_ctx,
+        ):
+            sent = asyncio.run(main.send_message("test message"))
+            self.assertFalse(sent)
+            mock_channel.send.assert_not_called()
+            self.assertTrue(
+                any("Discord notifications are disabled" in entry for entry in log_ctx.output)
+            )
+
+        # 2. When discord_enabled is 'false', run_raid_check skips checks/sending
+        with (
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send,
+            patch.object(main, "check_raid_status") as mock_raid_status,
+            self.assertLogs(level="INFO") as log_ctx_raid,
+        ):
+            asyncio.run(main.run_raid_check(force=True))
+            mock_raid_status.assert_not_called()
+            self.assertEqual(mock_send.await_count, 0)
+            self.assertTrue(
+                any("Discord notifications are disabled" in entry for entry in log_ctx_raid.output)
+            )
+
+        # 3. When discord_enabled is set to 'true', sending works
+        main.update_app_settings({"discord_enabled": "true"})
+        with patch.object(main.client, "get_channel", return_value=mock_channel):
+            sent_enabled = asyncio.run(main.send_message("enabled message"))
+            self.assertTrue(sent_enabled)
+            mock_channel.send.assert_awaited_once_with("enabled message")
+
+    def test_send_test_notification_success_and_failure_branches(self):
+        # Disabled in settings
+        main.update_app_settings({"discord_enabled": "false", "channel_id": "12345"})
+        success, msg = asyncio.run(main.send_test_notification())
+        self.assertFalse(success)
+        self.assertIn("disabled", msg.lower())
+
+        # Enabled but channel ID missing
+        with (
+            patch.object(main, "CHANNEL_ID", ""),
+            patch.object(
+                main,
+                "get_app_settings",
+                return_value={"discord_enabled": "true", "channel_id": ""},
+            ),
+        ):
+            success, msg = asyncio.run(main.send_test_notification())
+            self.assertFalse(success)
+            self.assertIn("channel", msg.lower())
+
+        # Enabled and channel ID configured, send_message succeeds
+        main.update_app_settings({"discord_enabled": "true", "channel_id": "99999"})
+        with patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send:
+            success, msg = asyncio.run(main.send_test_notification())
+            self.assertTrue(success)
+            self.assertEqual(mock_send.await_count, 1)
+            self.assertIn("success", msg.lower())
+
+            history = main.get_notification_history(5)
+            self.assertEqual(history[0][0], "test")
+            self.assertEqual(history[0][2], 0)
+
+        # Enabled, but send_message fails
+        with patch.object(main, "send_message", new=AsyncMock(return_value=False)) as mock_send_fail:
+            success, msg = asyncio.run(main.send_test_notification())
+            self.assertFalse(success)
+            self.assertEqual(mock_send_fail.await_count, 1)
+            self.assertIn("failed", msg.lower())
+
 
 class CliAndMainTests(unittest.TestCase):
     def setUp(self):
@@ -658,14 +733,17 @@ class CliAndMainTests(unittest.TestCase):
 
         main.record_notification("clean", 1700000000.0, weekly=True)
         main.record_notification("degraded", 1700000500.0, weekly=False)
+        main.record_notification("test", 1700000600.0, weekly=False)
         buf_logs = io.StringIO()
         with patch("sys.stdout", buf_logs):
             main.show_notification_logs(10)
         output = buf_logs.getvalue()
         self.assertIn("weekly summary", output)
         self.assertIn("alert", output)
+        self.assertIn("test notification", output)
         self.assertIn("clean", output)
         self.assertIn("degraded", output)
+        self.assertIn("test", output)
 
     def test_main_cli_subcommands_and_validation(self):
         with (
@@ -903,6 +981,41 @@ class SqlitePersistenceTests(unittest.TestCase):
                 self.assertEqual(fallback["channel_id"], "987654321")
                 self.assertEqual(fallback["discord_token"], "env_discord_token_1234")
 
+    def test_discord_enabled_env_seed_and_db_persistence(self):
+        # 1. When DISCORD_TOKEN is present in env, discord_enabled defaults to 'true'
+        with patch.object(
+            main, "config", side_effect=lambda k, default=None: "my-token" if k == "DISCORD_TOKEN" else default
+        ):
+            defaults = main._default_app_settings_from_env()
+            self.assertEqual(defaults["discord_enabled"], "true")
+
+        # 2. When DISCORD_TOKEN is missing in env, discord_enabled defaults to 'false'
+        with patch.object(
+            main, "config", side_effect=lambda k, default=None: "" if k == "DISCORD_TOKEN" else default
+        ):
+            defaults_empty = main._default_app_settings_from_env()
+            self.assertEqual(defaults_empty["discord_enabled"], "false")
+
+        # 3. Explicit DISCORD_ENABLED env var overrides token presence
+        with patch.object(
+            main, "config", side_effect=lambda k, default=None: "my-token" if k == "DISCORD_TOKEN" else ("false" if k == "DISCORD_ENABLED" else default)
+        ):
+            defaults_disabled = main._default_app_settings_from_env()
+            self.assertEqual(defaults_disabled["discord_enabled"], "false")
+
+        with patch.object(
+            main, "config", side_effect=lambda k, default=None: "" if k == "DISCORD_TOKEN" else ("true" if k == "DISCORD_ENABLED" else default)
+        ):
+            defaults_override_true = main._default_app_settings_from_env()
+            self.assertEqual(defaults_override_true["discord_enabled"], "true")
+
+        # 4. update_app_settings persists discord_enabled to app_settings in DB
+        main.update_app_settings({"discord_enabled": "true"})
+        self.assertEqual(main.get_app_settings()["discord_enabled"], "true")
+
+        main.update_app_settings({"discord_enabled": "false"})
+        self.assertEqual(main.get_app_settings()["discord_enabled"], "false")
+
 
 class FastAPIEndpointTests(unittest.TestCase):
     def setUp(self):
@@ -930,7 +1043,7 @@ class FastAPIEndpointTests(unittest.TestCase):
             resp = asgi_get(api.app, path)
             self.assertEqual(resp.status_code, 401, f"Expected 401 for unauthenticated GET {path}")
 
-        for path in ["/api/settings", "/api/update/apply"]:
+        for path in ["/api/settings", "/api/update/apply", "/api/notifications/test"]:
             resp = asgi_post(api.app, path, json_body={})
             self.assertEqual(resp.status_code, 401, f"Expected 401 for unauthenticated POST {path}")
 
@@ -1162,6 +1275,69 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertEqual(post_token_resp.json()["discord_token_masked"], "••••4321")
         self.assertEqual(main.get_app_settings()["discord_token"], "new_discord_token_4321")
 
+    def test_notifications_test_endpoint_and_discord_enabled_toggle(self):
+        # 1. Toggle discord_enabled to false via POST /api/settings
+        toggle_false_resp = asgi_post(
+            api.app,
+            "/api/settings",
+            cookies=self.auth_cookies,
+            json_body={"discord_enabled": False},
+        )
+        self.assertEqual(toggle_false_resp.status_code, 200)
+        self.assertFalse(toggle_false_resp.json()["discord_enabled"])
+        self.assertEqual(main.get_app_settings()["discord_enabled"], "false")
+
+        # 2. Toggle discord_enabled back to true
+        toggle_true_resp = asgi_post(
+            api.app,
+            "/api/settings",
+            cookies=self.auth_cookies,
+            json_body={"discord_enabled": True},
+        )
+        self.assertEqual(toggle_true_resp.status_code, 200)
+        self.assertTrue(toggle_true_resp.json()["discord_enabled"])
+        self.assertEqual(main.get_app_settings()["discord_enabled"], "true")
+
+        # 3. POST /api/notifications/test with mocked send_test_notification
+        with patch.object(
+            main,
+            "send_test_notification",
+            new=AsyncMock(return_value=(True, "Test notification sent successfully.")),
+        ) as mock_send_test:
+            test_resp = asgi_post(
+                api.app,
+                "/api/notifications/test",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(test_resp.status_code, 200)
+            self.assertEqual(
+                test_resp.json(),
+                {"success": True, "message": "Test notification sent successfully."},
+            )
+            mock_send_test.assert_awaited_once()
+
+        # 4. POST /api/notifications/test failure result
+        with patch.object(
+            main,
+            "send_test_notification",
+            new=AsyncMock(
+                return_value=(False, "Discord notifications are disabled in settings.")
+            ),
+        ):
+            test_fail_resp = asgi_post(
+                api.app,
+                "/api/notifications/test",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(test_fail_resp.status_code, 200)
+            self.assertEqual(
+                test_fail_resp.json(),
+                {
+                    "success": False,
+                    "message": "Discord notifications are disabled in settings.",
+                },
+            )
+
     def test_release_update_check_and_apply_endpoints(self):
         executed_cmds = []
 
@@ -1308,17 +1484,21 @@ class FastAPIEndpointTests(unittest.TestCase):
         main.record_notification("clean", 1700000100.0, weekly=True)
         main.record_notification("degraded", 1700000200.0, weekly=False)
         main.record_notification("recovering", 1700000300.0, weekly=False)
+        main.record_notification("test", 1700000400.0, weekly=False)
 
         response = asgi_get(api.app, "/api/history", cookies=self.auth_cookies)
         self.assertEqual(response.status_code, 200)
         history = response.json()["history"]
-        self.assertEqual(len(history), 3)
-        self.assertEqual(history[0]["status"], "recovering")
+        self.assertEqual(len(history), 4)
+        self.assertEqual(history[0]["status"], "test")
         self.assertFalse(history[0]["weekly"])
-        self.assertEqual(history[0]["kind"], "alert")
-        self.assertEqual(history[2]["status"], "clean")
-        self.assertTrue(history[2]["weekly"])
-        self.assertEqual(history[2]["kind"], "weekly summary")
+        self.assertEqual(history[0]["kind"], "test notification")
+        self.assertEqual(history[1]["status"], "recovering")
+        self.assertFalse(history[1]["weekly"])
+        self.assertEqual(history[1]["kind"], "alert")
+        self.assertEqual(history[3]["status"], "clean")
+        self.assertTrue(history[3]["weekly"])
+        self.assertEqual(history[3]["kind"], "weekly summary")
 
         limited_resp = asgi_get(
             api.app, "/api/history?limit=1", cookies=self.auth_cookies
@@ -1326,7 +1506,7 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertEqual(limited_resp.status_code, 200)
         limited_history = limited_resp.json()["history"]
         self.assertEqual(len(limited_history), 1)
-        self.assertEqual(limited_history[0]["status"], "recovering")
+        self.assertEqual(limited_history[0]["status"], "test")
 
         invalid_resp = asgi_get(
             api.app, "/api/history?limit=0", cookies=self.auth_cookies
@@ -1382,6 +1562,25 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="system-interval-select"', index_resp.text)
         self.assertIn('id="raid-interval-select"', index_resp.text)
         self.assertIn('id="notifications-interval-select"', index_resp.text)
+
+        # Navigation tabs and view panels
+        self.assertIn('id="nav-tab-overview"', index_resp.text)
+        self.assertIn('id="nav-tab-notifications"', index_resp.text)
+        self.assertIn(">Overview</span>", index_resp.text)
+        self.assertIn(">Notifications &amp; Logs</span>", index_resp.text)
+        self.assertIn('id="view-overview"', index_resp.text)
+        self.assertIn('id="view-notifications"', index_resp.text)
+
+        # Test notification button, feedback container, and Discord controls card
+        self.assertIn('id="send-test-notification-btn"', index_resp.text)
+        self.assertIn('id="test-notification-feedback"', index_resp.text)
+        self.assertIn('id="discord-status-badge"', index_resp.text)
+        self.assertIn('id="discord-channel-display"', index_resp.text)
+        self.assertIn('id="discord-token-display"', index_resp.text)
+
+        # Discord enabled toggle switch in settings modal
+        self.assertIn('id="setting-discord-enabled"', index_resp.text)
+        self.assertIn('name="discord_enabled"', index_resp.text)
 
         css_resp = asgi_get(api.app, "/static/styles.css")
         self.assertEqual(css_resp.status_code, 200)

@@ -31,6 +31,7 @@ CHANNEL_ID = ""
 APP_SETTING_KEYS = (
     "discord_token",
     "channel_id",
+    "discord_enabled",
     "raid_device",
     "mount_path",
     "google_client_id",
@@ -53,8 +54,12 @@ def enforce_discord_message_limit(message: str) -> str:
 
 
 async def send_message(message: str | discord.Embed) -> bool:
+    settings = get_app_settings()
+    if settings.get("discord_enabled", "false").strip().lower() != "true":
+        logging.info("Discord notifications are disabled; not attempting to send message.")
+        return False
     try:
-        effective_channel_id = CHANNEL_ID or get_app_settings().get("channel_id", "")
+        effective_channel_id = CHANNEL_ID or settings.get("channel_id", "")
         channel = client.get_channel(int(effective_channel_id))
         if channel:
             if isinstance(message, discord.Embed):
@@ -249,9 +254,21 @@ def delete_session(token: Optional[str]) -> None:
 
 
 def _default_app_settings_from_env() -> dict[str, str]:
+    env_token = str(config("DISCORD_TOKEN", default="") or "")
+    env_discord_enabled = config("DISCORD_ENABLED", default=None)
+    if env_discord_enabled is not None and str(env_discord_enabled).strip() != "":
+        discord_enabled = (
+            "true"
+            if str(env_discord_enabled).strip().lower() in ("true", "1", "yes")
+            else "false"
+        )
+    else:
+        discord_enabled = "true" if env_token else "false"
+
     return {
-        "discord_token": str(config("DISCORD_TOKEN", default="") or ""),
+        "discord_token": env_token,
         "channel_id": str(config("CHANNEL_ID", default="") or ""),
+        "discord_enabled": discord_enabled,
         "raid_device": str(config("RAID_DEVICE", default="auto") or "auto"),
         "mount_path": str(config("MOUNT_PATH", default="/mnt/media/") or "/mnt/media/"),
         "google_client_id": str(config("GOOGLE_CLIENT_ID", default="") or ""),
@@ -300,12 +317,23 @@ def get_app_settings() -> dict[str, str]:
         inserted = False
         for key, default_val in defaults.items():
             if key not in stored:
+                val = default_val
+                if key == "discord_enabled":
+                    env_discord_enabled = config("DISCORD_ENABLED", default=None)
+                    if env_discord_enabled is None or str(env_discord_enabled).strip() == "":
+                        if (
+                            stored.get("discord_token", "").strip()
+                            or defaults.get("discord_token", "").strip()
+                        ):
+                            val = "true"
+                        else:
+                            val = "false"
                 connection.execute(
                     "INSERT OR IGNORE INTO app_settings (key, value, updated_at) "
                     "VALUES (?, ?, ?)",
-                    (key, default_val, now),
+                    (key, val, now),
                 )
-                stored[key] = default_val
+                stored[key] = val
                 inserted = True
         if inserted:
             connection.commit()
@@ -594,6 +622,42 @@ def format_timestamp(timestamp: float) -> str:
     )
 
 
+async def send_test_notification() -> tuple[bool, str]:
+    settings = get_app_settings()
+    if settings.get("discord_enabled", "false").strip().lower() != "true":
+        msg = "Discord notifications are disabled in settings."
+        logging.info(msg)
+        return False, msg
+
+    effective_channel_id = CHANNEL_ID or settings.get("channel_id", "")
+    if not effective_channel_id:
+        msg = "Discord channel ID is not configured."
+        logging.error(msg)
+        return False, msg
+
+    embed = discord.Embed(
+        title="🔔 System Alerts - Test Notification",
+        description="This is a test notification from the System Alerts dashboard.\nDiscord notifications are configured and functioning properly.",
+        color=0x3498DB,
+    )
+    embed.add_field(name="Status", value="Test / Operational", inline=True)
+    embed.add_field(
+        name="Timestamp",
+        value=format_timestamp(time.time()),
+        inline=True,
+    )
+
+    success = await send_message(embed)
+    if success:
+        try:
+            record_notification("test", time.time(), weekly=False)
+        except (OSError, sqlite3.Error) as exc:
+            logging.warning(f"Could not record test notification in SQLite: {exc}")
+        return True, "Test notification sent successfully."
+    else:
+        return False, "Failed to send test notification to Discord."
+
+
 def should_send_weekly_summary(
     notification_state: Optional[Tuple[float, float, str]],
     *,
@@ -641,8 +705,11 @@ def show_notification_logs(limit: int) -> None:
         return
 
     for status, timestamp, weekly in history:
-        kind = "weekly summary" if weekly else "alert"
-        print(f"{format_timestamp(timestamp)} | {kind:<14} | {status}")
+        if status == "test":
+            kind = "test notification"
+        else:
+            kind = "weekly summary" if weekly else "alert"
+        print(f"{format_timestamp(timestamp)} | {kind:<17} | {status}")
 
 
 def discover_raid_devices() -> list[str]:
@@ -914,6 +981,11 @@ def format_raid_summary(status: str, details: str, duf_output: str) -> str:
 
 
 async def run_raid_check(force: bool = False) -> None:
+    settings = get_app_settings()
+    if settings.get("discord_enabled", "false").strip().lower() != "true":
+        logging.info("Discord notifications are disabled; not attempting to send message.")
+        return
+
     status, details = check_raid_status()
     if status == "none":
         logging.info("No RAID array detected; skipping Discord notification")

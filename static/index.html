@@ -82,6 +82,24 @@
 
       <form id="settings-form" class="settings-form">
         <div class="settings-grid">
+          <div class="form-group full-width toggle-group">
+            <div class="toggle-container">
+              <label class="toggle-switch" for="setting-discord-enabled">
+                <input
+                  type="checkbox"
+                  id="setting-discord-enabled"
+                  name="discord_enabled"
+                  class="toggle-input"
+                />
+                <span class="toggle-slider"></span>
+              </label>
+              <div class="toggle-label-group">
+                <label for="setting-discord-enabled" class="toggle-label">Discord Notifications Enabled</label>
+                <small class="form-hint">Master switch to enable or pause sending alerts and weekly summaries to Discord.</small>
+              </div>
+            </div>
+          </div>
+
           <div class="form-group">
             <label for="setting-discord-token">
               Discord Bot Token
@@ -227,6 +245,40 @@
       </div>
     </header>
 
+    <!-- Top Navigation Bar -->
+    <nav class="app-nav" aria-label="Main Navigation">
+      <button
+        id="nav-tab-overview"
+        class="nav-tab active"
+        type="button"
+        role="tab"
+        aria-selected="true"
+        aria-controls="view-overview"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="7" height="7"></rect>
+          <rect x="14" y="3" width="7" height="7"></rect>
+          <rect x="14" y="14" width="7" height="7"></rect>
+          <rect x="3" y="14" width="7" height="7"></rect>
+        </svg>
+        <span>Overview</span>
+      </button>
+      <button
+        id="nav-tab-notifications"
+        class="nav-tab"
+        type="button"
+        role="tab"
+        aria-selected="false"
+        aria-controls="view-notifications"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+        </svg>
+        <span>Notifications &amp; Logs</span>
+      </button>
+    </nav>
+
     <!-- Release-Tag Update Banner (#update-banner) -->
     <div id="update-banner" class="update-banner hidden" role="region" aria-label="Software update available">
       <div class="update-banner-info">
@@ -248,7 +300,9 @@
       <span id="error-message">Unable to fetch live status from server.</span>
     </div>
 
-    <!-- 2. System Metrics Cards -->
+    <!-- View Panel: Overview (#view-overview) -->
+    <div id="view-overview" class="view-panel" role="tabpanel" aria-labelledby="nav-tab-overview">
+      <!-- 2. System Metrics Cards -->
     <section class="section-block" aria-labelledby="system-metrics-heading">
       <div class="section-header">
         <h2 id="system-metrics-heading" class="section-title">System Metrics</h2>
@@ -464,91 +518,131 @@
         </article>
       </div>
     </section>
+    </div>
 
-    <!-- 4. Weekly Notification State & Notification History -->
-    <section class="section-block" aria-labelledby="notifications-heading">
-      <div class="section-header">
-        <h2 id="notifications-heading" class="section-title">Discord Notifications</h2>
-        <div class="module-toolbar">
-          <select id="notifications-interval-select" class="module-interval-select" aria-label="Notifications refresh rate">
-            <option value="15">15s</option>
-            <option value="30">30s</option>
-            <option value="60">60s</option>
-            <option value="300">5m</option>
-            <option value="0">Paused</option>
-          </select>
-          <span id="notifications-last-updated" class="module-last-updated">--</span>
-          <button id="refresh-notifications-btn" class="btn-module-refresh" type="button" aria-label="Refresh Notifications" title="Refresh Notifications">
-            <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="23 4 23 10 17 10"></polyline>
-              <polyline points="1 20 1 14 7 14"></polyline>
-              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-            </svg>
-          </button>
+    <!-- View Panel: Notifications & Logs (#view-notifications) -->
+    <div id="view-notifications" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-notifications">
+      <!-- 4. Discord Notifications & History Section -->
+      <section class="section-block" aria-labelledby="notifications-heading">
+        <div class="section-header">
+          <h2 id="notifications-heading" class="section-title">Discord Notifications &amp; Logs</h2>
+          <div class="module-toolbar">
+            <select id="notifications-interval-select" class="module-interval-select" aria-label="Notifications refresh rate">
+              <option value="15">15s</option>
+              <option value="30">30s</option>
+              <option value="60">60s</option>
+              <option value="300">5m</option>
+              <option value="0">Paused</option>
+            </select>
+            <span id="notifications-last-updated" class="module-last-updated">--</span>
+            <button id="refresh-notifications-btn" class="btn-module-refresh" type="button" aria-label="Refresh Notifications" title="Refresh Notifications">
+              <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <polyline points="1 20 1 14 7 14"></polyline>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+            </button>
+          </div>
         </div>
-      </div>
-      <div class="notifications-grid">
-        <!-- Weekly Notification State Card -->
-        <article class="card weekly-state-card">
-          <div class="card-header">
-            <div>
-              <h3 class="card-title">Weekly Notification State</h3>
-              <p class="card-subtitle">Scheduled summary throttling status</p>
+        <div class="notifications-grid">
+          <!-- Discord Status & Test Card -->
+          <article class="card discord-status-card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Discord Status &amp; Test</h3>
+                <p class="card-subtitle">Alert delivery state &amp; manual test dispatch</p>
+              </div>
+              <span id="discord-status-badge" class="status-badge status-unknown">UNKNOWN</span>
             </div>
-            <span id="weekly-state-badge" class="status-badge status-unknown">--</span>
-          </div>
 
-          <div id="weekly-state-content" class="weekly-state-body">
-            <dl class="details-list single-col">
-              <div class="detail-item">
-                <dt>Last Summary Sent</dt>
-                <dd id="weekly-sent-at">--</dd>
-              </div>
-              <div class="detail-item">
-                <dt>Next Summary Due</dt>
-                <dd id="weekly-due-at">--</dd>
-              </div>
-              <div class="detail-item">
-                <dt>Last Recorded Status</dt>
-                <dd id="weekly-last-status">--</dd>
-              </div>
-              <div class="detail-item">
-                <dt>Schedule Countdown</dt>
-                <dd id="weekly-countdown">--</dd>
-              </div>
-            </dl>
-          </div>
-        </article>
+            <div class="card-body">
+              <dl class="details-list single-col">
+                <div class="detail-item">
+                  <dt>Configured Channel ID</dt>
+                  <dd id="discord-channel-display" class="mono-text">--</dd>
+                </div>
+                <div class="detail-item">
+                  <dt>Bot Token</dt>
+                  <dd id="discord-token-display">--</dd>
+                </div>
+              </dl>
 
-        <!-- Notification History Card -->
-        <article class="card history-card">
-          <div class="card-header">
-            <div>
-              <h3 class="card-title">Notification History</h3>
-              <p class="card-subtitle">Recent alerts &amp; weekly summaries sent to Discord</p>
+              <div class="test-notification-actions">
+                <button id="send-test-notification-btn" class="btn-primary" type="button">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                  </svg>
+                  <span>Send Test Notification</span>
+                </button>
+              </div>
+
+              <div id="test-notification-feedback" class="test-feedback-alert hidden" role="status"></div>
             </div>
-            <span id="history-count-badge" class="pill-counter">0 records</span>
-          </div>
+          </article>
 
-          <div class="table-container">
-            <table class="data-table" id="notification-history-table">
-              <thead>
-                <tr>
-                  <th>Timestamp</th>
-                  <th>Type</th>
-                  <th>RAID Status</th>
-                </tr>
-              </thead>
-              <tbody id="notification-history-tbody">
-                <tr>
-                  <td colspan="3" class="empty-state">Loading notification history...</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </article>
-      </div>
-    </section>
+          <!-- Weekly Notification State Card -->
+          <article class="card weekly-state-card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Weekly Notification State</h3>
+                <p class="card-subtitle">Scheduled summary throttling status</p>
+              </div>
+              <span id="weekly-state-badge" class="status-badge status-unknown">--</span>
+            </div>
+
+            <div id="weekly-state-content" class="weekly-state-body">
+              <dl class="details-list single-col">
+                <div class="detail-item">
+                  <dt>Last Summary Sent</dt>
+                  <dd id="weekly-sent-at">--</dd>
+                </div>
+                <div class="detail-item">
+                  <dt>Next Summary Due</dt>
+                  <dd id="weekly-due-at">--</dd>
+                </div>
+                <div class="detail-item">
+                  <dt>Last Recorded Status</dt>
+                  <dd id="weekly-last-status">--</dd>
+                </div>
+                <div class="detail-item">
+                  <dt>Schedule Countdown</dt>
+                  <dd id="weekly-countdown">--</dd>
+                </div>
+              </dl>
+            </div>
+          </article>
+
+          <!-- Notification History Card -->
+          <article class="card history-card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Notification History</h3>
+                <p class="card-subtitle">Recent alerts &amp; weekly summaries sent to Discord</p>
+              </div>
+              <span id="history-count-badge" class="pill-counter">0 records</span>
+            </div>
+
+            <div class="table-container">
+              <table class="data-table" id="notification-history-table">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Type</th>
+                    <th>RAID Status</th>
+                  </tr>
+                </thead>
+                <tbody id="notification-history-tbody">
+                  <tr>
+                    <td colspan="3" class="empty-state">Loading notification history...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+    </div>
   </div>
 
   <script src="/static/app.js"></script>

@@ -463,19 +463,35 @@ function renderNotificationHistory(historyPayload) {
     tdTime.textContent =
       entry.sent_at_formatted || formatTimestampLocal(entry.sent_at);
 
-    // Kind / Weekly
+    // Kind / Weekly / Test
     const tdKind = document.createElement("td");
     const kindSpan = document.createElement("span");
     const isWeekly = Boolean(entry.weekly) || entry.kind === "weekly summary";
-    kindSpan.className = `kind-badge ${isWeekly ? "kind-weekly" : "kind-alert"}`;
-    kindSpan.textContent = entry.kind || (isWeekly ? "weekly summary" : "alert");
+    const isTest = entry.kind === "test notification" || entry.status === "test";
+
+    let badgeClass = "kind-alert";
+    if (isTest) {
+      badgeClass = "kind-test";
+    } else if (isWeekly) {
+      badgeClass = "kind-weekly";
+    }
+
+    kindSpan.className = `kind-badge ${badgeClass}`;
+    kindSpan.textContent =
+      entry.kind ||
+      (isTest ? "test notification" : (isWeekly ? "weekly summary" : "alert"));
     tdKind.appendChild(kindSpan);
 
     // Status
     const tdStatus = document.createElement("td");
     const statusBadge = document.createElement("span");
     statusBadge.className = "status-badge";
-    applyStatusBadge(statusBadge, null, entry.status);
+    if (entry.status === "test") {
+      statusBadge.classList.add("status-test");
+      statusBadge.textContent = "TEST";
+    } else {
+      applyStatusBadge(statusBadge, null, entry.status);
+    }
     tdStatus.appendChild(statusBadge);
 
     tr.appendChild(tdTime);
@@ -1100,6 +1116,7 @@ function onAuthenticatedSuccess(username) {
 
   startPolling();
   connectWebSocket();
+  fetchDiscordSettings();
   checkForUpdates({ silent: true });
 }
 
@@ -1379,6 +1396,7 @@ async function openSettingsModal() {
 function populateSettingsForm(data) {
   const tokenInput = document.getElementById("setting-discord-token");
   const tokenBadge = document.getElementById("discord-token-status");
+  const enabledInput = document.getElementById("setting-discord-enabled");
   const channelInput = document.getElementById("setting-channel-id");
   const raidInput =
     document.getElementById("settings-raid-device") ||
@@ -1390,6 +1408,10 @@ function populateSettingsForm(data) {
   const allowedEmailsInput = document.getElementById(
     "setting-allowed-google-emails"
   );
+
+  if (enabledInput) {
+    enabledInput.checked = Boolean(data.discord_enabled);
+  }
 
   if (tokenInput) {
     tokenInput.value = "";
@@ -1457,6 +1479,9 @@ function populateSettingsForm(data) {
   if (data.refresh_intervals) {
     syncIntervalSelects(data.refresh_intervals);
   }
+
+  cachedDiscordSettings = data;
+  renderDiscordStatusCard(data);
 }
 
 const populateSettingsModal = populateSettingsForm;
@@ -1475,7 +1500,9 @@ async function handleSettingsSubmit(event) {
     document.getElementById("setting-raid-device");
   const tokenVal =
     document.getElementById("setting-discord-token")?.value.trim() || "";
+  const enabledInput = document.getElementById("setting-discord-enabled");
   const payload = {
+    discord_enabled: Boolean(enabledInput ? enabledInput.checked : false),
     channel_id:
       document.getElementById("setting-channel-id")?.value.trim() || "",
     raid_device: raidInputEl?.value.trim() || "auto",
@@ -1509,6 +1536,8 @@ async function handleSettingsSubmit(event) {
     }
 
     populateSettingsForm(data);
+    cachedDiscordSettings = data;
+    renderDiscordStatusCard(data);
     showSettingsFeedback("Settings saved to SQLite.", true);
     handleManualRefresh();
   } catch (err) {
@@ -1522,9 +1551,246 @@ async function handleSettingsSubmit(event) {
 }
 
 /**
+ * Cache for app settings (Discord status, channel, tokens)
+ */
+let cachedDiscordSettings = null;
+
+/**
+ * Fetch settings from SQLite API to update Discord controls card.
+ */
+async function fetchDiscordSettings() {
+  if (!isAuthenticated) return;
+  try {
+    const resp = await apiFetch("/api/settings");
+    if (!resp.ok) return;
+    const data = await resp.json().catch(() => ({}));
+    cachedDiscordSettings = data;
+    renderDiscordStatusCard(data);
+  } catch (err) {
+    console.warn("Failed to fetch Discord settings:", err);
+  }
+}
+
+/**
+ * Render Discord Status & Controls card in Notifications view.
+ */
+function renderDiscordStatusCard(settings) {
+  if (!settings) return;
+  const badgeEl = document.getElementById("discord-status-badge");
+  const channelEl = document.getElementById("discord-channel-display");
+  const tokenEl = document.getElementById("discord-token-display");
+
+  if (badgeEl) {
+    badgeEl.classList.remove(
+      "status-clean",
+      "status-degraded",
+      "status-unknown",
+      "status-enabled",
+      "status-disabled"
+    );
+    if (settings.discord_enabled) {
+      badgeEl.classList.add("status-clean", "status-enabled");
+      badgeEl.textContent = "ENABLED";
+      badgeEl.setAttribute("data-state", "enabled");
+    } else {
+      badgeEl.classList.add("status-degraded", "status-disabled");
+      badgeEl.textContent = "DISABLED";
+      badgeEl.setAttribute("data-state", "disabled");
+    }
+  }
+
+  if (channelEl) {
+    channelEl.textContent = settings.channel_id || "Not configured";
+  }
+
+  if (tokenEl) {
+    if (settings.discord_token_configured) {
+      tokenEl.textContent = settings.discord_token_masked
+        ? `Configured (${settings.discord_token_masked})`
+        : "Configured";
+    } else {
+      tokenEl.textContent = "Not configured";
+    }
+  }
+}
+
+/**
+ * Show feedback message below test notification button.
+ */
+function showTestNotificationFeedback(message, isSuccess = true) {
+  const el = document.getElementById("test-notification-feedback");
+  if (!el) return;
+  if (!message) {
+    el.textContent = "";
+    el.classList.add("hidden");
+    el.classList.remove("feedback-success", "feedback-error");
+    return;
+  }
+  el.textContent = message;
+  el.classList.remove("hidden", "feedback-success", "feedback-error");
+  el.classList.add(isSuccess ? "feedback-success" : "feedback-error");
+}
+
+/**
+ * Send test notification to Discord and update history.
+ */
+async function handleSendTestNotification() {
+  const btn = document.getElementById("send-test-notification-btn");
+  if (!btn || btn.disabled) return;
+
+  const originalHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.classList.add("loading");
+  btn.innerHTML = `
+    <svg class="refresh-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline points="23 4 23 10 17 10"></polyline>
+      <polyline points="1 20 1 14 7 14"></polyline>
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+    </svg>
+    <span>Sending test notification...</span>
+  `;
+
+  showTestNotificationFeedback(null);
+
+  try {
+    const resp = await apiFetch("/api/notifications/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const data = await resp.json().catch(() => ({}));
+
+    if (resp.status === 401) {
+      showTestNotificationFeedback("Authentication required. Please sign in again.", false);
+      return;
+    }
+
+    if (!resp.ok) {
+      const errMsg = data.detail || data.message || `Server returned error (${resp.status})`;
+      showTestNotificationFeedback(errMsg, false);
+      return;
+    }
+
+    if (data.success) {
+      showTestNotificationFeedback(
+        data.message || "Test notification sent successfully to Discord!",
+        true
+      );
+    } else {
+      showTestNotificationFeedback(
+        data.message || "Failed to send test notification.",
+        false
+      );
+    }
+
+    // Automatically refresh notification history so the new test log appears immediately
+    await refreshNotificationHistory();
+  } catch (err) {
+    showTestNotificationFeedback(
+      `Error sending test notification: ${err instanceof Error ? err.message : String(err)}`,
+      false
+    );
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("loading");
+    btn.innerHTML = originalHtml;
+  }
+}
+
+/**
+ * Refresh notification history table via WebSocket or HTTP fallback.
+ */
+async function refreshNotificationHistory() {
+  if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    try {
+      wsConnection.send(
+        JSON.stringify({ action: "refresh_module", module: "notifications" })
+      );
+    } catch (_) {}
+  }
+  try {
+    const resp = await apiFetch("/api/history?limit=20");
+    if (resp.ok) {
+      const historyData = await resp.json().catch(() => ({}));
+      renderNotificationHistory(historyData);
+      setModuleLastUpdated("notifications");
+    }
+  } catch (err) {
+    console.warn("Failed to fetch updated notification history:", err);
+  }
+}
+
+/**
+ * Switch view panel between 'overview' and 'notifications'.
+ */
+function switchViewTab(tabName, updateHash = true) {
+  const isNotifications = tabName === "notifications";
+  const overviewTab = document.getElementById("nav-tab-overview");
+  const notificationsTab = document.getElementById("nav-tab-notifications");
+  const overviewView = document.getElementById("view-overview");
+  const notificationsView = document.getElementById("view-notifications");
+
+  if (isNotifications) {
+    overviewTab?.classList.remove("active");
+    overviewTab?.setAttribute("aria-selected", "false");
+    notificationsTab?.classList.add("active");
+    notificationsTab?.setAttribute("aria-selected", "true");
+
+    overviewView?.classList.add("hidden");
+    notificationsView?.classList.remove("hidden");
+
+    if (updateHash && window.location.hash !== "#notifications") {
+      history.replaceState(null, "", "#notifications");
+    }
+
+    if (!cachedDiscordSettings && isAuthenticated) {
+      fetchDiscordSettings();
+    }
+  } else {
+    notificationsTab?.classList.remove("active");
+    notificationsTab?.setAttribute("aria-selected", "false");
+    overviewTab?.classList.add("active");
+    overviewTab?.setAttribute("aria-selected", "true");
+
+    notificationsView?.classList.add("hidden");
+    overviewView?.classList.remove("hidden");
+
+    if (updateHash && window.location.hash === "#notifications") {
+      history.replaceState(null, "", "#overview");
+    }
+  }
+}
+
+/**
+ * Synchronize view tab state from location.hash.
+ */
+function syncTabFromHash() {
+  const hash = (window.location.hash || "").replace("#", "").toLowerCase();
+  if (hash === "notifications" || hash === "logs" || hash === "notifications-logs") {
+    switchViewTab("notifications", false);
+  } else {
+    switchViewTab("overview", false);
+  }
+}
+
+/**
  * Initialize listeners and run startup authentication check.
  */
 function initDashboard() {
+  document
+    .getElementById("nav-tab-overview")
+    ?.addEventListener("click", () => switchViewTab("overview", true));
+
+  document
+    .getElementById("nav-tab-notifications")
+    ?.addEventListener("click", () => switchViewTab("notifications", true));
+
+  document
+    .getElementById("send-test-notification-btn")
+    ?.addEventListener("click", handleSendTestNotification);
+
+  window.addEventListener("hashchange", syncTabFromHash);
+  syncTabFromHash();
+
   document
     .getElementById("refresh-btn")
     ?.addEventListener("click", () => handleManualRefresh());
