@@ -142,6 +142,131 @@
     </div>
   </div>
 
+  <!-- Container Logs Modal (#container-logs-modal) -->
+  <div id="container-logs-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="container-logs-title">
+    <div class="modal-card logs-modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="container-logs-title" class="modal-title">Container Logs</h2>
+          <p id="container-logs-subtitle" class="modal-subtitle">Streaming output for container</p>
+        </div>
+        <button id="close-container-logs-btn" type="button" class="btn-icon-close" aria-label="Close container logs modal">&times;</button>
+      </div>
+
+      <div class="logs-toolbar">
+        <div class="logs-toolbar-group">
+          <label for="logs-tail-select" class="logs-label">Lines:</label>
+          <select id="logs-tail-select" class="module-interval-select">
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200" selected>200</option>
+            <option value="500">500</option>
+            <option value="1000">1000</option>
+          </select>
+        </div>
+        <div class="logs-toolbar-group">
+          <label class="logs-checkbox-label">
+            <input type="checkbox" id="logs-timestamps-toggle" checked />
+            <span>Timestamps</span>
+          </label>
+        </div>
+        <div class="logs-toolbar-group">
+          <label class="logs-checkbox-label">
+            <input type="checkbox" id="logs-autorefresh-toggle" checked />
+            <span>Auto-refresh (3s)</span>
+          </label>
+        </div>
+        <div class="logs-toolbar-actions">
+          <button id="refresh-logs-btn" type="button" class="btn-secondary btn-sm" title="Refresh logs">
+            Refresh
+          </button>
+          <button id="copy-logs-btn" type="button" class="btn-secondary btn-sm" title="Copy to clipboard">
+            Copy
+          </button>
+          <button id="scroll-bottom-logs-btn" type="button" class="btn-secondary btn-sm" title="Scroll to bottom">
+            Scroll to Bottom
+          </button>
+        </div>
+      </div>
+
+      <div class="logs-viewer-container">
+        <pre id="container-logs-viewer" class="mono-log-viewer">Loading logs...</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stack Editor Modal (#stack-editor-modal) -->
+  <div id="stack-editor-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="stack-editor-title">
+    <div class="modal-card stack-modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="stack-editor-title" class="modal-title">Deploy New Compose Stack</h2>
+          <p id="stack-editor-subtitle" class="modal-subtitle">Configure Docker Compose services and parameters</p>
+        </div>
+        <button id="close-stack-editor-btn" type="button" class="btn-icon-close" aria-label="Close stack editor modal">&times;</button>
+      </div>
+
+      <div id="stack-editor-feedback" class="auth-alert hidden" role="status"></div>
+
+      <form id="stack-editor-form" class="settings-form" onsubmit="return false;">
+        <div class="form-group">
+          <label for="stack-name-input">Stack Name</label>
+          <input
+            id="stack-name-input"
+            name="name"
+            type="text"
+            required
+            pattern="^[a-zA-Z0-9_-]+$"
+            placeholder="e.g. web-app, monitoring"
+          />
+          <small class="form-hint">Alphanumeric, dashes, and underscores only.</small>
+        </div>
+
+        <div class="form-group">
+          <div class="label-with-action">
+            <label for="stack-yaml-input">docker-compose.yml</label>
+            <button id="stack-template-btn" type="button" class="btn-text-action">Insert Example</button>
+          </div>
+          <textarea
+            id="stack-yaml-input"
+            name="compose_yaml"
+            rows="14"
+            class="mono-textarea"
+            placeholder="version: '3.8'&#10;services:&#10;  app:&#10;    image: nginx:alpine&#10;    ports:&#10;      - '8080:80'&#10;    restart: unless-stopped"
+            required
+            spellcheck="false"
+          ></textarea>
+        </div>
+
+        <div class="form-group toggle-group">
+          <div class="toggle-container">
+            <label class="toggle-switch" for="stack-deploy-toggle">
+              <input
+                type="checkbox"
+                id="stack-deploy-toggle"
+                name="deploy"
+                class="toggle-input"
+                checked
+              />
+              <span class="toggle-slider"></span>
+            </label>
+            <div class="toggle-label-group">
+              <label for="stack-deploy-toggle" class="toggle-label">Deploy immediately (docker compose up -d)</label>
+              <small class="form-hint">Uncheck to save compose file without starting containers.</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button id="cancel-stack-editor-btn" type="button" class="btn-secondary">Cancel</button>
+          <button id="save-stack-btn" type="button" class="btn-primary">
+            <span id="save-stack-text">Deploy Stack</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div class="app-container">
     <!-- 1. Header -->
     <header class="app-header">
@@ -236,6 +361,20 @@
           <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
         </svg>
         <span>Notifications</span>
+      </button>
+      <button
+        id="nav-tab-containers"
+        class="nav-tab"
+        type="button"
+        role="tab"
+        aria-selected="false"
+        aria-controls="view-containers"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+          <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+        </svg>
+        <span>Containers</span>
       </button>
     </nav>
 
@@ -645,6 +784,399 @@
           </article>
         </div>
       </section>
+    </div>
+
+    <!-- View Panel: Containers & Stacks (#view-containers) -->
+    <div id="view-containers" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-containers">
+      <!-- Docker Not Installed Banner -->
+      <div id="docker-install-banner" class="docker-alert-banner hidden" role="region" aria-label="Docker installation required">
+        <div class="docker-banner-icon">
+          <svg viewBox="0 0 24 24" width="26" height="26" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+        </div>
+        <div class="docker-banner-content">
+          <h3 class="docker-banner-title">Docker is not installed on this host</h3>
+          <p class="docker-banner-text">Install Docker Engine &amp; Docker Compose with one click to enable Container and Stack management.</p>
+          <div id="docker-install-feedback" class="auth-alert hidden" role="status"></div>
+        </div>
+        <div class="docker-banner-actions">
+          <button id="btn-install-docker" type="button" class="btn-primary btn-install">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span>Install Docker</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Docker Stopped Banner -->
+      <div id="docker-stopped-banner" class="docker-alert-banner docker-warning hidden" role="region" aria-label="Docker daemon inactive">
+        <div class="docker-banner-icon">
+          <svg viewBox="0 0 24 24" width="26" height="26" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+            <line x1="12" y1="9" x2="12" y2="13"></line>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+        </div>
+        <div class="docker-banner-content">
+          <h3 class="docker-banner-title">Docker Daemon is Stopped</h3>
+          <p class="docker-banner-text">The Docker daemon is installed but not running. Start the service (<code>systemctl start docker</code>) to view containers and deploy stacks.</p>
+        </div>
+      </div>
+
+      <!-- Docker Overview & Quick Stats Bar -->
+      <section class="section-block" aria-labelledby="docker-overview-heading">
+        <div class="section-header">
+          <div class="header-with-status">
+            <h2 id="docker-overview-heading" class="section-title">Container Management</h2>
+            <span id="docker-daemon-badge" class="status-badge status-unknown">UNKNOWN</span>
+          </div>
+          <div class="module-toolbar">
+            <span class="docker-version-info" id="docker-version-info">Docker: -- | Compose: --</span>
+            <span id="docker-last-updated" class="module-last-updated">--</span>
+            <button id="refresh-docker-btn" class="btn-module-refresh" type="button" aria-label="Refresh Docker Resources" title="Refresh Docker Resources">
+              <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <polyline points="1 20 1 14 7 14"></polyline>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Quick Stats Cards -->
+        <div class="docker-stats-grid">
+          <article class="card docker-stat-card" data-subtab="stacks" role="button" tabindex="0" title="View Stacks">
+            <div class="docker-stat-header">
+              <span class="docker-stat-title">Stacks</span>
+              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                <polyline points="2 17 12 22 22 17"></polyline>
+                <polyline points="2 12 12 17 22 12"></polyline>
+              </svg>
+            </div>
+            <div class="docker-stat-value" id="docker-stat-stacks">0</div>
+            <div class="docker-stat-subtext">Compose projects</div>
+          </article>
+
+          <article class="card docker-stat-card" data-subtab="containers" role="button" tabindex="0" title="View Containers">
+            <div class="docker-stat-header">
+              <span class="docker-stat-title">Containers</span>
+              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+                <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+              </svg>
+            </div>
+            <div class="docker-stat-value" id="docker-stat-containers">0</div>
+            <div class="docker-stat-subtext" id="docker-stat-containers-detail">0 running, 0 stopped</div>
+          </article>
+
+          <article class="card docker-stat-card" data-subtab="images" role="button" tabindex="0" title="View Images">
+            <div class="docker-stat-header">
+              <span class="docker-stat-title">Images</span>
+              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                <polyline points="21 15 16 10 5 21"></polyline>
+              </svg>
+            </div>
+            <div class="docker-stat-value" id="docker-stat-images">0</div>
+            <div class="docker-stat-subtext">Locally cached images</div>
+          </article>
+
+          <article class="card docker-stat-card" data-subtab="volumes" role="button" tabindex="0" title="View Volumes">
+            <div class="docker-stat-header">
+              <span class="docker-stat-title">Volumes</span>
+              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M22 12H2"></path>
+                <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>
+                <line x1="6" y1="16" x2="6.01" y2="16"></line>
+                <line x1="10" y1="16" x2="10.01" y2="16"></line>
+              </svg>
+            </div>
+            <div class="docker-stat-value" id="docker-stat-volumes">0</div>
+            <div class="docker-stat-subtext">Named storage volumes</div>
+          </article>
+
+          <article class="card docker-stat-card" data-subtab="networks" role="button" tabindex="0" title="View Networks">
+            <div class="docker-stat-header">
+              <span class="docker-stat-title">Networks</span>
+              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="2"></circle>
+                <path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"></path>
+              </svg>
+            </div>
+            <div class="docker-stat-value" id="docker-stat-networks">0</div>
+            <div class="docker-stat-subtext">Bridge &amp; custom networks</div>
+          </article>
+        </div>
+      </section>
+
+      <!-- Sub-tabs Navigation -->
+      <nav class="subnav-tabs" aria-label="Docker Resource Tabs">
+        <button id="subtab-docker-stacks" class="subnav-tab active" type="button" role="tab" aria-selected="true" aria-controls="subview-docker-stacks">
+          <span>Stacks</span>
+          <span class="subnav-badge" id="subtab-badge-stacks">0</span>
+        </button>
+        <button id="subtab-docker-containers" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-containers">
+          <span>Containers</span>
+          <span class="subnav-badge" id="subtab-badge-containers">0</span>
+        </button>
+        <button id="subtab-docker-images" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-images">
+          <span>Images</span>
+          <span class="subnav-badge" id="subtab-badge-images">0</span>
+        </button>
+        <button id="subtab-docker-volumes" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-volumes">
+          <span>Volumes</span>
+          <span class="subnav-badge" id="subtab-badge-volumes">0</span>
+        </button>
+        <button id="subtab-docker-networks" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-networks">
+          <span>Networks</span>
+          <span class="subnav-badge" id="subtab-badge-networks">0</span>
+        </button>
+        <button id="subtab-docker-updates" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-updates">
+          <span>Updates</span>
+          <span class="subnav-badge subnav-badge-warn hidden" id="subtab-badge-updates">0</span>
+        </button>
+      </nav>
+
+      <!-- Subview: Stacks -->
+      <div id="subview-docker-stacks" class="subview-panel" role="tabpanel" aria-labelledby="subtab-docker-stacks">
+        <div class="subview-toolbar">
+          <div class="subview-title-group">
+            <h3 class="subview-title">Docker Compose Stacks</h3>
+            <span class="subview-subtitle">Deploy and orchestrate multi-container services</span>
+          </div>
+          <div class="subview-actions">
+            <button id="btn-new-stack" type="button" class="btn-primary">
+              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+              <span>Deploy New Stack</span>
+            </button>
+          </div>
+        </div>
+        <div class="table-container">
+          <table class="data-table" id="docker-stacks-table">
+            <thead>
+              <tr>
+                <th>Stack Name</th>
+                <th>Status</th>
+                <th>Containers</th>
+                <th>Type</th>
+                <th class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="docker-stacks-tbody">
+              <tr>
+                <td colspan="5" class="empty-state">No Compose stacks configured yet. Click 'Deploy New Stack' to add one.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Subview: Containers -->
+      <div id="subview-docker-containers" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-containers">
+        <div class="subview-toolbar">
+          <div class="subview-title-group">
+            <h3 class="subview-title">Containers</h3>
+            <span class="subview-subtitle">Active and stopped container runtime instances</span>
+          </div>
+          <div class="subview-actions">
+            <input
+              id="docker-container-search"
+              type="text"
+              class="search-input"
+              placeholder="Filter containers..."
+            />
+            <label class="toolbar-checkbox-label">
+              <input type="checkbox" id="docker-containers-all-toggle" checked />
+              <span>Show All</span>
+            </label>
+          </div>
+        </div>
+        <div class="table-container">
+          <table class="data-table" id="docker-containers-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>ID</th>
+                <th>Image</th>
+                <th>State</th>
+                <th>Ports</th>
+                <th>Stack</th>
+                <th class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="docker-containers-tbody">
+              <tr>
+                <td colspan="7" class="empty-state">No containers found.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Subview: Images -->
+      <div id="subview-docker-images" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-images">
+        <div class="subview-toolbar">
+          <div class="subview-title-group">
+            <h3 class="subview-title">Container Images</h3>
+            <span class="subview-subtitle">Cached registry images on this host</span>
+          </div>
+          <div class="subview-actions image-pull-actions">
+            <div class="pull-input-group">
+              <input
+                id="docker-image-pull-input"
+                type="text"
+                class="search-input"
+                placeholder="Image (e.g. nginx:alpine)"
+              />
+              <button id="btn-pull-image" type="button" class="btn-primary">
+                Pull Image
+              </button>
+            </div>
+            <button id="btn-prune-images" type="button" class="btn-secondary" title="Remove all unused and dangling images">
+              Prune Unused
+            </button>
+          </div>
+        </div>
+        <div id="docker-image-feedback" class="auth-alert hidden" role="status"></div>
+        <div class="table-container">
+          <table class="data-table" id="docker-images-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Repository</th>
+                <th>Tag</th>
+                <th>Size</th>
+                <th>Created</th>
+                <th class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="docker-images-tbody">
+              <tr>
+                <td colspan="6" class="empty-state">No images found.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Subview: Volumes -->
+      <div id="subview-docker-volumes" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-volumes">
+        <div class="subview-toolbar">
+          <div class="subview-title-group">
+            <h3 class="subview-title">Persistent Volumes</h3>
+            <span class="subview-subtitle">Docker volume storage mounts</span>
+          </div>
+        </div>
+        <div id="docker-volume-feedback" class="auth-alert hidden" role="status"></div>
+        <div class="table-container">
+          <table class="data-table" id="docker-volumes-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Driver</th>
+                <th>Scope</th>
+                <th>Mountpoint</th>
+                <th>Created</th>
+                <th class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="docker-volumes-tbody">
+              <tr>
+                <td colspan="6" class="empty-state">No volumes found.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Subview: Networks -->
+      <div id="subview-docker-networks" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-networks">
+        <div class="subview-toolbar">
+          <div class="subview-title-group">
+            <h3 class="subview-title">Networks</h3>
+            <span class="subview-subtitle">Bridge, host, and overlay container networks</span>
+          </div>
+        </div>
+        <div id="docker-network-feedback" class="auth-alert hidden" role="status"></div>
+        <div class="table-container">
+          <table class="data-table" id="docker-networks-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Driver</th>
+                <th>Scope</th>
+                <th>Internal</th>
+                <th class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="docker-networks-tbody">
+              <tr>
+                <td colspan="6" class="empty-state">No networks found.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Subview: Updates -->
+      <div id="subview-docker-updates" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-updates">
+        <div class="subview-toolbar">
+          <div class="subview-title-group">
+            <h3 class="subview-title">Image Updates &amp; Automation</h3>
+            <span class="subview-subtitle">Scan running containers for newer remote registry tags</span>
+          </div>
+          <div class="subview-actions">
+            <div class="config-freq-group">
+              <label for="docker-auto-update-freq" class="logs-label">Auto-Check:</label>
+              <select id="docker-auto-update-freq" class="module-interval-select">
+                <option value="disabled">Disabled</option>
+                <option value="hourly">Hourly</option>
+                <option value="daily">Daily</option>
+              </select>
+              <button id="btn-save-update-freq" type="button" class="btn-secondary btn-sm">Save</button>
+            </div>
+            <button id="btn-check-docker-updates" type="button" class="btn-secondary">
+              Check Now
+            </button>
+            <button id="btn-apply-all-updates" type="button" class="btn-primary">
+              Apply All Updates
+            </button>
+          </div>
+        </div>
+        <div id="docker-updates-feedback" class="auth-alert hidden" role="status"></div>
+        <div class="table-container">
+          <table class="data-table" id="docker-updates-table">
+            <thead>
+              <tr>
+                <th>Target Container</th>
+                <th>Image</th>
+                <th>Stack</th>
+                <th>Current Digest/ID</th>
+                <th>Latest Digest/ID</th>
+                <th>Status</th>
+                <th class="actions-col">Action</th>
+              </tr>
+            </thead>
+            <tbody id="docker-updates-tbody">
+              <tr>
+                <td colspan="7" class="empty-state">Click 'Check Now' to scan running containers for upstream updates.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 

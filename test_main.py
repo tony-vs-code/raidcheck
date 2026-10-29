@@ -1721,10 +1721,46 @@ class FastAPIEndpointTests(unittest.TestCase):
         # Navigation tabs and view panels
         self.assertIn('id="nav-tab-overview"', index_resp.text)
         self.assertIn('id="nav-tab-notifications"', index_resp.text)
+        self.assertIn('id="nav-tab-containers"', index_resp.text)
         self.assertIn(">Overview</span>", index_resp.text)
         self.assertIn(">Notifications</span>", index_resp.text)
+        self.assertIn(">Containers</span>", index_resp.text)
         self.assertIn('id="view-overview"', index_resp.text)
         self.assertIn('id="view-notifications"', index_resp.text)
+        self.assertIn('id="view-containers"', index_resp.text)
+
+        # Docker UI elements in Containers view
+        self.assertIn('id="docker-install-banner"', index_resp.text)
+        self.assertIn('id="btn-install-docker"', index_resp.text)
+        self.assertIn('id="docker-stopped-banner"', index_resp.text)
+        self.assertIn('id="docker-daemon-badge"', index_resp.text)
+        self.assertIn('id="docker-version-info"', index_resp.text)
+        self.assertIn('id="refresh-docker-btn"', index_resp.text)
+        self.assertIn('id="docker-stat-stacks"', index_resp.text)
+        self.assertIn('id="docker-stat-containers"', index_resp.text)
+        self.assertIn('id="docker-stat-images"', index_resp.text)
+        self.assertIn('id="docker-stat-volumes"', index_resp.text)
+        self.assertIn('id="docker-stat-networks"', index_resp.text)
+
+        # Docker sub-tabs and tables
+        self.assertIn('id="subtab-docker-stacks"', index_resp.text)
+        self.assertIn('id="subtab-docker-containers"', index_resp.text)
+        self.assertIn('id="subtab-docker-images"', index_resp.text)
+        self.assertIn('id="subtab-docker-volumes"', index_resp.text)
+        self.assertIn('id="subtab-docker-networks"', index_resp.text)
+        self.assertIn('id="subtab-docker-updates"', index_resp.text)
+        self.assertIn('id="docker-stacks-table"', index_resp.text)
+        self.assertIn('id="docker-containers-table"', index_resp.text)
+        self.assertIn('id="docker-images-table"', index_resp.text)
+        self.assertIn('id="docker-volumes-table"', index_resp.text)
+        self.assertIn('id="docker-networks-table"', index_resp.text)
+        self.assertIn('id="docker-updates-table"', index_resp.text)
+
+        # Modals for Docker management
+        self.assertIn('id="container-logs-modal"', index_resp.text)
+        self.assertIn('id="container-logs-viewer"', index_resp.text)
+        self.assertIn('id="stack-editor-modal"', index_resp.text)
+        self.assertIn('id="stack-editor-form"', index_resp.text)
 
         # Notifications tab ('Notifications'), view panels, and Discord setup card
         self.assertIn('id="discord-config-form"', index_resp.text)
@@ -1923,6 +1959,585 @@ class FastAPIEndpointTests(unittest.TestCase):
             self.assertIn("notification_state", notif_module_msg)
             self.assertIn("history", notif_module_msg)
             self.assertGreaterEqual(len(notif_module_msg["history"]), 1)
+
+
+
+class TestDockerBackend(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test_docker.sqlite3"
+        self.stacks_path = Path(self.temp_dir.name) / "stacks"
+        self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
+        self.stacks_patcher = patch.object(main, "STACKS_DIR", self.stacks_path)
+        self.dm_stacks_patcher = patch.object(
+            main.docker_manager, "stacks_dir", self.stacks_path
+        )
+        self.db_patcher.start()
+        self.stacks_patcher.start()
+        self.dm_stacks_patcher.start()
+
+        main.create_user("admin", "adminpass", email="admin@example.com")
+        self.session_token = main.create_session("admin")
+        self.auth_cookies = {"session_token": self.session_token}
+
+    def tearDown(self):
+        self.dm_stacks_patcher.stop()
+        self.stacks_patcher.stop()
+        self.db_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_docker_endpoints_require_authentication(self):
+        endpoints = [
+            ("GET", "/api/docker/status"),
+            ("POST", "/api/docker/install"),
+            ("GET", "/api/docker/stacks"),
+            ("POST", "/api/docker/stacks"),
+            ("GET", "/api/docker/stacks/mystack"),
+            ("POST", "/api/docker/stacks/mystack/action"),
+            ("DELETE", "/api/docker/stacks/mystack"),
+            ("GET", "/api/docker/containers"),
+            ("POST", "/api/docker/containers/c123/action"),
+            ("GET", "/api/docker/containers/c123/logs"),
+            ("GET", "/api/docker/images"),
+            ("POST", "/api/docker/images/pull"),
+            ("DELETE", "/api/docker/images/img123"),
+            ("POST", "/api/docker/images/prune"),
+            ("GET", "/api/docker/volumes"),
+            ("DELETE", "/api/docker/volumes/vol123"),
+            ("GET", "/api/docker/networks"),
+            ("DELETE", "/api/docker/networks/net123"),
+            ("GET", "/api/docker/updates"),
+            ("POST", "/api/docker/updates/apply"),
+            ("POST", "/api/docker/updates/config"),
+        ]
+        for method, path in endpoints:
+            resp = asgi_request(api.app, method, path)
+            self.assertEqual(
+                resp.status_code, 401, f"Expected 401 for unauthenticated {method} {path}"
+            )
+
+    def test_docker_status_endpoint(self):
+        with (
+            patch.object(main.docker_manager, "is_installed", return_value=True),
+            patch.object(main.docker_manager, "is_running", return_value=True),
+            patch.object(main.docker_manager, "get_version", return_value="29.0.0"),
+            patch.object(main.docker_manager, "get_compose_version", return_value="v2.20.0"),
+            patch.object(
+                main.docker_manager,
+                "get_stats",
+                return_value={
+                    "containers": 5,
+                    "running": 3,
+                    "stopped": 2,
+                    "images": 10,
+                    "volumes": 4,
+                    "networks": 3,
+                    "stacks": 2,
+                },
+            ),
+        ):
+            resp = asgi_get(api.app, "/api/docker/status", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertTrue(data["installed"])
+            self.assertTrue(data["running"])
+            self.assertEqual(data["version"], "29.0.0")
+            self.assertEqual(data["compose_version"], "v2.20.0")
+            self.assertEqual(data["stats"]["containers"], 5)
+            self.assertEqual(data["stats"]["running"], 3)
+            self.assertEqual(data["stats"]["stacks"], 2)
+
+    def test_docker_install_trigger(self):
+        with patch.object(
+            main.docker_manager,
+            "install_docker",
+            return_value={"status": "installing", "message": "Docker installation triggered"},
+        ):
+            resp = asgi_post(api.app, "/api/docker/install", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["status"], "installing")
+
+    def test_docker_stacks_crud_and_actions(self):
+        sample_yaml = "services:\n  web:\n    image: nginx:alpine\n"
+        with (
+            patch.object(main.docker_manager, "is_running", return_value=True),
+            patch.object(main.docker_manager, "_run_compose", return_value=""),
+        ):
+            # 1. Create stack
+            create_resp = asgi_post(
+                api.app,
+                "/api/docker/stacks",
+                cookies=self.auth_cookies,
+                json_body={"name": "test_stack", "compose_yaml": sample_yaml, "deploy": True},
+            )
+            self.assertEqual(create_resp.status_code, 200)
+            self.assertTrue(create_resp.json()["success"])
+            self.assertEqual(create_resp.json()["stack"]["name"], "test_stack")
+
+            # Verify saved file
+            saved_file = self.stacks_path / "test_stack" / "docker-compose.yml"
+            self.assertTrue(saved_file.is_file())
+            self.assertEqual(saved_file.read_text(), sample_yaml)
+
+            # 2. List stacks
+            list_resp = asgi_get(api.app, "/api/docker/stacks", cookies=self.auth_cookies)
+            self.assertEqual(list_resp.status_code, 200)
+            stacks = list_resp.json()["stacks"]
+            self.assertEqual(len(stacks), 1)
+            self.assertEqual(stacks[0]["name"], "test_stack")
+
+            # 3. Get stack
+            get_resp = asgi_get(
+                api.app, "/api/docker/stacks/test_stack", cookies=self.auth_cookies
+            )
+            self.assertEqual(get_resp.status_code, 200)
+            stack_data = get_resp.json()["stack"]
+            self.assertEqual(stack_data["name"], "test_stack")
+            self.assertIn("services", stack_data["compose_yaml"])
+
+            # 4. Stack action
+            action_resp = asgi_post(
+                api.app,
+                "/api/docker/stacks/test_stack/action",
+                cookies=self.auth_cookies,
+                json_body={"action": "restart"},
+            )
+            self.assertEqual(action_resp.status_code, 200)
+            self.assertEqual(action_resp.json()["status"], "running")
+
+            # 5. Delete stack
+            del_resp = asgi_request(
+                api.app,
+                "DELETE",
+                "/api/docker/stacks/test_stack?down=true",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(del_resp.status_code, 200)
+            self.assertTrue(del_resp.json()["success"])
+
+            # Verify deleted from list
+            after_del_resp = asgi_get(
+                api.app, "/api/docker/stacks", cookies=self.auth_cookies
+            )
+            self.assertEqual(len(after_del_resp.json()["stacks"]), 0)
+
+    def test_docker_containers_list_action_logs(self):
+        mock_containers = [
+            {
+                "id": "c123456789ab",
+                "name": "web_app",
+                "image": "nginx:alpine",
+                "state": "running",
+                "status": "Up 2 hours",
+                "ports": "0.0.0.0:80->80/tcp",
+                "created": "2 hours ago",
+                "stack": "my_stack",
+            }
+        ]
+        with (
+            patch.object(main.docker_manager, "list_containers", return_value=mock_containers),
+            patch.object(
+                main.docker_manager,
+                "execute_container_action",
+                return_value={"success": True, "action": "stop", "id": "c123456789ab"},
+            ),
+            patch.object(
+                main.docker_manager,
+                "get_container_logs",
+                return_value="[INFO] Server started\n[INFO] Ready for connections\n",
+            ),
+        ):
+            # List containers
+            c_resp = asgi_get(api.app, "/api/docker/containers", cookies=self.auth_cookies)
+            self.assertEqual(c_resp.status_code, 200)
+            self.assertEqual(len(c_resp.json()["containers"]), 1)
+            self.assertEqual(c_resp.json()["containers"][0]["name"], "web_app")
+
+            # Container action
+            act_resp = asgi_post(
+                api.app,
+                "/api/docker/containers/c123456789ab/action",
+                cookies=self.auth_cookies,
+                json_body={"action": "stop"},
+            )
+            self.assertEqual(act_resp.status_code, 200)
+            self.assertTrue(act_resp.json()["success"])
+
+            # Container logs
+            log_resp = asgi_get(
+                api.app,
+                "/api/docker/containers/c123456789ab/logs?tail=50",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(log_resp.status_code, 200)
+            self.assertIn("Server started", log_resp.json()["logs"])
+
+    def test_docker_images_volumes_networks(self):
+        with (
+            patch.object(
+                main.docker_manager,
+                "list_images",
+                return_value=[
+                    {"id": "img1", "repository": "nginx", "tag": "alpine", "size": "20MB", "created": "1d"}
+                ],
+            ),
+            patch.object(
+                main.docker_manager,
+                "pull_image",
+                return_value={"success": True, "image": "redis:alpine", "output": "Downloaded"},
+            ),
+            patch.object(
+                main.docker_manager,
+                "remove_image",
+                return_value={"success": True, "id": "img1", "output": "Deleted"},
+            ),
+            patch.object(
+                main.docker_manager,
+                "prune_images",
+                return_value={"success": True, "output": "Total reclaimed: 10MB"},
+            ),
+            patch.object(
+                main.docker_manager,
+                "list_volumes",
+                return_value=[
+                    {"name": "vol1", "driver": "local", "scope": "local", "mountpoint": "/var/vol1", "created_at": "1d", "size": "100MB"}
+                ],
+            ),
+            patch.object(
+                main.docker_manager,
+                "remove_volume",
+                return_value={"success": True, "name": "vol1", "output": "Deleted"},
+            ),
+            patch.object(
+                main.docker_manager,
+                "list_networks",
+                return_value=[
+                    {"id": "net1", "name": "bridge", "driver": "bridge", "scope": "local", "internal": "false", "created_at": "1d"}
+                ],
+            ),
+            patch.object(
+                main.docker_manager,
+                "remove_network",
+                return_value={"success": True, "id": "net1", "output": "Deleted"},
+            ),
+        ):
+            # Images
+            imgs_resp = asgi_get(api.app, "/api/docker/images", cookies=self.auth_cookies)
+            self.assertEqual(imgs_resp.status_code, 200)
+            self.assertEqual(len(imgs_resp.json()["images"]), 1)
+
+            pull_resp = asgi_post(
+                api.app,
+                "/api/docker/images/pull",
+                cookies=self.auth_cookies,
+                json_body={"image": "redis:alpine"},
+            )
+            self.assertEqual(pull_resp.status_code, 200)
+            self.assertTrue(pull_resp.json()["success"])
+
+            del_img_resp = asgi_request(
+                api.app, "DELETE", "/api/docker/images/img1", cookies=self.auth_cookies
+            )
+            self.assertEqual(del_img_resp.status_code, 200)
+
+            prune_resp = asgi_post(
+                api.app, "/api/docker/images/prune", cookies=self.auth_cookies
+            )
+            self.assertEqual(prune_resp.status_code, 200)
+
+            # Volumes
+            vols_resp = asgi_get(api.app, "/api/docker/volumes", cookies=self.auth_cookies)
+            self.assertEqual(vols_resp.status_code, 200)
+            self.assertEqual(len(vols_resp.json()["volumes"]), 1)
+
+            del_vol_resp = asgi_request(
+                api.app, "DELETE", "/api/docker/volumes/vol1", cookies=self.auth_cookies
+            )
+            self.assertEqual(del_vol_resp.status_code, 200)
+
+            # Networks
+            nets_resp = asgi_get(api.app, "/api/docker/networks", cookies=self.auth_cookies)
+            self.assertEqual(nets_resp.status_code, 200)
+            self.assertEqual(len(nets_resp.json()["networks"]), 1)
+
+            del_net_resp = asgi_request(
+                api.app, "DELETE", "/api/docker/networks/net1", cookies=self.auth_cookies
+            )
+            self.assertEqual(del_net_resp.status_code, 200)
+
+    def test_docker_updates_flow(self):
+        with (
+            patch.object(
+                main.docker_manager,
+                "check_updates",
+                return_value={
+                    "updates": [
+                        {
+                            "container_id": "c1",
+                            "container_name": "app",
+                            "image": "nginx:alpine",
+                            "stack": "",
+                            "update_available": True,
+                            "current_id": "aaa",
+                            "latest_id": "bbb",
+                        }
+                    ],
+                    "config": {"frequency": "daily"},
+                },
+            ),
+            patch.object(
+                main.docker_manager,
+                "apply_updates",
+                return_value={"success": True, "updated": [{"type": "container", "id": "c1", "name": "app", "success": True}]},
+            ),
+        ):
+            # Check updates
+            chk_resp = asgi_get(api.app, "/api/docker/updates", cookies=self.auth_cookies)
+            self.assertEqual(chk_resp.status_code, 200)
+            self.assertEqual(len(chk_resp.json()["updates"]), 1)
+            self.assertTrue(chk_resp.json()["updates"][0]["update_available"])
+
+            # Apply updates
+            apply_resp = asgi_post(
+                api.app,
+                "/api/docker/updates/apply",
+                cookies=self.auth_cookies,
+                json_body={"containers": ["c1"]},
+            )
+            self.assertEqual(apply_resp.status_code, 200)
+            self.assertTrue(apply_resp.json()["success"])
+
+            # Configure auto updates
+            cfg_resp = asgi_post(
+                api.app,
+                "/api/docker/updates/config",
+                cookies=self.auth_cookies,
+                json_body={"frequency": "hourly"},
+            )
+            self.assertEqual(cfg_resp.status_code, 200)
+            self.assertEqual(cfg_resp.json()["frequency"], "hourly")
+            self.assertEqual(
+                main.get_app_settings().get("docker_auto_update_frequency"), "hourly"
+            )
+
+    def test_docker_error_handling_and_validation(self):
+        # 1. Invalid stack action
+        bad_stack_act = asgi_post(
+            api.app,
+            "/api/docker/stacks/mystack/action",
+            cookies=self.auth_cookies,
+            json_body={"action": "invalid_action"},
+        )
+        self.assertEqual(bad_stack_act.status_code, 400)
+
+        # 2. Invalid container action
+        bad_c_act = asgi_post(
+            api.app,
+            "/api/docker/containers/c123/action",
+            cookies=self.auth_cookies,
+            json_body={"action": "explode"},
+        )
+        self.assertEqual(bad_c_act.status_code, 400)
+
+        # 3. Invalid auto update config frequency
+        bad_freq = asgi_post(
+            api.app,
+            "/api/docker/updates/config",
+            cookies=self.auth_cookies,
+            json_body={"frequency": "every_minute"},
+        )
+        self.assertEqual(bad_freq.status_code, 400)
+
+        # 4. Empty image pull
+        bad_pull = asgi_post(
+            api.app,
+            "/api/docker/images/pull",
+            cookies=self.auth_cookies,
+            json_body={"image": ""},
+        )
+        self.assertEqual(bad_pull.status_code, 400)
+
+        # 5. Nonexistent stack returns 404
+        missing_stack = asgi_get(
+            api.app,
+            "/api/docker/stacks/nonexistent_stack",
+            cookies=self.auth_cookies,
+        )
+        self.assertEqual(missing_stack.status_code, 404)
+
+        # 6. Docker daemon stopped returns 500 on actions and empty list on container queries
+        with patch.object(main.docker_manager, "is_running", return_value=False):
+            c_resp = asgi_get(api.app, "/api/docker/containers", cookies=self.auth_cookies)
+            self.assertEqual(c_resp.status_code, 200)
+            self.assertEqual(c_resp.json()["containers"], [])
+
+            stopped_act = asgi_post(
+                api.app,
+                "/api/docker/containers/c1/action",
+                cookies=self.auth_cookies,
+                json_body={"action": "start"},
+            )
+            self.assertEqual(stopped_act.status_code, 500)
+
+            # Docker daemon stopped on image pull
+            stopped_pull = asgi_post(
+                api.app,
+                "/api/docker/images/pull",
+                cookies=self.auth_cookies,
+                json_body={"image": "redis:latest"},
+            )
+            self.assertEqual(stopped_pull.status_code, 500)
+
+            # Docker daemon stopped on image remove
+            stopped_del_img = asgi_request(
+                api.app,
+                "DELETE",
+                "/api/docker/images/img123",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(stopped_del_img.status_code, 500)
+
+            # Docker daemon stopped on volume remove
+            stopped_del_vol = asgi_request(
+                api.app,
+                "DELETE",
+                "/api/docker/volumes/vol123",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(stopped_del_vol.status_code, 500)
+
+            # Docker daemon stopped on network remove
+            stopped_del_net = asgi_request(
+                api.app,
+                "DELETE",
+                "/api/docker/networks/net123",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(stopped_del_net.status_code, 500)
+
+            # Docker daemon stopped on stack create with deploy=True
+            stopped_deploy_stack = asgi_post(
+                api.app,
+                "/api/docker/stacks",
+                cookies=self.auth_cookies,
+                json_body={"name": "stopstack", "compose_yaml": "services:\n  a:\n    image: b\n", "deploy": True},
+            )
+            self.assertEqual(stopped_deploy_stack.status_code, 500)
+
+            # Docker daemon stopped on stack action
+            stopped_stack_act = asgi_post(
+                api.app,
+                "/api/docker/stacks/somestack/action",
+                cookies=self.auth_cookies,
+                json_body={"action": "start"},
+            )
+            self.assertEqual(stopped_stack_act.status_code, 500)
+
+            # Docker daemon stopped on container logs
+            stopped_logs = asgi_get(
+                api.app,
+                "/api/docker/containers/c123/logs",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(stopped_logs.status_code, 500)
+
+            # Docker daemon stopped on apply updates
+            stopped_apply = asgi_post(
+                api.app,
+                "/api/docker/updates/apply",
+                cookies=self.auth_cookies,
+                json_body={"containers": ["c1"]},
+            )
+            self.assertEqual(stopped_apply.status_code, 500)
+
+            # Queries return empty lists when stopped
+            self.assertEqual(asgi_get(api.app, "/api/docker/images", cookies=self.auth_cookies).json()["images"], [])
+            self.assertEqual(asgi_get(api.app, "/api/docker/volumes", cookies=self.auth_cookies).json()["volumes"], [])
+            self.assertEqual(asgi_get(api.app, "/api/docker/networks", cookies=self.auth_cookies).json()["networks"], [])
+            self.assertEqual(asgi_get(api.app, "/api/docker/updates", cookies=self.auth_cookies).json()["updates"], [])
+
+    def test_docker_install_failure_handling(self):
+        with patch.object(
+            main.docker_manager,
+            "install_docker",
+            side_effect=RuntimeError("Apt repository unreachable"),
+        ):
+            resp = asgi_post(api.app, "/api/docker/install", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 500)
+            self.assertIn("Apt repository unreachable", resp.json()["detail"])
+
+    def test_docker_stack_name_validation_errors(self):
+        # Invalid stack names: spaces, special characters, empty
+        for bad_name in ["", "   ", "my stack", "stack!@#", "stack/slash"]:
+            resp = asgi_post(
+                api.app,
+                "/api/docker/stacks",
+                cookies=self.auth_cookies,
+                json_body={"name": bad_name, "compose_yaml": "services:\n  a:\n    image: b", "deploy": False},
+            )
+            self.assertEqual(resp.status_code, 400, f"Expected 400 for bad name: {bad_name!r}")
+
+        # Empty compose yaml
+        resp_empty_yaml = asgi_post(
+            api.app,
+            "/api/docker/stacks",
+            cookies=self.auth_cookies,
+            json_body={"name": "validname", "compose_yaml": "   ", "deploy": False},
+        )
+        self.assertEqual(resp_empty_yaml.status_code, 400)
+
+    def test_docker_stack_not_found_on_action(self):
+        with patch.object(main.docker_manager, "is_running", return_value=True):
+            resp = asgi_post(
+                api.app,
+                "/api/docker/stacks/nonexistent/action",
+                cookies=self.auth_cookies,
+                json_body={"action": "restart"},
+            )
+            self.assertEqual(resp.status_code, 404)
+
+    def test_docker_apply_updates_with_stacks_and_containers(self):
+        with (
+            patch.object(main.docker_manager, "is_running", return_value=True),
+            patch.object(main.docker_manager, "execute_stack_action", return_value={"success": True}),
+            patch.object(main.docker_manager, "list_containers", return_value=[
+                {"id": "c1", "name": "my_container", "image": "redis:alpine", "stack": "mystack"}
+            ]),
+            patch.object(main.docker_manager, "pull_image", return_value={"success": True}),
+        ):
+            resp = asgi_post(
+                api.app,
+                "/api/docker/updates/apply",
+                cookies=self.auth_cookies,
+                json_body={"containers": ["c1"], "stacks": ["mystack"]},
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertTrue(data["success"])
+            self.assertEqual(len(data["updated"]), 2)
+            self.assertEqual(data["updated"][0]["type"], "stack")
+            self.assertEqual(data["updated"][1]["type"], "container")
+
+    def test_docker_apply_updates_handles_failures(self):
+        with (
+            patch.object(main.docker_manager, "is_running", return_value=True),
+            patch.object(
+                main.docker_manager,
+                "execute_stack_action",
+                side_effect=RuntimeError("Compose failed"),
+            ),
+        ):
+            resp = asgi_post(
+                api.app,
+                "/api/docker/updates/apply",
+                cookies=self.auth_cookies,
+                json_body={"stacks": ["failing_stack"]},
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertTrue(data["success"])
+            self.assertFalse(data["updated"][0]["success"])
+            self.assertIn("Compose failed", data["updated"][0]["error"])
 
 
 if __name__ == "__main__":

@@ -22,6 +22,13 @@ let currentWeeklyDueAt = null;
 let isFetching = false;
 let isAuthenticated = false;
 let currentGoogleClientId = "";
+let currentViewTab = "overview";
+let currentDockerSubtab = "stacks";
+let dockerStatusCache = null;
+let activeLogContainerId = null;
+let activeLogContainerName = "";
+let logsTimerId = null;
+let cachedDockerContainers = [];
 
 /**
  * Retrieve stored session token if present.
@@ -998,6 +1005,10 @@ function handleManualRefresh() {
     }
   }
   refreshDashboard();
+  if (currentViewTab === "containers") {
+    fetchDockerStatus();
+    refreshDockerSubtab(currentDockerSubtab);
+  }
 }
 
 /**
@@ -1751,22 +1762,61 @@ async function refreshNotificationHistory() {
 }
 
 /**
- * Switch view panel between 'overview' and 'notifications'.
+ * Escape HTML to prevent XSS when rendering user or container data.
+ */
+function escapeHtml(str) {
+  if (str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+/**
+ * Switch view panel between 'overview', 'notifications', and 'containers'.
  */
 function switchViewTab(tabName, updateHash = true) {
+  currentViewTab = tabName;
   const isNotifications = tabName === "notifications";
+  const isContainers = tabName === "containers";
+
   const overviewTab = document.getElementById("nav-tab-overview");
   const notificationsTab = document.getElementById("nav-tab-notifications");
+  const containersTab = document.getElementById("nav-tab-containers");
+
   const overviewView = document.getElementById("view-overview");
   const notificationsView = document.getElementById("view-notifications");
+  const containersView = document.getElementById("view-containers");
 
-  if (isNotifications) {
-    overviewTab?.classList.remove("active");
-    overviewTab?.setAttribute("aria-selected", "false");
+  overviewTab?.classList.remove("active");
+  overviewTab?.setAttribute("aria-selected", "false");
+  notificationsTab?.classList.remove("active");
+  notificationsTab?.setAttribute("aria-selected", "false");
+  containersTab?.classList.remove("active");
+  containersTab?.setAttribute("aria-selected", "false");
+
+  overviewView?.classList.add("hidden");
+  notificationsView?.classList.add("hidden");
+  containersView?.classList.add("hidden");
+
+  if (isContainers) {
+    containersTab?.classList.add("active");
+    containersTab?.setAttribute("aria-selected", "true");
+    containersView?.classList.remove("hidden");
+
+    if (updateHash && !window.location.hash.startsWith("#containers")) {
+      history.replaceState(null, "", `#containers/${currentDockerSubtab}`);
+    }
+
+    if (isAuthenticated) {
+      fetchDockerStatus();
+      refreshDockerSubtab(currentDockerSubtab);
+    }
+  } else if (isNotifications) {
     notificationsTab?.classList.add("active");
     notificationsTab?.setAttribute("aria-selected", "true");
-
-    overviewView?.classList.add("hidden");
     notificationsView?.classList.remove("hidden");
 
     if (updateHash && window.location.hash !== "#notifications") {
@@ -1777,15 +1827,11 @@ function switchViewTab(tabName, updateHash = true) {
       fetchDiscordSettings();
     }
   } else {
-    notificationsTab?.classList.remove("active");
-    notificationsTab?.setAttribute("aria-selected", "false");
     overviewTab?.classList.add("active");
     overviewTab?.setAttribute("aria-selected", "true");
-
-    notificationsView?.classList.add("hidden");
     overviewView?.classList.remove("hidden");
 
-    if (updateHash && window.location.hash === "#notifications") {
+    if (updateHash && window.location.hash !== "" && window.location.hash !== "#overview") {
       history.replaceState(null, "", "#overview");
     }
   }
@@ -1796,7 +1842,12 @@ function switchViewTab(tabName, updateHash = true) {
  */
 function syncTabFromHash() {
   const hash = (window.location.hash || "").replace("#", "").toLowerCase();
-  if (hash === "notifications" || hash === "logs" || hash === "notifications-logs") {
+  if (hash.startsWith("containers")) {
+    const parts = hash.split("/");
+    const subtab = parts[1] || currentDockerSubtab || "stacks";
+    switchViewTab("containers", false);
+    switchDockerSubtab(subtab, false);
+  } else if (hash === "notifications" || hash === "logs" || hash === "notifications-logs") {
     switchViewTab("notifications", false);
   } else {
     switchViewTab("overview", false);
@@ -1804,9 +1855,1128 @@ function syncTabFromHash() {
 }
 
 /**
+ * Switch Docker sub-tabs ('stacks', 'containers', 'images', 'volumes', 'networks', 'updates')
+ */
+function switchDockerSubtab(subtabName, updateHash = true) {
+  const validSubtabs = ["stacks", "containers", "images", "volumes", "networks", "updates"];
+  if (!validSubtabs.includes(subtabName)) {
+    subtabName = "stacks";
+  }
+  currentDockerSubtab = subtabName;
+
+  validSubtabs.forEach((st) => {
+    const tabEl = document.getElementById(`subtab-docker-${st}`);
+    const viewEl = document.getElementById(`subview-docker-${st}`);
+    if (st === subtabName) {
+      tabEl?.classList.add("active");
+      tabEl?.setAttribute("aria-selected", "true");
+      viewEl?.classList.remove("hidden");
+    } else {
+      tabEl?.classList.remove("active");
+      tabEl?.setAttribute("aria-selected", "false");
+      viewEl?.classList.add("hidden");
+    }
+  });
+
+  if (updateHash && window.location.hash.startsWith("#containers")) {
+    history.replaceState(null, "", `#containers/${subtabName}`);
+  }
+
+  if (isAuthenticated) {
+    refreshDockerSubtab(subtabName);
+  }
+}
+
+/**
+ * Fetch data for active Docker subtab.
+ */
+function refreshDockerSubtab(subtabName) {
+  switch (subtabName) {
+    case "stacks":
+      fetchDockerStacks();
+      break;
+    case "containers":
+      fetchDockerContainers();
+      break;
+    case "images":
+      fetchDockerImages();
+      break;
+    case "volumes":
+      fetchDockerVolumes();
+      break;
+    case "networks":
+      fetchDockerNetworks();
+      break;
+    case "updates":
+      fetchDockerUpdates();
+      break;
+  }
+}
+
+/**
+ * Fetch Docker daemon status and quick stats.
+ */
+async function fetchDockerStatus() {
+  const refreshBtn = document.getElementById("refresh-docker-btn");
+  if (refreshBtn) refreshBtn.classList.add("loading");
+
+  try {
+    const resp = await apiFetch("/api/docker/status");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    dockerStatusCache = data;
+
+    const daemonBadge = document.getElementById("docker-daemon-badge");
+    const installBanner = document.getElementById("docker-install-banner");
+    const stoppedBanner = document.getElementById("docker-stopped-banner");
+    const versionInfo = document.getElementById("docker-version-info");
+    const lastUpdated = document.getElementById("docker-last-updated");
+
+    if (daemonBadge) {
+      daemonBadge.className = "status-badge";
+      if (!data.installed) {
+        daemonBadge.classList.add("status-failed");
+        daemonBadge.textContent = "NOT INSTALLED";
+      } else if (!data.running) {
+        daemonBadge.classList.add("status-degraded");
+        daemonBadge.textContent = "STOPPED";
+      } else {
+        daemonBadge.classList.add("status-clean");
+        daemonBadge.textContent = "RUNNING";
+      }
+    }
+
+    if (installBanner) {
+      if (!data.installed) {
+        installBanner.classList.remove("hidden");
+      } else {
+        installBanner.classList.add("hidden");
+      }
+    }
+
+    if (stoppedBanner) {
+      if (data.installed && !data.running) {
+        stoppedBanner.classList.remove("hidden");
+      } else {
+        stoppedBanner.classList.add("hidden");
+      }
+    }
+
+    if (versionInfo) {
+      const v = data.version || "--";
+      const cv = data.compose_version || "--";
+      versionInfo.textContent = `Docker: ${v} | Compose: ${cv}`;
+    }
+
+    if (lastUpdated) {
+      const now = new Date();
+      lastUpdated.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    const stats = data.stats || {};
+    const stacksCount = stats.stacks ?? 0;
+    const containersCount = stats.containers ?? 0;
+    const runningCount = stats.running ?? 0;
+    const stoppedCount = stats.stopped ?? 0;
+    const imagesCount = stats.images ?? 0;
+    const volumesCount = stats.volumes ?? 0;
+    const networksCount = stats.networks ?? 0;
+
+    const sVal = document.getElementById("docker-stat-stacks");
+    const cVal = document.getElementById("docker-stat-containers");
+    const cDetail = document.getElementById("docker-stat-containers-detail");
+    const iVal = document.getElementById("docker-stat-images");
+    const vVal = document.getElementById("docker-stat-volumes");
+    const nVal = document.getElementById("docker-stat-networks");
+
+    if (sVal) sVal.textContent = stacksCount;
+    if (cVal) cVal.textContent = containersCount;
+    if (cDetail) cDetail.textContent = `${runningCount} running, ${stoppedCount} stopped`;
+    if (iVal) iVal.textContent = imagesCount;
+    if (vVal) vVal.textContent = volumesCount;
+    if (nVal) nVal.textContent = networksCount;
+
+    const bStacks = document.getElementById("subtab-badge-stacks");
+    const bContainers = document.getElementById("subtab-badge-containers");
+    const bImages = document.getElementById("subtab-badge-images");
+    const bVolumes = document.getElementById("subtab-badge-volumes");
+    const bNetworks = document.getElementById("subtab-badge-networks");
+
+    if (bStacks) bStacks.textContent = stacksCount;
+    if (bContainers) bContainers.textContent = containersCount;
+    if (bImages) bImages.textContent = imagesCount;
+    if (bVolumes) bVolumes.textContent = volumesCount;
+    if (bNetworks) bNetworks.textContent = networksCount;
+  } catch (err) {
+    console.warn("Failed to fetch Docker status:", err);
+  } finally {
+    if (refreshBtn) refreshBtn.classList.remove("loading");
+  }
+}
+
+/**
+ * Trigger Docker installation script when missing.
+ */
+async function handleInstallDocker() {
+  const btn = document.getElementById("btn-install-docker");
+  const feedback = document.getElementById("docker-install-feedback");
+  if (btn) btn.disabled = true;
+
+  if (feedback) {
+    feedback.className = "auth-alert";
+    feedback.textContent = "Triggering Docker installation script in background...";
+    feedback.classList.remove("hidden");
+  }
+
+  try {
+    const resp = await apiFetch("/api/docker/install", { method: "POST" });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      if (feedback) {
+        feedback.classList.add("feedback-success");
+        feedback.textContent = data.message || "Docker installation initiated. Checking status...";
+      }
+      setTimeout(fetchDockerStatus, 4000);
+    } else {
+      if (feedback) {
+        feedback.classList.add("feedback-error");
+        feedback.textContent = data.detail || "Failed to trigger Docker installation.";
+      }
+    }
+  } catch (err) {
+    if (feedback) {
+      feedback.classList.add("feedback-error");
+      feedback.textContent = `Error: ${err.message}`;
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/**
+ * Fetch and render Docker Stacks.
+ */
+async function fetchDockerStacks() {
+  const tbody = document.getElementById("docker-stacks-tbody");
+  if (!tbody) return;
+
+  try {
+    const resp = await apiFetch("/api/docker/stacks");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const stacks = data.stacks || [];
+
+    if (stacks.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No Compose stacks configured yet. Click 'Deploy New Stack' to add one.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = stacks.map((s) => {
+      const isRunning = s.status === "running" || (Number(s.running_count || 0) > 0);
+      const statusClass = isRunning ? "status-clean" : (s.status === "stopped" || s.status === "down" ? "status-degraded" : "status-none");
+      const managedBadge = s.managed
+        ? `<span class="kind-badge kind-weekly" title="Managed in SQLite">Managed</span>`
+        : `<span class="kind-badge" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">External</span>`;
+      
+      const safeName = escapeHtml(s.name);
+      return `<tr>
+        <td><strong>${safeName}</strong></td>
+        <td>
+          <span class="status-badge ${statusClass}">
+            <span class="status-dot"></span>
+            ${escapeHtml(s.status || "unknown")}
+          </span>
+        </td>
+        <td>${Number(s.running_count || 0)} / ${Number(s.containers_count || 0)} running</td>
+        <td>${managedBadge}</td>
+        <td class="actions-col">
+          <div class="btn-action-group">
+            ${
+              isRunning
+                ? `<button type="button" class="btn-action" data-stack-action="restart" data-stack="${safeName}">Restart</button>
+                   <button type="button" class="btn-action" data-stack-action="stop" data-stack="${safeName}">Stop</button>`
+                : `<button type="button" class="btn-action btn-action-success" data-stack-action="start" data-stack="${safeName}">Start</button>`
+            }
+            <button type="button" class="btn-action" data-stack-action="down" data-stack="${safeName}">Down</button>
+            <button type="button" class="btn-action" data-stack-action="pull" data-stack="${safeName}">Pull</button>
+            <button type="button" class="btn-action" data-stack-action="edit" data-stack="${safeName}">Edit</button>
+            <button type="button" class="btn-action btn-action-danger" data-stack-action="delete" data-stack="${safeName}">Delete</button>
+          </div>
+        </td>
+      </tr>`;
+    }).join("");
+
+    tbody.querySelectorAll("button[data-stack-action]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const action = btn.getAttribute("data-stack-action");
+        const stackName = btn.getAttribute("data-stack");
+        if (action === "edit") {
+          openStackEditor(stackName);
+        } else if (action === "delete") {
+          handleDeleteStack(stackName);
+        } else {
+          handleStackAction(stackName, action, btn);
+        }
+      });
+    });
+  } catch (err) {
+    console.warn("Failed to fetch Docker stacks:", err);
+  }
+}
+
+/**
+ * Execute stack action: start, stop, restart, down, pull.
+ */
+async function handleStackAction(stackName, action, buttonEl) {
+  if (buttonEl) {
+    buttonEl.disabled = true;
+    buttonEl.textContent = "...";
+  }
+
+  try {
+    const resp = await apiFetch(`/api/docker/stacks/${encodeURIComponent(stackName)}/action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      alert(`Stack action '${action}' failed: ${errData.detail || resp.statusText}`);
+    }
+  } catch (err) {
+    alert(`Error executing stack action: ${err.message}`);
+  } finally {
+    fetchDockerStacks();
+    fetchDockerStatus();
+  }
+}
+
+/**
+ * Delete Compose stack with container teardown.
+ */
+async function handleDeleteStack(stackName) {
+  if (!confirm(`Are you sure you want to delete stack "${stackName}"? This will tear down all its containers.`)) {
+    return;
+  }
+
+  try {
+    const resp = await apiFetch(`/api/docker/stacks/${encodeURIComponent(stackName)}?down=true`, {
+      method: "DELETE",
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      alert(`Failed to delete stack: ${errData.detail || resp.statusText}`);
+    }
+  } catch (err) {
+    alert(`Error deleting stack: ${err.message}`);
+  } finally {
+    fetchDockerStacks();
+    fetchDockerStatus();
+  }
+}
+
+/**
+ * Open Stack Editor modal for creating or updating a stack.
+ */
+async function openStackEditor(stackName = null) {
+  const modal = document.getElementById("stack-editor-modal");
+  const title = document.getElementById("stack-editor-title");
+  const nameInput = document.getElementById("stack-name-input");
+  const yamlInput = document.getElementById("stack-yaml-input");
+  const saveText = document.getElementById("save-stack-text");
+  const feedback = document.getElementById("stack-editor-feedback");
+
+  if (feedback) feedback.classList.add("hidden");
+
+  if (stackName) {
+    if (title) title.textContent = `Edit Compose Stack: ${stackName}`;
+    if (nameInput) {
+      nameInput.value = stackName;
+      nameInput.disabled = true;
+    }
+    if (saveText) saveText.textContent = "Update Stack";
+    if (yamlInput) yamlInput.value = "Loading compose file...";
+
+    try {
+      const resp = await apiFetch(`/api/docker/stacks/${encodeURIComponent(stackName)}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        if (yamlInput) yamlInput.value = data.stack?.compose_yaml || "";
+      } else {
+        if (yamlInput) yamlInput.value = "";
+      }
+    } catch {
+      if (yamlInput) yamlInput.value = "";
+    }
+  } else {
+    if (title) title.textContent = "Deploy New Compose Stack";
+    if (nameInput) {
+      nameInput.value = "";
+      nameInput.disabled = false;
+    }
+    if (saveText) saveText.textContent = "Deploy Stack";
+    if (yamlInput) yamlInput.value = "";
+  }
+
+  modal?.classList.remove("hidden");
+}
+
+function closeStackEditor() {
+  document.getElementById("stack-editor-modal")?.classList.add("hidden");
+}
+
+function insertExampleYaml() {
+  const yamlInput = document.getElementById("stack-yaml-input");
+  if (!yamlInput) return;
+  yamlInput.value = `version: "3.8"
+services:
+  app:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+`;
+}
+
+/**
+ * Save & optionally deploy stack via POST /api/docker/stacks.
+ */
+async function handleSaveStack() {
+  const nameInput = document.getElementById("stack-name-input");
+  const yamlInput = document.getElementById("stack-yaml-input");
+  const deployToggle = document.getElementById("stack-deploy-toggle");
+  const feedback = document.getElementById("stack-editor-feedback");
+  const saveBtn = document.getElementById("save-stack-btn");
+
+  const name = (nameInput?.value || "").trim();
+  const compose_yaml = (yamlInput?.value || "").trim();
+  const deploy = !!deployToggle?.checked;
+
+  if (!name || !/^[a-zA-Z0-9_-]+$/.test(name)) {
+    if (feedback) {
+      feedback.className = "auth-alert feedback-error";
+      feedback.textContent = "Stack name must contain only letters, numbers, dashes, and underscores.";
+      feedback.classList.remove("hidden");
+    }
+    return;
+  }
+
+  if (!compose_yaml) {
+    if (feedback) {
+      feedback.className = "auth-alert feedback-error";
+      feedback.textContent = "Compose YAML cannot be empty.";
+      feedback.classList.remove("hidden");
+    }
+    return;
+  }
+
+  if (saveBtn) saveBtn.disabled = true;
+
+  try {
+    const resp = await apiFetch("/api/docker/stacks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, compose_yaml, deploy }),
+    });
+
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      closeStackEditor();
+      fetchDockerStacks();
+      fetchDockerStatus();
+    } else {
+      if (feedback) {
+        feedback.className = "auth-alert feedback-error";
+        feedback.textContent = data.detail || "Failed to save Compose stack.";
+        feedback.classList.remove("hidden");
+      }
+    }
+  } catch (err) {
+    if (feedback) {
+      feedback.className = "auth-alert feedback-error";
+      feedback.textContent = `Error: ${err.message}`;
+      feedback.classList.remove("hidden");
+    }
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+/**
+ * Fetch and render Docker Containers.
+ */
+async function fetchDockerContainers() {
+  const tbody = document.getElementById("docker-containers-tbody");
+  if (!tbody) return;
+
+  const showAllToggle = document.getElementById("docker-containers-all-toggle");
+  const showAll = showAllToggle ? !!showAllToggle.checked : true;
+
+  try {
+    const resp = await apiFetch(`/api/docker/containers?all=${showAll}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    cachedDockerContainers = data.containers || [];
+    renderDockerContainers();
+  } catch (err) {
+    console.warn("Failed to fetch Docker containers:", err);
+  }
+}
+
+function renderDockerContainers() {
+  const tbody = document.getElementById("docker-containers-tbody");
+  if (!tbody) return;
+
+  const query = (document.getElementById("docker-container-search")?.value || "").trim().toLowerCase();
+
+  let filtered = cachedDockerContainers;
+  if (query) {
+    filtered = filtered.filter((c) =>
+      (c.name || "").toLowerCase().includes(query) ||
+      (c.id || "").toLowerCase().includes(query) ||
+      (c.image || "").toLowerCase().includes(query) ||
+      (c.stack || "").toLowerCase().includes(query)
+    );
+  }
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">${query ? "No matching containers." : "No containers found."}</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((c) => {
+    const state = (c.state || "").toLowerCase();
+    const isRunning = state === "running";
+    const isPaused = state === "paused";
+    const statusClass = isRunning ? "status-clean" : (isPaused ? "status-degraded" : "status-none");
+
+    const safeId = escapeHtml(c.id);
+    const safeName = escapeHtml(c.name);
+    const safeImage = escapeHtml(c.image);
+    const safePorts = escapeHtml(c.ports || "-");
+    const safeStack = escapeHtml(c.stack || "-");
+    const safeStatus = escapeHtml(c.status || c.state || "unknown");
+
+    return `<tr>
+      <td><strong>${safeName}</strong></td>
+      <td><span class="mono-text">${safeId}</span></td>
+      <td><span class="mono-text" style="color: var(--accent-primary);">${safeImage}</span></td>
+      <td>
+        <span class="status-badge ${statusClass}">
+          <span class="status-dot"></span>
+          ${safeStatus}
+        </span>
+      </td>
+      <td><span class="mono-text">${safePorts}</span></td>
+      <td>${safeStack !== "-" ? `<span class="kind-badge kind-weekly">${safeStack}</span>` : "-"}</td>
+      <td class="actions-col">
+        <div class="btn-action-group">
+          ${
+            isRunning
+              ? `<button type="button" class="btn-action" data-c-action="restart" data-cid="${safeId}">Restart</button>
+                 <button type="button" class="btn-action" data-c-action="stop" data-cid="${safeId}">Stop</button>
+                 <button type="button" class="btn-action" data-c-action="pause" data-cid="${safeId}">Pause</button>`
+              : (isPaused
+                  ? `<button type="button" class="btn-action btn-action-success" data-c-action="unpause" data-cid="${safeId}">Unpause</button>`
+                  : `<button type="button" class="btn-action btn-action-success" data-c-action="start" data-cid="${safeId}">Start</button>`)
+          }
+          <button type="button" class="btn-action" data-c-action="logs" data-cid="${safeId}" data-cname="${safeName}">Logs</button>
+          <button type="button" class="btn-action btn-action-danger" data-c-action="remove" data-cid="${safeId}" data-cname="${safeName}">Remove</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join("");
+
+  tbody.querySelectorAll("button[data-c-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const action = btn.getAttribute("data-c-action");
+      const cid = btn.getAttribute("data-cid");
+      const cname = btn.getAttribute("data-cname") || cid;
+      if (action === "logs") {
+        openContainerLogs(cid, cname);
+      } else if (action === "remove") {
+        handleRemoveContainer(cid, cname);
+      } else {
+        handleContainerAction(cid, action, btn);
+      }
+    });
+  });
+}
+
+/**
+ * Execute container action: start, stop, restart, pause, unpause.
+ */
+async function handleContainerAction(containerId, action, buttonEl) {
+  if (buttonEl) {
+    buttonEl.disabled = true;
+    buttonEl.textContent = "...";
+  }
+
+  try {
+    const resp = await apiFetch(`/api/docker/containers/${encodeURIComponent(containerId)}/action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Container action '${action}' failed: ${err.detail || resp.statusText}`);
+    }
+  } catch (err) {
+    alert(`Error executing container action: ${err.message}`);
+  } finally {
+    fetchDockerContainers();
+    fetchDockerStatus();
+  }
+}
+
+/**
+ * Remove container.
+ */
+async function handleRemoveContainer(containerId, containerName) {
+  if (!confirm(`Are you sure you want to remove container "${containerName}"?`)) {
+    return;
+  }
+
+  try {
+    const resp = await apiFetch(`/api/docker/containers/${encodeURIComponent(containerId)}/action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "remove" }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Failed to remove container: ${err.detail || resp.statusText}`);
+    }
+  } catch (err) {
+    alert(`Error removing container: ${err.message}`);
+  } finally {
+    fetchDockerContainers();
+    fetchDockerStatus();
+  }
+}
+
+/**
+ * Container Logs Modal Viewer.
+ */
+function openContainerLogs(containerId, containerName) {
+  activeLogContainerId = containerId;
+  activeLogContainerName = containerName;
+
+  const modal = document.getElementById("container-logs-modal");
+  const title = document.getElementById("container-logs-title");
+  const subtitle = document.getElementById("container-logs-subtitle");
+  const viewer = document.getElementById("container-logs-viewer");
+
+  if (title) title.textContent = `Container Logs: ${containerName}`;
+  if (subtitle) subtitle.textContent = `Container ID: ${containerId}`;
+  if (viewer) viewer.textContent = "Loading logs...";
+
+  modal?.classList.remove("hidden");
+  fetchContainerLogs();
+
+  if (logsTimerId) {
+    clearInterval(logsTimerId);
+    logsTimerId = null;
+  }
+
+  const autoToggle = document.getElementById("logs-autorefresh-toggle");
+  if (autoToggle?.checked) {
+    logsTimerId = setInterval(fetchContainerLogs, 3000);
+  }
+}
+
+function closeContainerLogs() {
+  if (logsTimerId) {
+    clearInterval(logsTimerId);
+    logsTimerId = null;
+  }
+  activeLogContainerId = null;
+  document.getElementById("container-logs-modal")?.classList.add("hidden");
+}
+
+async function fetchContainerLogs() {
+  if (!activeLogContainerId) return;
+
+  const tailSelect = document.getElementById("logs-tail-select");
+  const tsToggle = document.getElementById("logs-timestamps-toggle");
+  const viewer = document.getElementById("container-logs-viewer");
+
+  const tail = tailSelect ? tailSelect.value : "200";
+  const timestamps = tsToggle ? !!tsToggle.checked : true;
+
+  try {
+    const resp = await apiFetch(`/api/docker/containers/${encodeURIComponent(activeLogContainerId)}/logs?tail=${tail}&timestamps=${timestamps}`);
+    if (!resp.ok) {
+      if (viewer) viewer.textContent = `Unable to fetch logs (HTTP ${resp.status})`;
+      return;
+    }
+    const data = await resp.json();
+    if (viewer) {
+      const isScrolledToBottom = viewer.scrollHeight - viewer.clientHeight <= viewer.scrollTop + 50;
+      viewer.textContent = data.logs || "(No log output emitted)";
+      if (isScrolledToBottom) {
+        viewer.scrollTop = viewer.scrollHeight;
+      }
+    }
+  } catch (err) {
+    if (viewer) viewer.textContent = `Error fetching logs: ${err.message}`;
+  }
+}
+
+function copyContainerLogs() {
+  const viewer = document.getElementById("container-logs-viewer");
+  if (viewer && viewer.textContent) {
+    navigator.clipboard.writeText(viewer.textContent).then(() => {
+      const copyBtn = document.getElementById("copy-logs-btn");
+      if (copyBtn) {
+        const orig = copyBtn.textContent;
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+      }
+    }).catch(() => {});
+  }
+}
+
+function scrollLogsToBottom() {
+  const viewer = document.getElementById("container-logs-viewer");
+  if (viewer) {
+    viewer.scrollTop = viewer.scrollHeight;
+  }
+}
+
+/**
+ * Images Tab: Fetch, Pull, Prune, Remove.
+ */
+async function fetchDockerImages() {
+  const tbody = document.getElementById("docker-images-tbody");
+  if (!tbody) return;
+
+  try {
+    const resp = await apiFetch("/api/docker/images");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const images = data.images || [];
+
+    if (images.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No images found on host.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = images.map((img) => {
+      const safeId = escapeHtml(img.id);
+      const safeRepo = escapeHtml(img.repository);
+      const safeTag = escapeHtml(img.tag);
+      const safeSize = escapeHtml(img.size);
+      const safeCreated = escapeHtml(img.created);
+
+      return `<tr>
+        <td><span class="mono-text">${safeId}</span></td>
+        <td><strong>${safeRepo}</strong></td>
+        <td><span class="mono-text">${safeTag}</span></td>
+        <td>${safeSize}</td>
+        <td>${safeCreated}</td>
+        <td class="actions-col">
+          <button type="button" class="btn-action btn-action-danger" data-img-delete="${safeId}" data-img-tag="${safeRepo}:${safeTag}">Remove</button>
+        </td>
+      </tr>`;
+    }).join("");
+
+    tbody.querySelectorAll("button[data-img-delete]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-img-delete");
+        const tag = btn.getAttribute("data-img-tag");
+        handleRemoveImage(id, tag);
+      });
+    });
+  } catch (err) {
+    console.warn("Failed to fetch Docker images:", err);
+  }
+}
+
+async function handlePullImage() {
+  const input = document.getElementById("docker-image-pull-input");
+  const btn = document.getElementById("btn-pull-image");
+  const feedback = document.getElementById("docker-image-feedback");
+
+  const tag = (input?.value || "").trim();
+  if (!tag) {
+    alert("Please enter an image name to pull (e.g. nginx:alpine)");
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Pulling...";
+  }
+
+  if (feedback) {
+    feedback.className = "auth-alert";
+    feedback.textContent = `Pulling image '${tag}'... This may take a minute.`;
+    feedback.classList.remove("hidden");
+  }
+
+  try {
+    const resp = await apiFetch("/api/docker/images/pull", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: tag }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      if (feedback) {
+        feedback.className = "auth-alert feedback-success";
+        feedback.textContent = `Successfully pulled image '${tag}'.`;
+      }
+      if (input) input.value = "";
+      fetchDockerImages();
+      fetchDockerStatus();
+    } else {
+      if (feedback) {
+        feedback.className = "auth-alert feedback-error";
+        feedback.textContent = data.detail || `Failed to pull image '${tag}'.`;
+      }
+    }
+  } catch (err) {
+    if (feedback) {
+      feedback.className = "auth-alert feedback-error";
+      feedback.textContent = `Error: ${err.message}`;
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Pull Image";
+    }
+  }
+}
+
+async function handlePruneImages() {
+  if (!confirm("Are you sure you want to prune all dangling and unused Docker images?")) {
+    return;
+  }
+
+  const feedback = document.getElementById("docker-image-feedback");
+  try {
+    const resp = await apiFetch("/api/docker/images/prune", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ all: false }),
+    });
+    if (resp.ok) {
+      if (feedback) {
+        feedback.className = "auth-alert feedback-success";
+        feedback.textContent = "Unused images pruned successfully.";
+        feedback.classList.remove("hidden");
+      }
+      fetchDockerImages();
+      fetchDockerStatus();
+    }
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+  }
+}
+
+async function handleRemoveImage(imageId, imageTag) {
+  if (!confirm(`Are you sure you want to remove image "${imageTag || imageId}"?`)) {
+    return;
+  }
+
+  try {
+    const resp = await apiFetch(`/api/docker/images/${encodeURIComponent(imageId)}`, {
+      method: "DELETE",
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      alert(`Failed to remove image: ${data.detail || resp.statusText}`);
+    }
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+  } finally {
+    fetchDockerImages();
+    fetchDockerStatus();
+  }
+}
+
+/**
+ * Volumes Tab: Fetch, Remove.
+ */
+async function fetchDockerVolumes() {
+  const tbody = document.getElementById("docker-volumes-tbody");
+  if (!tbody) return;
+
+  try {
+    const resp = await apiFetch("/api/docker/volumes");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const volumes = data.volumes || [];
+
+    if (volumes.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No persistent volumes found.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = volumes.map((v) => {
+      const safeName = escapeHtml(v.name);
+      const safeDriver = escapeHtml(v.driver);
+      const safeScope = escapeHtml(v.scope);
+      const safeMount = escapeHtml(v.mountpoint || "-");
+      const safeCreated = escapeHtml(v.created_at || "-");
+
+      return `<tr>
+        <td><strong>${safeName}</strong></td>
+        <td><span class="mono-text">${safeDriver}</span></td>
+        <td>${safeScope}</td>
+        <td><span class="mono-text" style="font-size: 0.75rem;">${safeMount}</span></td>
+        <td>${safeCreated}</td>
+        <td class="actions-col">
+          <button type="button" class="btn-action btn-action-danger" data-vol-delete="${safeName}">Remove</button>
+        </td>
+      </tr>`;
+    }).join("");
+
+    tbody.querySelectorAll("button[data-vol-delete]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const name = btn.getAttribute("data-vol-delete");
+        handleRemoveVolume(name);
+      });
+    });
+  } catch (err) {
+    console.warn("Failed to fetch Docker volumes:", err);
+  }
+}
+
+async function handleRemoveVolume(volumeName) {
+  if (!confirm(`Are you sure you want to remove volume "${volumeName}"? Data on this volume will be lost.`)) {
+    return;
+  }
+
+  try {
+    const resp = await apiFetch(`/api/docker/volumes/${encodeURIComponent(volumeName)}`, {
+      method: "DELETE",
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      alert(`Failed to remove volume: ${data.detail || resp.statusText}`);
+    }
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+  } finally {
+    fetchDockerVolumes();
+    fetchDockerStatus();
+  }
+}
+
+/**
+ * Networks Tab: Fetch, Remove.
+ */
+async function fetchDockerNetworks() {
+  const tbody = document.getElementById("docker-networks-tbody");
+  if (!tbody) return;
+
+  try {
+    const resp = await apiFetch("/api/docker/networks");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const networks = data.networks || [];
+
+    if (networks.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No networks found.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = networks.map((n) => {
+      const safeId = escapeHtml(n.id);
+      const safeName = escapeHtml(n.name);
+      const safeDriver = escapeHtml(n.driver);
+      const safeScope = escapeHtml(n.scope);
+      const safeInternal = escapeHtml(n.internal);
+
+      const isDefault = ["bridge", "host", "none"].includes(n.name);
+
+      return `<tr>
+        <td><span class="mono-text">${safeId}</span></td>
+        <td><strong>${safeName}</strong></td>
+        <td><span class="mono-text">${safeDriver}</span></td>
+        <td>${safeScope}</td>
+        <td>${safeInternal}</td>
+        <td class="actions-col">
+          ${
+            !isDefault
+              ? `<button type="button" class="btn-action btn-action-danger" data-net-delete="${safeId}" data-net-name="${safeName}">Remove</button>`
+              : `<span style="color: var(--text-muted); font-size: 0.76rem;">Default</span>`
+          }
+        </td>
+      </tr>`;
+    }).join("");
+
+    tbody.querySelectorAll("button[data-net-delete]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-net-delete");
+        const name = btn.getAttribute("data-net-name");
+        handleRemoveNetwork(id, name);
+      });
+    });
+  } catch (err) {
+    console.warn("Failed to fetch Docker networks:", err);
+  }
+}
+
+async function handleRemoveNetwork(networkId, networkName) {
+  if (!confirm(`Are you sure you want to remove network "${networkName}"?`)) {
+    return;
+  }
+
+  try {
+    const resp = await apiFetch(`/api/docker/networks/${encodeURIComponent(networkId)}`, {
+      method: "DELETE",
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      alert(`Failed to remove network: ${data.detail || resp.statusText}`);
+    }
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+  } finally {
+    fetchDockerNetworks();
+    fetchDockerStatus();
+  }
+}
+
+/**
+ * Updates Tab: Fetch, Config, Apply.
+ */
+async function fetchDockerUpdates() {
+  const tbody = document.getElementById("docker-updates-tbody");
+  if (!tbody) return;
+
+  try {
+    const resp = await apiFetch("/api/docker/updates");
+    if (!resp.ok) return;
+    const data = await resp.json();
+
+    const freqSelect = document.getElementById("docker-auto-update-freq");
+    if (freqSelect && data.config?.frequency) {
+      freqSelect.value = data.config.frequency;
+    }
+
+    const updates = data.updates || [];
+    const updatesAvailableCount = updates.filter((u) => u.update_available).length;
+    const badge = document.getElementById("subtab-badge-updates");
+    if (badge) {
+      badge.textContent = updatesAvailableCount;
+      if (updatesAvailableCount > 0) {
+        badge.classList.remove("hidden");
+      } else {
+        badge.classList.add("hidden");
+      }
+    }
+
+    if (updates.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No running containers detected to scan for updates.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = updates.map((u) => {
+      const safeName = escapeHtml(u.container_name || u.container_id);
+      const safeImg = escapeHtml(u.image);
+      const safeStack = escapeHtml(u.stack || "-");
+      const safeCur = escapeHtml(u.current_id || "--");
+      const safeLat = escapeHtml(u.latest_id || "--");
+
+      const badgeHtml = u.update_available
+        ? `<span class="status-badge status-degraded"><span class="status-dot"></span>Update Available</span>`
+        : `<span class="status-badge status-clean"><span class="status-dot"></span>Up to date</span>`;
+
+      return `<tr>
+        <td><strong>${safeName}</strong></td>
+        <td><span class="mono-text" style="color: var(--accent-primary);">${safeImg}</span></td>
+        <td>${safeStack !== "-" ? `<span class="kind-badge kind-weekly">${safeStack}</span>` : "-"}</td>
+        <td><span class="mono-text">${safeCur}</span></td>
+        <td><span class="mono-text">${safeLat}</span></td>
+        <td>${badgeHtml}</td>
+        <td class="actions-col">
+          <button type="button" class="btn-action ${u.update_available ? 'btn-action-success' : ''}" data-update-cid="${escapeHtml(u.container_id)}" data-update-stack="${escapeHtml(u.stack || '')}">Update</button>
+        </td>
+      </tr>`;
+    }).join("");
+
+    tbody.querySelectorAll("button[data-update-cid]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const cid = btn.getAttribute("data-update-cid");
+        const stack = btn.getAttribute("data-update-stack");
+        handleApplyUpdates(cid ? [cid] : null, stack ? [stack] : null);
+      });
+    });
+  } catch (err) {
+    console.warn("Failed to fetch Docker updates:", err);
+  }
+}
+
+async function handleSaveUpdateFrequency() {
+  const freqSelect = document.getElementById("docker-auto-update-freq");
+  const feedback = document.getElementById("docker-updates-feedback");
+  const freq = freqSelect?.value || "disabled";
+
+  try {
+    const resp = await apiFetch("/api/docker/updates/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ frequency: freq }),
+    });
+    if (resp.ok) {
+      if (feedback) {
+        feedback.className = "auth-alert feedback-success";
+        feedback.textContent = `Auto-update policy updated to '${freq}'.`;
+        feedback.classList.remove("hidden");
+      }
+    }
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+  }
+}
+
+async function handleApplyUpdates(containers = null, stacks = null) {
+  const feedback = document.getElementById("docker-updates-feedback");
+  if (feedback) {
+    feedback.className = "auth-alert";
+    feedback.textContent = "Applying container / stack updates...";
+    feedback.classList.remove("hidden");
+  }
+
+  try {
+    const resp = await apiFetch("/api/docker/updates/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ containers, stacks }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      if (feedback) {
+        feedback.className = "auth-alert feedback-success";
+        feedback.textContent = "Updates applied successfully.";
+      }
+      fetchDockerUpdates();
+      fetchDockerContainers();
+      fetchDockerStatus();
+    } else {
+      if (feedback) {
+        feedback.className = "auth-alert feedback-error";
+        feedback.textContent = data.detail || "Failed to apply updates.";
+      }
+    }
+  } catch (err) {
+    if (feedback) {
+      feedback.className = "auth-alert feedback-error";
+      feedback.textContent = `Error: ${err.message}`;
+    }
+  }
+}
+
+/**
  * Initialize listeners and run startup authentication check.
  */
 function initDashboard() {
+  // Main Navigation Tabs
   document
     .getElementById("nav-tab-overview")
     ?.addEventListener("click", () => switchViewTab("overview", true));
@@ -1815,6 +2985,143 @@ function initDashboard() {
     .getElementById("nav-tab-notifications")
     ?.addEventListener("click", () => switchViewTab("notifications", true));
 
+  document
+    .getElementById("nav-tab-containers")
+    ?.addEventListener("click", () => switchViewTab("containers", true));
+
+  // Docker Sub-Tabs
+  const subtabs = ["stacks", "containers", "images", "volumes", "networks", "updates"];
+  subtabs.forEach((st) => {
+    document
+      .getElementById(`subtab-docker-${st}`)
+      ?.addEventListener("click", () => switchDockerSubtab(st, true));
+  });
+
+  // Quick Stat Cards Navigation
+  document.querySelectorAll(".docker-stat-card[data-subtab]").forEach((card) => {
+    card.addEventListener("click", () => {
+      const st = card.getAttribute("data-subtab");
+      if (st) switchDockerSubtab(st, true);
+    });
+    card.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        const st = card.getAttribute("data-subtab");
+        if (st) switchDockerSubtab(st, true);
+      }
+    });
+  });
+
+  // Docker Actions & Buttons
+  document
+    .getElementById("btn-install-docker")
+    ?.addEventListener("click", handleInstallDocker);
+
+  document
+    .getElementById("refresh-docker-btn")
+    ?.addEventListener("click", () => {
+      fetchDockerStatus();
+      refreshDockerSubtab(currentDockerSubtab);
+    });
+
+  // Stacks
+  document
+    .getElementById("btn-new-stack")
+    ?.addEventListener("click", () => openStackEditor());
+
+  document
+    .getElementById("close-stack-editor-btn")
+    ?.addEventListener("click", closeStackEditor);
+
+  document
+    .getElementById("cancel-stack-editor-btn")
+    ?.addEventListener("click", closeStackEditor);
+
+  document
+    .getElementById("save-stack-btn")
+    ?.addEventListener("click", handleSaveStack);
+
+  document
+    .getElementById("stack-template-btn")
+    ?.addEventListener("click", insertExampleYaml);
+
+  // Containers
+  document
+    .getElementById("docker-container-search")
+    ?.addEventListener("input", renderDockerContainers);
+
+  document
+    .getElementById("docker-containers-all-toggle")
+    ?.addEventListener("change", fetchDockerContainers);
+
+  // Images
+  document
+    .getElementById("btn-pull-image")
+    ?.addEventListener("click", handlePullImage);
+
+  document
+    .getElementById("btn-prune-images")
+    ?.addEventListener("click", handlePruneImages);
+
+  // Updates
+  document
+    .getElementById("btn-save-update-freq")
+    ?.addEventListener("click", handleSaveUpdateFrequency);
+
+  document
+    .getElementById("btn-check-docker-updates")
+    ?.addEventListener("click", fetchDockerUpdates);
+
+  document
+    .getElementById("btn-apply-all-updates")
+    ?.addEventListener("click", () => handleApplyUpdates());
+
+  // Logs Modal
+  document
+    .getElementById("close-container-logs-btn")
+    ?.addEventListener("click", closeContainerLogs);
+
+  document
+    .getElementById("refresh-logs-btn")
+    ?.addEventListener("click", fetchContainerLogs);
+
+  document
+    .getElementById("copy-logs-btn")
+    ?.addEventListener("click", copyContainerLogs);
+
+  document
+    .getElementById("scroll-bottom-logs-btn")
+    ?.addEventListener("click", scrollLogsToBottom);
+
+  document
+    .getElementById("logs-tail-select")
+    ?.addEventListener("change", fetchContainerLogs);
+
+  document
+    .getElementById("logs-timestamps-toggle")
+    ?.addEventListener("change", fetchContainerLogs);
+
+  document
+    .getElementById("logs-autorefresh-toggle")
+    ?.addEventListener("change", (e) => {
+      if (logsTimerId) {
+        clearInterval(logsTimerId);
+        logsTimerId = null;
+      }
+      if (e.target.checked && activeLogContainerId) {
+        logsTimerId = setInterval(fetchContainerLogs, 3000);
+      }
+    });
+
+  // Global Escape Key to dismiss modals
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeStackEditor();
+      closeContainerLogs();
+    }
+  });
+
+  // Notifications
   document
     .getElementById("send-test-notification-btn")
     ?.addEventListener("click", handleSendTestNotification);

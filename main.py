@@ -26,6 +26,7 @@ REPO_DIR = Path(__file__).resolve().parent
 RAID_STATE_DB = Path(
     config("RAID_STATE_DB", default="/var/lib/raidcheck/raid_monitor.sqlite3")
 )
+STACKS_DIR = Path(config("STACKS_DIR", default=str(REPO_DIR / "stacks")))
 WEEK_SECONDS = 7 * 24 * 60 * 60
 SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 CHANNEL_ID = ""
@@ -42,6 +43,7 @@ APP_SETTING_KEYS = (
     "refresh_system_sec",
     "refresh_raid_sec",
     "refresh_notifications_sec",
+    "docker_auto_update_frequency",
 )
 
 client = discord.Client(intents=discord.Intents.default())
@@ -187,6 +189,14 @@ def _connect_state_db() -> sqlite3.Connection:
     connection.execute(
         "CREATE TABLE IF NOT EXISTS app_settings "
         "(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at REAL NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS docker_stacks ("
+        "name TEXT PRIMARY KEY, "
+        "compose_yaml TEXT NOT NULL, "
+        "status TEXT NOT NULL, "
+        "created_at REAL NOT NULL, "
+        "updated_at REAL NOT NULL)"
     )
     connection.commit()
     return connection
@@ -353,6 +363,9 @@ def _default_app_settings_from_env() -> dict[str, str]:
         "refresh_raid_sec": str(config("REFRESH_RAID_SEC", default="15") or "15"),
         "refresh_notifications_sec": str(
             config("REFRESH_NOTIFICATIONS_SEC", default="60") or "60"
+        ),
+        "docker_auto_update_frequency": str(
+            config("DOCKER_AUTO_UPDATE_FREQUENCY", default="disabled") or "disabled"
         ),
     }
 
@@ -1111,6 +1124,993 @@ async def run_raid_check(force: bool = False) -> None:
                 record_notification(status, time.time(), weekly=False)
             except (OSError, sqlite3.Error):
                 logging.exception("Could not save RAID notification history to SQLite.")
+
+
+class DockerManager:
+    """Manages Docker daemon, Compose stacks, containers, images, volumes, and networks."""
+
+    def __init__(self, stacks_dir: Optional[Path] = None) -> None:
+        self.stacks_dir = Path(stacks_dir) if stacks_dir else STACKS_DIR
+
+    def _get_compose_cmd(self) -> list[str]:
+        docker_bin = shutil.which("docker")
+        if docker_bin:
+            try:
+                res = subprocess.run(
+                    [docker_bin, "compose", "version"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=3,
+                )
+                if res.returncode == 0:
+                    return [docker_bin, "compose"]
+            except Exception:
+                pass
+        dc_bin = shutil.which("docker-compose")
+        if dc_bin:
+            return [dc_bin]
+        return ["docker", "compose"]
+
+    def _run_cmd(
+        self,
+        cmd: list[str],
+        timeout: int = 30,
+        cwd: Optional[Path] = None,
+    ) -> str:
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+                cwd=str(cwd) if cwd else None,
+                check=True,
+            )
+            return proc.stdout
+        except subprocess.CalledProcessError as exc:
+            err = exc.stderr.strip() if exc.stderr else exc.stdout.strip()
+            raise RuntimeError(
+                err or f"Command {' '.join(cmd)} failed with exit code {exc.returncode}"
+            ) from exc
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"Executable not found: {cmd[0]}") from exc
+
+    def _run_docker(self, args: list[str], timeout: int = 30) -> str:
+        docker_bin = shutil.which("docker")
+        if not docker_bin:
+            raise FileNotFoundError("Docker binary not found on system.")
+        return self._run_cmd([docker_bin] + args, timeout=timeout)
+
+    def _run_compose(
+        self,
+        args: list[str],
+        timeout: int = 60,
+        cwd: Optional[Path] = None,
+    ) -> str:
+        prefix = self._get_compose_cmd()
+        return self._run_cmd(prefix + args, timeout=timeout, cwd=cwd)
+
+    def _parse_json_lines(self, raw: str) -> list[dict[str, Any]]:
+        if not raw or not raw.strip():
+            return []
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                pass
+        items: list[dict[str, Any]] = []
+        for line in stripped.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict):
+                    items.append(data)
+            except Exception:
+                pass
+        return items
+
+    def is_installed(self) -> bool:
+        return shutil.which("docker") is not None
+
+    def is_running(self) -> bool:
+        if not self.is_installed():
+            return False
+        try:
+            out = self._run_docker(["info", "--format", "{{.ServerVersion}}"], timeout=4)
+            return bool(out.strip())
+        except Exception:
+            return False
+
+    def get_version(self) -> str:
+        if not self.is_installed():
+            return ""
+        try:
+            out = self._run_docker(["version", "--format", "{{.Server.Version}}"], timeout=4)
+            if out.strip():
+                return out.strip()
+        except Exception:
+            pass
+        try:
+            out = self._run_docker(["version", "--format", "{{.Client.Version}}"], timeout=4)
+            if out.strip():
+                return out.strip()
+        except Exception:
+            pass
+        try:
+            out = self._run_docker(["--version"], timeout=4)
+            match = re.search(r"version\s+([0-9a-zA-Z.-]+)", out)
+            if match:
+                return match.group(1).rstrip(",")
+        except Exception:
+            pass
+        return ""
+
+    def get_compose_version(self) -> str:
+        try:
+            prefix = self._get_compose_cmd()
+            out = self._run_cmd(prefix + ["version", "--short"], timeout=4)
+            if out.strip():
+                return out.strip()
+        except Exception:
+            pass
+        try:
+            prefix = self._get_compose_cmd()
+            out = self._run_cmd(prefix + ["version"], timeout=4)
+            match = re.search(r"v?([0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.-]*)", out)
+            if match:
+                return match.group(1)
+        except Exception:
+            pass
+        return ""
+
+    def get_stats(self) -> dict[str, int]:
+        default_stats = {
+            "containers": 0,
+            "running": 0,
+            "stopped": 0,
+            "images": 0,
+            "volumes": 0,
+            "networks": 0,
+            "stacks": 0,
+        }
+        if not self.is_running():
+            return default_stats
+
+        try:
+            c_list = self.list_containers(all=True)
+            containers = len(c_list)
+            running = sum(
+                1
+                for c in c_list
+                if c.get("state") == "running" or "up" in str(c.get("status", "")).lower()
+            )
+            stopped = max(0, containers - running)
+        except Exception:
+            containers, running, stopped = 0, 0, 0
+
+        try:
+            img_out = self._run_docker(["images", "-q"], timeout=5)
+            images = len(
+                set(line.strip() for line in img_out.splitlines() if line.strip())
+            )
+        except Exception:
+            images = 0
+
+        try:
+            vol_out = self._run_docker(["volume", "ls", "-q"], timeout=5)
+            volumes = len(
+                [line.strip() for line in vol_out.splitlines() if line.strip()]
+            )
+        except Exception:
+            volumes = 0
+
+        try:
+            net_out = self._run_docker(["network", "ls", "-q"], timeout=5)
+            networks = len(
+                [line.strip() for line in net_out.splitlines() if line.strip()]
+            )
+        except Exception:
+            networks = 0
+
+        try:
+            stacks_list = self.list_stacks()
+            stacks = len(stacks_list)
+        except Exception:
+            stacks = 0
+
+        return {
+            "containers": containers,
+            "running": running,
+            "stopped": stopped,
+            "images": images,
+            "volumes": volumes,
+            "networks": networks,
+            "stacks": stacks,
+        }
+
+    def get_status(self) -> dict[str, Any]:
+        return {
+            "installed": self.is_installed(),
+            "running": self.is_running(),
+            "version": self.get_version(),
+            "compose_version": self.get_compose_version(),
+            "stats": self.get_stats(),
+        }
+
+    def install_docker(self) -> dict[str, Any]:
+        if self.is_installed():
+            return {
+                "status": "already_installed",
+                "message": "Docker is already installed on the system.",
+            }
+        try:
+            subprocess.Popen(
+                [
+                    "bash",
+                    "-c",
+                    "curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sh /tmp/get-docker.sh",
+                ],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return {
+                "status": "installing",
+                "message": "Docker installation script triggered in background.",
+            }
+        except Exception as exc:
+            raise RuntimeError(f"Failed to trigger Docker installation: {exc}") from exc
+
+    def list_containers(self, all: bool = True) -> list[dict[str, Any]]:
+        if not self.is_running():
+            return []
+        args = ["ps", "--format", "{{json .}}"]
+        if all:
+            args.append("-a")
+        try:
+            out = self._run_docker(args, timeout=10)
+        except Exception as exc:
+            logging.warning(f"Failed to list containers: {exc}")
+            return []
+
+        items = self._parse_json_lines(out)
+        containers = []
+        for item in items:
+            labels = item.get("Labels") or ""
+            stack_name = ""
+            if isinstance(labels, dict):
+                stack_name = str(labels.get("com.docker.compose.project", ""))
+            elif isinstance(labels, str):
+                for part in labels.split(","):
+                    if part.strip().startswith("com.docker.compose.project="):
+                        stack_name = part.split("=", 1)[1].strip()
+                        break
+            name = str(item.get("Names") or item.get("Name") or "")
+            if name.startswith("/"):
+                name = name[1:]
+            state = str(item.get("State") or "").lower()
+            status = str(item.get("Status") or "")
+            if not state:
+                state = (
+                    "running"
+                    if "up" in status.lower()
+                    else ("exited" if "exited" in status.lower() else "unknown")
+                )
+            containers.append(
+                {
+                    "id": str(item.get("ID") or "")[:12],
+                    "name": name,
+                    "image": str(item.get("Image") or ""),
+                    "state": state,
+                    "status": status,
+                    "ports": str(item.get("Ports") or ""),
+                    "created": str(item.get("CreatedAt") or item.get("RunningFor") or ""),
+                    "stack": stack_name,
+                }
+            )
+        return containers
+
+    def execute_container_action(
+        self, container_id: str, action: str
+    ) -> dict[str, Any]:
+        act = action.strip().lower()
+        valid_actions = {"start", "stop", "restart", "pause", "unpause", "remove", "rm"}
+        if act not in valid_actions:
+            raise ValueError(
+                f"Invalid container action '{action}'. Must be one of {sorted(valid_actions)}"
+            )
+        if not self.is_running():
+            raise RuntimeError("Docker daemon is not running.")
+        if act in ("remove", "rm"):
+            self._run_docker(["rm", "-f", container_id], timeout=15)
+            act = "remove"
+        else:
+            self._run_docker([act, container_id], timeout=30)
+        return {"success": True, "action": act, "id": container_id}
+
+    def get_container_logs(
+        self,
+        container_id: str,
+        tail: int = 200,
+        timestamps: bool = True,
+    ) -> str:
+        if not self.is_running():
+            raise RuntimeError("Docker daemon is not running.")
+        args = ["logs", "--tail", str(tail)]
+        if timestamps:
+            args.append("--timestamps")
+        args.append(container_id)
+        return self._run_docker(args, timeout=15)
+
+    def list_stacks(self) -> list[dict[str, Any]]:
+        managed_stacks: dict[str, dict[str, Any]] = {}
+        try:
+            connection = _connect_state_db()
+            try:
+                rows = connection.execute(
+                    "SELECT name, compose_yaml, status, created_at, updated_at "
+                    "FROM docker_stacks ORDER BY name ASC"
+                ).fetchall()
+                for r in rows:
+                    managed_stacks[r[0]] = {
+                        "name": r[0],
+                        "compose_yaml": r[1],
+                        "status": r[2],
+                        "created_at": float(r[3]),
+                        "updated_at": float(r[4]),
+                        "managed": True,
+                    }
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error):
+            pass
+
+        compose_projects: dict[str, dict[str, Any]] = {}
+        if self.is_running():
+            try:
+                out = self._run_compose(["ls", "--all", "--format", "json"], timeout=10)
+                items = self._parse_json_lines(out)
+                for item in items:
+                    p_name = item.get("Name") or item.get("name")
+                    if p_name:
+                        compose_projects[p_name] = {
+                            "name": p_name,
+                            "status": item.get("Status") or item.get("status") or "running",
+                            "config_files": item.get("ConfigFiles") or item.get("configFiles") or "",
+                        }
+            except Exception as exc:
+                logging.debug(f"Could not list compose projects: {exc}")
+
+        all_containers = self.list_containers(all=True) if self.is_running() else []
+        stack_containers_count: dict[str, int] = {}
+        stack_running_count: dict[str, int] = {}
+        for c in all_containers:
+            st = c.get("stack")
+            if st:
+                stack_containers_count[st] = stack_containers_count.get(st, 0) + 1
+                if c.get("state") == "running" or "up" in str(c.get("status", "")).lower():
+                    stack_running_count[st] = stack_running_count.get(st, 0) + 1
+
+        combined: dict[str, dict[str, Any]] = {}
+        for name, m_info in managed_stacks.items():
+            cnt = stack_containers_count.get(name, 0)
+            run_cnt = stack_running_count.get(name, 0)
+            status = m_info["status"]
+            if cnt > 0:
+                status = "running" if run_cnt > 0 else "exited"
+            elif name in compose_projects:
+                status = compose_projects[name]["status"]
+            combined[name] = {
+                "name": name,
+                "status": status,
+                "managed": True,
+                "containers_count": cnt,
+                "running_count": run_cnt,
+                "created_at": m_info["created_at"],
+                "updated_at": m_info["updated_at"],
+            }
+
+        for name, p_info in compose_projects.items():
+            if name not in combined:
+                cnt = stack_containers_count.get(name, 0)
+                run_cnt = stack_running_count.get(name, 0)
+                combined[name] = {
+                    "name": name,
+                    "status": p_info["status"],
+                    "managed": False,
+                    "containers_count": cnt,
+                    "running_count": run_cnt,
+                    "created_at": 0.0,
+                    "updated_at": 0.0,
+                }
+
+        return sorted(list(combined.values()), key=lambda s: s["name"])
+
+    def get_stack(self, name: str) -> Optional[dict[str, Any]]:
+        clean_name = name.strip()
+        managed_row = None
+        try:
+            connection = _connect_state_db()
+            try:
+                managed_row = connection.execute(
+                    "SELECT name, compose_yaml, status, created_at, updated_at "
+                    "FROM docker_stacks WHERE name = ?",
+                    (clean_name,),
+                ).fetchone()
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error):
+            pass
+
+        stack_file = self.stacks_dir / clean_name / "docker-compose.yml"
+        all_containers = self.list_containers(all=True) if self.is_running() else []
+        constituent = [c for c in all_containers if c.get("stack") == clean_name]
+
+        if managed_row:
+            compose_yaml = managed_row[1]
+            if not compose_yaml and stack_file.is_file():
+                try:
+                    compose_yaml = stack_file.read_text(encoding="utf-8")
+                except OSError:
+                    pass
+            status = managed_row[2]
+            if constituent:
+                status = (
+                    "running"
+                    if any(c.get("state") == "running" for c in constituent)
+                    else "exited"
+                )
+            return {
+                "name": clean_name,
+                "compose_yaml": compose_yaml,
+                "status": status,
+                "managed": True,
+                "created_at": float(managed_row[3]),
+                "updated_at": float(managed_row[4]),
+                "containers": constituent,
+            }
+
+        if self.is_running():
+            try:
+                out = self._run_compose(["ls", "--all", "--format", "json"], timeout=5)
+                items = self._parse_json_lines(out)
+                for item in items:
+                    p_name = item.get("Name") or item.get("name")
+                    if p_name == clean_name:
+                        config_files = (
+                            item.get("ConfigFiles") or item.get("configFiles") or ""
+                        )
+                        compose_yaml = ""
+                        if config_files:
+                            first_file = Path(config_files.split(",")[0].strip())
+                            if first_file.is_file():
+                                try:
+                                    compose_yaml = first_file.read_text(encoding="utf-8")
+                                except OSError:
+                                    pass
+                        return {
+                            "name": clean_name,
+                            "compose_yaml": compose_yaml,
+                            "status": item.get("Status") or "running",
+                            "managed": False,
+                            "created_at": 0.0,
+                            "updated_at": 0.0,
+                            "containers": constituent,
+                        }
+            except Exception:
+                pass
+
+        return None
+
+    def save_stack(
+        self,
+        name: str,
+        compose_yaml: str,
+        deploy: bool = True,
+    ) -> dict[str, Any]:
+        clean_name = name.strip()
+        if not clean_name or not re.match(r"^[a-zA-Z0-9_-]+$", clean_name):
+            raise ValueError(
+                "Stack name must contain only alphanumeric characters, underscores, and hyphens."
+            )
+        if not compose_yaml or not compose_yaml.strip():
+            raise ValueError("Compose YAML cannot be empty.")
+
+        stack_dir = self.stacks_dir / clean_name
+        stack_dir.mkdir(parents=True, exist_ok=True)
+        stack_file = stack_dir / "docker-compose.yml"
+        stack_file.write_text(compose_yaml, encoding="utf-8")
+
+        status = "saved"
+        if deploy:
+            if not self.is_running():
+                raise RuntimeError("Docker daemon is not running.")
+            self._run_compose(
+                ["-f", str(stack_file), "-p", clean_name, "up", "-d"], timeout=120
+            )
+            status = "running"
+
+        now = time.time()
+        connection = _connect_state_db()
+        try:
+            row = connection.execute(
+                "SELECT created_at FROM docker_stacks WHERE name = ?", (clean_name,)
+            ).fetchone()
+            created_at = float(row[0]) if row else now
+            connection.execute(
+                "INSERT OR REPLACE INTO docker_stacks "
+                "(name, compose_yaml, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (clean_name, compose_yaml, status, created_at, now),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        res = self.get_stack(clean_name)
+        return (
+            res
+            if res
+            else {
+                "name": clean_name,
+                "compose_yaml": compose_yaml,
+                "status": status,
+                "managed": True,
+                "created_at": created_at,
+                "updated_at": now,
+                "containers": [],
+            }
+        )
+
+    def execute_stack_action(self, name: str, action: str) -> dict[str, Any]:
+        clean_name = name.strip()
+        act = action.strip().lower()
+        valid_actions = {"start", "stop", "restart", "down", "pull"}
+        if act not in valid_actions:
+            raise ValueError(
+                f"Invalid stack action '{action}'. Must be one of {sorted(valid_actions)}"
+            )
+        if not self.is_running():
+            raise RuntimeError("Docker daemon is not running.")
+
+        stack_file = self.stacks_dir / clean_name / "docker-compose.yml"
+        if not stack_file.is_file():
+            try:
+                connection = _connect_state_db()
+                try:
+                    row = connection.execute(
+                        "SELECT compose_yaml FROM docker_stacks WHERE name = ?",
+                        (clean_name,),
+                    ).fetchone()
+                    if row and row[0]:
+                        stack_file.parent.mkdir(parents=True, exist_ok=True)
+                        stack_file.write_text(row[0], encoding="utf-8")
+                finally:
+                    connection.close()
+            except (OSError, sqlite3.Error):
+                pass
+
+        if not stack_file.is_file():
+            # Check external compose projects
+            try:
+                out = self._run_compose(["ls", "--all", "--format", "json"], timeout=5)
+                for item in self._parse_json_lines(out):
+                    p_name = item.get("Name") or item.get("name")
+                    if p_name == clean_name:
+                        c_files = item.get("ConfigFiles") or item.get("configFiles") or ""
+                        if c_files:
+                            cand = Path(c_files.split(",")[0].strip())
+                            if cand.is_file():
+                                stack_file = cand
+                                break
+            except Exception:
+                pass
+
+        if not stack_file.is_file():
+            raise FileNotFoundError(
+                f"Compose file for stack '{clean_name}' not found."
+            )
+
+        if act == "start":
+            self._run_compose(
+                ["-f", str(stack_file), "-p", clean_name, "up", "-d"], timeout=90
+            )
+            new_status = "running"
+        elif act == "stop":
+            self._run_compose(
+                ["-f", str(stack_file), "-p", clean_name, "stop"], timeout=60
+            )
+            new_status = "stopped"
+        elif act == "restart":
+            self._run_compose(
+                ["-f", str(stack_file), "-p", clean_name, "restart"], timeout=90
+            )
+            new_status = "running"
+        elif act == "down":
+            self._run_compose(
+                ["-f", str(stack_file), "-p", clean_name, "down"], timeout=60
+            )
+            new_status = "down"
+        elif act == "pull":
+            self._run_compose(
+                ["-f", str(stack_file), "-p", clean_name, "pull"], timeout=180
+            )
+            new_status = "updated"
+
+        now = time.time()
+        try:
+            connection = _connect_state_db()
+            try:
+                connection.execute(
+                    "UPDATE docker_stacks SET status = ?, updated_at = ? WHERE name = ?",
+                    (new_status, now, clean_name),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error):
+            pass
+
+        return {
+            "success": True,
+            "name": clean_name,
+            "action": act,
+            "status": new_status,
+        }
+
+    def delete_stack(self, name: str, down: bool = True) -> bool:
+        clean_name = name.strip()
+        stack_file = self.stacks_dir / clean_name / "docker-compose.yml"
+        if down and self.is_running() and stack_file.is_file():
+            try:
+                self._run_compose(
+                    ["-f", str(stack_file), "-p", clean_name, "down", "-v"],
+                    timeout=60,
+                )
+            except Exception as exc:
+                logging.warning(f"Failed to tear down stack '{clean_name}': {exc}")
+
+        stack_dir = self.stacks_dir / clean_name
+        if stack_dir.is_dir():
+            shutil.rmtree(stack_dir, ignore_errors=True)
+
+        try:
+            connection = _connect_state_db()
+            try:
+                connection.execute(
+                    "DELETE FROM docker_stacks WHERE name = ?", (clean_name,)
+                )
+                connection.commit()
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error):
+            pass
+        return True
+
+    def list_images(self) -> list[dict[str, Any]]:
+        if not self.is_running():
+            return []
+        try:
+            out = self._run_docker(["images", "--format", "{{json .}}"], timeout=10)
+        except Exception as exc:
+            logging.warning(f"Failed to list images: {exc}")
+            return []
+
+        items = self._parse_json_lines(out)
+        images = []
+        for item in items:
+            repo = str(item.get("Repository") or "")
+            tag = str(item.get("Tag") or "")
+            tags = []
+            if repo and tag and repo != "<none>" and tag != "<none>":
+                tags.append(f"{repo}:{tag}")
+            elif repo and repo != "<none>":
+                tags.append(repo)
+            images.append(
+                {
+                    "id": str(item.get("ID") or "")[:12],
+                    "repository": repo,
+                    "tag": tag,
+                    "tags": tags,
+                    "size": str(item.get("Size") or ""),
+                    "created": str(
+                        item.get("CreatedAt") or item.get("CreatedSince") or ""
+                    ),
+                }
+            )
+        return images
+
+    def pull_image(self, image_tag: str) -> dict[str, Any]:
+        clean_tag = image_tag.strip()
+        if not clean_tag:
+            raise ValueError("Image tag cannot be empty.")
+        if not self.is_running():
+            raise RuntimeError("Docker daemon is not running.")
+        out = self._run_docker(["pull", clean_tag], timeout=300)
+        return {"success": True, "image": clean_tag, "output": out}
+
+    def remove_image(self, image_id: str, force: bool = False) -> dict[str, Any]:
+        clean_id = image_id.strip()
+        if not clean_id:
+            raise ValueError("Image ID cannot be empty.")
+        if not self.is_running():
+            raise RuntimeError("Docker daemon is not running.")
+        args = ["rmi"]
+        if force:
+            args.append("-f")
+        args.append(clean_id)
+        out = self._run_docker(args, timeout=20)
+        return {"success": True, "id": clean_id, "output": out}
+
+    def prune_images(self, all_images: bool = False) -> dict[str, Any]:
+        if not self.is_running():
+            raise RuntimeError("Docker daemon is not running.")
+        args = ["image", "prune", "-f"]
+        if all_images:
+            args.append("-a")
+        out = self._run_docker(args, timeout=60)
+        return {"success": True, "output": out}
+
+    def list_volumes(self) -> list[dict[str, Any]]:
+        if not self.is_running():
+            return []
+        try:
+            out = self._run_docker(["volume", "ls", "--format", "{{json .}}"], timeout=10)
+        except Exception as exc:
+            logging.warning(f"Failed to list volumes: {exc}")
+            return []
+        items = self._parse_json_lines(out)
+        return [
+            {
+                "name": str(item.get("Name") or ""),
+                "driver": str(item.get("Driver") or ""),
+                "scope": str(item.get("Scope") or ""),
+                "mountpoint": str(item.get("Mountpoint") or ""),
+                "created_at": str(item.get("CreatedAt") or ""),
+                "size": str(item.get("Size") or ""),
+            }
+            for item in items
+        ]
+
+    def remove_volume(self, volume_name: str, force: bool = False) -> dict[str, Any]:
+        clean_name = volume_name.strip()
+        if not clean_name:
+            raise ValueError("Volume name cannot be empty.")
+        if not self.is_running():
+            raise RuntimeError("Docker daemon is not running.")
+        args = ["volume", "rm"]
+        if force:
+            args.append("-f")
+        args.append(clean_name)
+        out = self._run_docker(args, timeout=20)
+        return {"success": True, "name": clean_name, "output": out}
+
+    def list_networks(self) -> list[dict[str, Any]]:
+        if not self.is_running():
+            return []
+        try:
+            out = self._run_docker(["network", "ls", "--format", "{{json .}}"], timeout=10)
+        except Exception as exc:
+            logging.warning(f"Failed to list networks: {exc}")
+            return []
+        items = self._parse_json_lines(out)
+        return [
+            {
+                "id": str(item.get("ID") or "")[:12],
+                "name": str(item.get("Name") or ""),
+                "driver": str(item.get("Driver") or ""),
+                "scope": str(item.get("Scope") or ""),
+                "internal": str(item.get("Internal") or "false"),
+                "created_at": str(item.get("CreatedAt") or ""),
+            }
+            for item in items
+        ]
+
+    def remove_network(self, network_id: str) -> dict[str, Any]:
+        clean_id = network_id.strip()
+        if not clean_id:
+            raise ValueError("Network ID cannot be empty.")
+        if not self.is_running():
+            raise RuntimeError("Docker daemon is not running.")
+        out = self._run_docker(["network", "rm", clean_id], timeout=20)
+        return {"success": True, "id": clean_id, "output": out}
+
+    def get_auto_update_config(self) -> dict[str, str]:
+        settings = get_app_settings()
+        return {
+            "frequency": settings.get("docker_auto_update_frequency", "disabled")
+        }
+
+    def set_auto_update_config(self, frequency: str) -> dict[str, str]:
+        freq = frequency.strip().lower()
+        valid_freqs = {"disabled", "hourly", "daily"}
+        if freq not in valid_freqs:
+            raise ValueError(
+                f"Invalid frequency '{frequency}'. Must be one of {sorted(valid_freqs)}"
+            )
+        update_app_settings({"docker_auto_update_frequency": freq})
+        return {"frequency": freq}
+
+    def check_updates(self) -> dict[str, Any]:
+        frequency = self.get_auto_update_config().get("frequency", "disabled")
+        if not self.is_running():
+            return {"updates": [], "config": {"frequency": frequency}}
+
+        containers = self.list_containers(all=False)
+        results = []
+        for c in containers:
+            img = c.get("image", "").strip()
+            if not img or "<none>" in img:
+                continue
+            current_id = ""
+            try:
+                current_id = self._run_docker(
+                    ["inspect", "--format", "{{.Id}}", img], timeout=5
+                ).strip()[:12]
+            except Exception:
+                pass
+
+            update_available = False
+            latest_id = current_id
+            try:
+                self._run_docker(["manifest", "inspect", img], timeout=8)
+            except Exception:
+                pass
+
+            results.append(
+                {
+                    "container_id": c.get("id"),
+                    "container_name": c.get("name"),
+                    "image": img,
+                    "stack": c.get("stack", ""),
+                    "update_available": update_available,
+                    "current_id": current_id,
+                    "latest_id": latest_id,
+                }
+            )
+
+        return {
+            "updates": results,
+            "config": {
+                "frequency": frequency,
+            },
+        }
+
+    def apply_updates(
+        self,
+        containers: Optional[list[str]] = None,
+        stacks: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        if not self.is_running():
+            raise RuntimeError("Docker daemon is not running.")
+        updated: list[dict[str, Any]] = []
+
+        if stacks:
+            for stack_name in stacks:
+                try:
+                    self.execute_stack_action(stack_name, "pull")
+                    self.execute_stack_action(stack_name, "start")
+                    updated.append(
+                        {"type": "stack", "name": stack_name, "success": True}
+                    )
+                except Exception as exc:
+                    logging.warning(f"Failed to update stack '{stack_name}': {exc}")
+                    updated.append(
+                        {
+                            "type": "stack",
+                            "name": stack_name,
+                            "success": False,
+                            "error": str(exc),
+                        }
+                    )
+
+        if containers:
+            all_c = self.list_containers(all=True)
+            for cid in containers:
+                target = next(
+                    (
+                        c
+                        for c in all_c
+                        if c["id"] == cid
+                        or c["name"] == cid
+                        or c["id"].startswith(cid)
+                    ),
+                    None,
+                )
+                if target and target.get("image"):
+                    try:
+                        self.pull_image(target["image"])
+                        if target.get("stack"):
+                            self.execute_stack_action(target["stack"], "start")
+                        else:
+                            self.execute_container_action(target["id"], "restart")
+                        updated.append(
+                            {
+                                "type": "container",
+                                "id": target["id"],
+                                "name": target["name"],
+                                "success": True,
+                            }
+                        )
+                    except Exception as exc:
+                        logging.warning(
+                            f"Failed to update container '{target['name']}': {exc}"
+                        )
+                        updated.append(
+                            {
+                                "type": "container",
+                                "id": target["id"],
+                                "name": target["name"],
+                                "success": False,
+                                "error": str(exc),
+                            }
+                        )
+
+        if not containers and not stacks:
+            all_c = self.list_containers(all=False)
+            for target in all_c:
+                img = target.get("image", "")
+                if img and "<none>" not in img:
+                    try:
+                        self.pull_image(img)
+                        if target.get("stack"):
+                            self.execute_stack_action(target["stack"], "start")
+                        else:
+                            self.execute_container_action(target["id"], "restart")
+                        updated.append(
+                            {
+                                "type": "container",
+                                "id": target["id"],
+                                "name": target["name"],
+                                "success": True,
+                            }
+                        )
+                    except Exception as exc:
+                        logging.warning(
+                            f"Failed to auto-update container '{target['name']}': {exc}"
+                        )
+                        updated.append(
+                            {
+                                "type": "container",
+                                "id": target["id"],
+                                "name": target["name"],
+                                "success": False,
+                                "error": str(exc),
+                            }
+                        )
+
+        return {"success": True, "updated": updated}
+
+
+docker_manager = DockerManager()
+get_docker_status = docker_manager.get_status
+install_docker = docker_manager.install_docker
+list_docker_stacks = docker_manager.list_stacks
+get_docker_stack = docker_manager.get_stack
+save_docker_stack = docker_manager.save_stack
+execute_docker_stack_action = docker_manager.execute_stack_action
+delete_docker_stack = docker_manager.delete_stack
+list_docker_containers = docker_manager.list_containers
+execute_docker_container_action = docker_manager.execute_container_action
+get_docker_container_logs = docker_manager.get_container_logs
+list_docker_images = docker_manager.list_images
+pull_docker_image = docker_manager.pull_image
+remove_docker_image = docker_manager.remove_image
+prune_docker_images = docker_manager.prune_images
+list_docker_volumes = docker_manager.list_volumes
+remove_docker_volume = docker_manager.remove_volume
+list_docker_networks = docker_manager.list_networks
+remove_docker_network = docker_manager.remove_network
+check_docker_updates = docker_manager.check_updates
+apply_docker_updates = docker_manager.apply_updates
+get_docker_auto_update_config = docker_manager.get_auto_update_config
+set_docker_auto_update_config = docker_manager.set_auto_update_config
 
 
 @client.event
