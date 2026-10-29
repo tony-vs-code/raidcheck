@@ -531,7 +531,7 @@ wheels = [
 
 [[package]]
 name = "systemalerts"
-version = "0.5.2"
+version = "0.6.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohappyeyeballs" },
