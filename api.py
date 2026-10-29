@@ -26,7 +26,7 @@ import psutil
 
 import main
 
-app = FastAPI(title="System Alerts Dashboard")
+app = FastAPI(title="SystemAlerts Server Manager")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -1087,8 +1087,8 @@ def serve_index():
         )
         return HTMLResponse(content=content, status_code=200, headers=headers)
     return HTMLResponse(
-        content="<!DOCTYPE html><html><head><title>System Alerts</title></head>"
-        "<body><h1>System Alerts Dashboard</h1></body></html>",
+        content="<!DOCTYPE html><html><head><title>SystemAlerts Server Manager</title></head>"
+        "<body><h1>SystemAlerts Server Manager</h1></body></html>",
         status_code=200,
         headers=headers,
     )

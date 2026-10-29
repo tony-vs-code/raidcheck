@@ -1699,7 +1699,7 @@ class FastAPIEndpointTests(unittest.TestCase):
         with patch.object(api, "STATIC_DIR", empty_static_dir):
             fallback_resp = asgi_get(api.app, "/")
             self.assertEqual(fallback_resp.status_code, 200)
-            self.assertIn("<h1>System Alerts Dashboard</h1>", fallback_resp.text)
+            self.assertIn("<h1>SystemAlerts Server Manager</h1>", fallback_resp.text)
 
     def test_get_root_serves_dashboard_html(self):
         response = asgi_get(api.app, "/")

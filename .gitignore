@@ -166,4 +166,5 @@ cython_debug/
 .agents/
 .env
 start_tmux.sh
+GEMINI.md
 

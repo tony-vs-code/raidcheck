@@ -761,7 +761,7 @@ async def send_test_notification() -> tuple[bool, str]:
 
     embed = discord.Embed(
         title="🔔 System Alerts - Test Notification",
-        description="This is a test notification from the System Alerts dashboard.\nDiscord notifications are configured and functioning properly.",
+        description="This is a test notification from SystemAlerts Server Manager.\nDiscord notifications are configured and functioning properly.",
         color=0x3498DB,
     )
     embed.add_field(name="Status", value="Test / Operational", inline=True)

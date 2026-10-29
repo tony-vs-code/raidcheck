@@ -1235,7 +1235,7 @@ function openAuthOverlay({ setupRequired = false, googleClientId = "" } = {}) {
     if (titleEl) titleEl.textContent = "Sign In";
     if (subtitleEl) {
       subtitleEl.textContent =
-        "Authenticate to access the SystemAlerts dashboard";
+        "Authenticate to access SystemAlerts Server Manager";
     }
     if (setupForm) setupForm.classList.add("hidden");
     if (loginForm) loginForm.classList.remove("hidden");
