@@ -81,6 +81,9 @@ class SettingsUpdateRequest(BaseModel):
     mount_path: Optional[str] = None
     google_client_id: Optional[str] = None
     allowed_google_emails: Optional[str] = None
+    refresh_system_sec: Optional[int | str] = None
+    refresh_raid_sec: Optional[int | str] = None
+    refresh_notifications_sec: Optional[int | str] = None
 
 
 def _extract_session_token(request: Request) -> Optional[str]:
@@ -243,6 +246,7 @@ def _build_full_snapshot() -> dict[str, Any]:
         "notification_state": _get_formatted_notification_state(),
         "history": _get_formatted_history(20),
         "version": main.get_current_version_info(),
+        "refresh_intervals": main.get_refresh_intervals(),
     }
 
 
@@ -255,21 +259,26 @@ def _build_module_update(module_name: str) -> dict[str, Any]:
             "system": get_system_metrics(),
         }
     if mod in ("raid", "disks"):
+        raid = _get_raid_summary()
+        adaptive_fast = raid.get("status") in ("recovering", "resyncing", "degraded")
+        intervals = main.get_refresh_intervals()
+        effective_interval = (
+            min(intervals["raid"], 5)
+            if adaptive_fast and intervals["raid"] > 0
+            else intervals["raid"]
+        )
         return {
             "type": "module_update",
-            "module": mod,
-            "raid": _get_raid_summary(),
+            "module": "raid",
+            "raid": raid,
+            "adaptive_fast": adaptive_fast,
+            "effective_interval": effective_interval,
         }
-    if mod in ("schedule", "notification_state"):
+    if mod in ("notifications", "schedule", "notification_state", "history"):
         return {
             "type": "module_update",
-            "module": mod,
+            "module": "notifications",
             "notification_state": _get_formatted_notification_state(),
-        }
-    if mod == "history":
-        return {
-            "type": "module_update",
-            "module": "history",
             "history": _get_formatted_history(20),
         }
     return _build_full_snapshot()
@@ -296,6 +305,7 @@ def _format_settings_response(settings: dict[str, str]) -> dict[str, Any]:
         "mount_path": settings.get("mount_path", "/mnt/media/") or "/mnt/media/",
         "google_client_id": settings.get("google_client_id", ""),
         "allowed_google_emails": settings.get("allowed_google_emails", ""),
+        "refresh_intervals": main.get_refresh_intervals(settings),
     }
 
 
@@ -455,12 +465,14 @@ async def api_websocket(websocket: WebSocket) -> None:
 
     await ws_manager.connect(websocket)
     try:
-        await websocket.send_json(_build_full_snapshot())
-        tick = 0
+        initial_snapshot = _build_full_snapshot()
+        last_raid_status = initial_snapshot.get("raid", {}).get("status", "unknown")
+        await websocket.send_json(initial_snapshot)
+        elapsed = {"system": 0, "raid": 0, "notifications": 0}
         while True:
             try:
                 raw_text = await asyncio.wait_for(
-                    websocket.receive_text(), timeout=2.0
+                    websocket.receive_text(), timeout=1.0
                 )
                 try:
                     data = json.loads(raw_text)
@@ -469,17 +481,91 @@ async def api_websocket(websocket: WebSocket) -> None:
                 if isinstance(data, dict):
                     action = data.get("action")
                     if action == "refresh":
-                        await websocket.send_json(_build_full_snapshot())
+                        snap = _build_full_snapshot()
+                        last_raid_status = snap.get("raid", {}).get(
+                            "status", last_raid_status
+                        )
+                        elapsed = {"system": 0, "raid": 0, "notifications": 0}
+                        await websocket.send_json(snap)
                     elif action == "refresh_module":
+                        mod_payload = _build_module_update(
+                            str(data.get("module") or "")
+                        )
+                        if (
+                            mod_payload.get("module") == "raid"
+                            and "raid" in mod_payload
+                        ):
+                            last_raid_status = mod_payload["raid"].get(
+                                "status", last_raid_status
+                            )
+                        await websocket.send_json(mod_payload)
+                    elif action == "set_intervals":
+                        raw_intervals = (
+                            data.get("intervals")
+                            if isinstance(data.get("intervals"), dict)
+                            else data
+                        )
+                        interval_updates: dict[str, str] = {}
+                        for key_short, setting_key in (
+                            ("system", "refresh_system_sec"),
+                            ("raid", "refresh_raid_sec"),
+                            ("notifications", "refresh_notifications_sec"),
+                        ):
+                            if (
+                                key_short in raw_intervals
+                                and raw_intervals[key_short] is not None
+                            ):
+                                try:
+                                    interval_updates[setting_key] = str(
+                                        max(0, int(raw_intervals[key_short]))
+                                    )
+                                except (ValueError, TypeError):
+                                    pass
+                        if interval_updates:
+                            main.update_app_settings(interval_updates)
                         await websocket.send_json(
-                            _build_module_update(str(data.get("module") or ""))
+                            {
+                                "type": "intervals_updated",
+                                "refresh_intervals": main.get_refresh_intervals(),
+                            }
                         )
             except asyncio.TimeoutError:
-                tick += 1
-                if tick % 5 == 0:
-                    await websocket.send_json(_build_full_snapshot())
-                else:
+                intervals = main.get_refresh_intervals()
+                elapsed["system"] += 1
+                elapsed["raid"] += 1
+                elapsed["notifications"] += 1
+
+                if (
+                    intervals["system"] > 0
+                    and elapsed["system"] >= intervals["system"]
+                ):
+                    elapsed["system"] = 0
                     await websocket.send_json(_build_module_update("system"))
+
+                adaptive_fast = last_raid_status in (
+                    "recovering",
+                    "resyncing",
+                    "degraded",
+                )
+                raid_interval = (
+                    min(intervals["raid"], 5)
+                    if adaptive_fast and intervals["raid"] > 0
+                    else intervals["raid"]
+                )
+                if raid_interval > 0 and elapsed["raid"] >= raid_interval:
+                    elapsed["raid"] = 0
+                    raid_msg = _build_module_update("raid")
+                    last_raid_status = raid_msg.get("raid", {}).get(
+                        "status", last_raid_status
+                    )
+                    await websocket.send_json(raid_msg)
+
+                if (
+                    intervals["notifications"] > 0
+                    and elapsed["notifications"] >= intervals["notifications"]
+                ):
+                    elapsed["notifications"] = 0
+                    await websocket.send_json(_build_module_update("notifications"))
     except WebSocketDisconnect:
         pass
     finally:
@@ -510,6 +596,25 @@ def api_update_settings(
         updates["google_client_id"] = payload.google_client_id.strip()
     if payload.allowed_google_emails is not None:
         updates["allowed_google_emails"] = payload.allowed_google_emails.strip()
+    if payload.refresh_system_sec is not None:
+        try:
+            updates["refresh_system_sec"] = str(
+                max(0, int(payload.refresh_system_sec))
+            )
+        except (ValueError, TypeError):
+            pass
+    if payload.refresh_raid_sec is not None:
+        try:
+            updates["refresh_raid_sec"] = str(max(0, int(payload.refresh_raid_sec)))
+        except (ValueError, TypeError):
+            pass
+    if payload.refresh_notifications_sec is not None:
+        try:
+            updates["refresh_notifications_sec"] = str(
+                max(0, int(payload.refresh_notifications_sec))
+            )
+        except (ValueError, TypeError):
+            pass
 
     updated = main.update_app_settings(updates)
     result = _format_settings_response(updated)

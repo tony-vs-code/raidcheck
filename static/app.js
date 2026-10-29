@@ -16,6 +16,9 @@ const VALID_RAID_STATES = new Set([
 let refreshTimerId = null;
 let wsConnection = null;
 let wsReconnectTimerId = null;
+let localTickerTimerId = null;
+let currentBootTime = null;
+let currentWeeklyDueAt = null;
 let isFetching = false;
 let isAuthenticated = false;
 let currentGoogleClientId = "";
@@ -203,6 +206,9 @@ function renderSystemMetrics(system) {
   }
 
   // Uptime
+  if (system.boot_time) {
+    currentBootTime = system.boot_time;
+  }
   const uptimeValEl = document.getElementById("uptime-value");
   const bootDetailEl = document.getElementById("boot-time-detail");
   if (uptimeValEl) {
@@ -371,6 +377,7 @@ function renderWeeklyNotificationState(notificationState) {
   const countdownEl = document.getElementById("weekly-countdown");
 
   if (!notificationState) {
+    currentWeeklyDueAt = null;
     applyStatusBadge(badgeEl, null, "unknown");
     if (badgeEl) badgeEl.textContent = "NOT RECORDED";
     if (sentAtEl) sentAtEl.textContent = "No weekly summary sent yet";
@@ -379,6 +386,11 @@ function renderWeeklyNotificationState(notificationState) {
     if (countdownEl) countdownEl.textContent = "Due immediately on next check";
     return;
   }
+
+  currentWeeklyDueAt =
+    notificationState.due_at !== undefined && notificationState.due_at !== null
+      ? Number(notificationState.due_at)
+      : null;
 
   const stateStatus = notificationState.status || "unknown";
   applyStatusBadge(badgeEl, null, stateStatus);
@@ -542,6 +554,20 @@ async function refreshDashboard() {
     renderWeeklyNotificationState(statusData.notification_state ?? null);
     renderNotificationHistory(historyData);
 
+    setModuleLastUpdated("system");
+    setModuleLastUpdated("raid");
+    setModuleLastUpdated("notifications");
+
+    if (statusData.raid) {
+      const raidStatus = String(statusData.raid.status || "").toLowerCase();
+      updateRaidAdaptiveBadge(
+        ["recovering", "resyncing", "degraded"].includes(raidStatus)
+      );
+    }
+    if (statusData.refresh_intervals) {
+      syncIntervalSelects(statusData.refresh_intervals);
+    }
+
     if (statusData.version || statusData.version_info) {
       updateVersionBadge(statusData.version_info || statusData.version);
     }
@@ -637,6 +663,157 @@ function closeWebSocket() {
 }
 
 /**
+ * Set the last-updated label for a specific module and stop button loading state.
+ */
+function setModuleLastUpdated(moduleName) {
+  const el = document.getElementById(`${moduleName}-last-updated`);
+  if (el) {
+    el.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  }
+  const btn = document.getElementById(`refresh-${moduleName}-btn`);
+  if (btn) {
+    btn.classList.remove("loading");
+  }
+}
+
+/**
+ * Toggle the RAID rebuild boost indicator badge.
+ */
+function updateRaidAdaptiveBadge(isAdaptive) {
+  const badge = document.getElementById("raid-adaptive-badge");
+  if (badge) {
+    badge.classList.toggle("hidden", !isAdaptive);
+  }
+}
+
+/**
+ * Sync the three per-module interval <select> dropdowns from server settings.
+ */
+function syncIntervalSelects(intervals) {
+  if (!intervals || typeof intervals !== "object") return;
+  const sysEl = document.getElementById("system-interval-select");
+  const raidEl = document.getElementById("raid-interval-select");
+  const notifEl = document.getElementById("notifications-interval-select");
+
+  if (sysEl && intervals.system !== undefined && intervals.system !== null) {
+    sysEl.value = String(intervals.system);
+  }
+  if (raidEl && intervals.raid !== undefined && intervals.raid !== null) {
+    raidEl.value = String(intervals.raid);
+  }
+  if (
+    notifEl &&
+    intervals.notifications !== undefined &&
+    intervals.notifications !== null
+  ) {
+    notifEl.value = String(intervals.notifications);
+  }
+}
+
+/**
+ * Send updated refresh intervals over WebSocket or fall back to /api/settings.
+ */
+async function handleIntervalChange() {
+  const sysVal = Number(
+    document.getElementById("system-interval-select")?.value ?? 1
+  );
+  const raidVal = Number(
+    document.getElementById("raid-interval-select")?.value ?? 15
+  );
+  const notifVal = Number(
+    document.getElementById("notifications-interval-select")?.value ?? 60
+  );
+
+  const intervals = {
+    system: sysVal,
+    raid: raidVal,
+    notifications: notifVal,
+  };
+
+  if (
+    wsConnection &&
+    typeof window.WebSocket === "function" &&
+    wsConnection.readyState === window.WebSocket.OPEN
+  ) {
+    try {
+      wsConnection.send(
+        JSON.stringify({ action: "set_intervals", intervals })
+      );
+      return;
+    } catch (err) {
+      console.error("Failed to send set_intervals over WebSocket:", err);
+    }
+  }
+
+  // Fall back to POST /api/settings if WebSocket is closed
+  try {
+    await apiFetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        refresh_system_sec: sysVal,
+        refresh_raid_sec: raidVal,
+        refresh_notifications_sec: notifVal,
+      }),
+    });
+  } catch (err) {
+    console.error("Failed to save intervals via /api/settings:", err);
+  }
+}
+
+/**
+ * Request an instant refresh for a specific module over WebSocket or HTTP.
+ */
+function requestModuleRefresh(moduleName) {
+  const btn = document.getElementById(`refresh-${moduleName}-btn`);
+  if (btn) btn.classList.add("loading");
+
+  if (
+    wsConnection &&
+    typeof window.WebSocket === "function" &&
+    wsConnection.readyState === window.WebSocket.OPEN
+  ) {
+    try {
+      wsConnection.send(
+        JSON.stringify({ action: "refresh_module", module: moduleName })
+      );
+      return;
+    } catch {
+      // Fall back below
+    }
+  }
+
+  refreshDashboard();
+}
+
+/**
+ * 1-second UI ticker to keep uptime and weekly countdown ticking smoothly.
+ */
+function updateLiveTickers() {
+  if (currentBootTime) {
+    const uptimeValEl = document.getElementById("uptime-value");
+    if (uptimeValEl) {
+      uptimeValEl.textContent = formatUptimeFromBoot(currentBootTime);
+    }
+  }
+  if (currentWeeklyDueAt !== null && currentWeeklyDueAt !== undefined) {
+    const countdownEl = document.getElementById("weekly-countdown");
+    if (countdownEl) {
+      const nowSec = Date.now() / 1000;
+      const remaining = Math.floor(currentWeeklyDueAt - nowSec);
+      if (!Number.isFinite(currentWeeklyDueAt) || remaining <= 0) {
+        countdownEl.textContent = "Due on the next clean/active RAID check";
+      } else {
+        const days = Math.floor(remaining / 86400);
+        const hours = Math.floor((remaining % 86400) / 3600);
+        const minutes = Math.floor((remaining % 3600) / 60);
+        countdownEl.textContent = `${days}d ${hours}h ${minutes}m remaining`;
+      }
+    }
+  }
+}
+
+/**
  * Process incoming JSON messages from /api/ws ('snapshot' or 'module_update').
  */
 function handleWebSocketMessage(rawData) {
@@ -652,30 +829,69 @@ function handleWebSocketMessage(rawData) {
   const refreshBtn = document.getElementById("refresh-btn");
   if (refreshBtn) refreshBtn.classList.remove("loading");
 
+  if (msg.type === "intervals_updated" || msg.refresh_intervals) {
+    syncIntervalSelects(msg.refresh_intervals);
+  }
+
   if (msg.type === "module_update") {
     if (msg.system || msg.module === "system") {
       renderSystemMetrics(msg.system);
+      setModuleLastUpdated("system");
     }
     if (msg.raid || msg.module === "raid") {
       renderRaidDetails(msg.raid);
+      setModuleLastUpdated("raid");
+      const isAdaptive =
+        Boolean(msg.adaptive_fast) ||
+        (msg.raid &&
+          ["recovering", "resyncing", "degraded"].includes(
+            String(msg.raid.status || "").toLowerCase()
+          ));
+      updateRaidAdaptiveBadge(isAdaptive);
     }
-    if ("notification_state" in msg || msg.module === "notification_state") {
-      renderWeeklyNotificationState(msg.notification_state ?? null);
-    }
-    if (msg.history || msg.module === "history") {
-      renderNotificationHistory(msg.history);
+    if (
+      "notification_state" in msg ||
+      msg.history ||
+      msg.module === "notifications"
+    ) {
+      if ("notification_state" in msg) {
+        renderWeeklyNotificationState(msg.notification_state ?? null);
+      }
+      if (msg.history) {
+        renderNotificationHistory(msg.history);
+      }
+      setModuleLastUpdated("notifications");
     }
     if (msg.version || msg.version_info) {
       updateVersionBadge(msg.version_info || msg.version);
     }
   } else {
     // 'snapshot' or full payload
-    if (msg.raid) renderRaidDetails(msg.raid);
-    if (msg.system) renderSystemMetrics(msg.system);
+    if (msg.refresh_intervals) {
+      syncIntervalSelects(msg.refresh_intervals);
+    }
+    if (msg.raid) {
+      renderRaidDetails(msg.raid);
+      setModuleLastUpdated("raid");
+      const isAdaptive =
+        Boolean(msg.adaptive_fast) ||
+        ["recovering", "resyncing", "degraded"].includes(
+          String(msg.raid.status || "").toLowerCase()
+        );
+      updateRaidAdaptiveBadge(isAdaptive);
+    }
+    if (msg.system) {
+      renderSystemMetrics(msg.system);
+      setModuleLastUpdated("system");
+    }
     if ("notification_state" in msg) {
       renderWeeklyNotificationState(msg.notification_state ?? null);
+      setModuleLastUpdated("notifications");
     }
-    if (msg.history) renderNotificationHistory(msg.history);
+    if (msg.history) {
+      renderNotificationHistory(msg.history);
+      setModuleLastUpdated("notifications");
+    }
     if (msg.version || msg.version_info) {
       updateVersionBadge(msg.version_info || msg.version);
     }
@@ -1237,6 +1453,10 @@ function populateSettingsForm(data) {
   if (allowedEmailsInput) {
     allowedEmailsInput.value = data.allowed_google_emails || "";
   }
+
+  if (data.refresh_intervals) {
+    syncIntervalSelects(data.refresh_intervals);
+  }
 }
 
 const populateSettingsModal = populateSettingsForm;
@@ -1310,6 +1530,30 @@ function initDashboard() {
     ?.addEventListener("click", () => handleManualRefresh());
 
   document
+    .getElementById("system-interval-select")
+    ?.addEventListener("change", handleIntervalChange);
+
+  document
+    .getElementById("raid-interval-select")
+    ?.addEventListener("change", handleIntervalChange);
+
+  document
+    .getElementById("notifications-interval-select")
+    ?.addEventListener("change", handleIntervalChange);
+
+  document
+    .getElementById("refresh-system-btn")
+    ?.addEventListener("click", () => requestModuleRefresh("system"));
+
+  document
+    .getElementById("refresh-raid-btn")
+    ?.addEventListener("click", () => requestModuleRefresh("raid"));
+
+  document
+    .getElementById("refresh-notifications-btn")
+    ?.addEventListener("click", () => requestModuleRefresh("notifications"));
+
+  document
     .getElementById("auth-setup-form")
     ?.addEventListener("submit", handleSetupSubmit);
 
@@ -1344,6 +1588,10 @@ function initDashboard() {
   document
     .getElementById("settings-form")
     ?.addEventListener("submit", handleSettingsSubmit);
+
+  if (!localTickerTimerId) {
+    localTickerTimerId = window.setInterval(updateLiveTickers, 1000);
+  }
 
   checkAuthStatus();
 }

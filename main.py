@@ -35,6 +35,9 @@ APP_SETTING_KEYS = (
     "mount_path",
     "google_client_id",
     "allowed_google_emails",
+    "refresh_system_sec",
+    "refresh_raid_sec",
+    "refresh_notifications_sec",
 )
 
 client = discord.Client(intents=discord.Intents.default())
@@ -253,6 +256,33 @@ def _default_app_settings_from_env() -> dict[str, str]:
         "mount_path": str(config("MOUNT_PATH", default="/mnt/media/") or "/mnt/media/"),
         "google_client_id": str(config("GOOGLE_CLIENT_ID", default="") or ""),
         "allowed_google_emails": str(config("ALLOWED_GOOGLE_EMAILS", default="") or ""),
+        "refresh_system_sec": str(config("REFRESH_SYSTEM_SEC", default="1") or "1"),
+        "refresh_raid_sec": str(config("REFRESH_RAID_SEC", default="15") or "15"),
+        "refresh_notifications_sec": str(
+            config("REFRESH_NOTIFICATIONS_SEC", default="60") or "60"
+        ),
+    }
+
+
+def _parse_interval_sec(raw_val: Any, default_sec: int) -> int:
+    try:
+        val = int(str(raw_val).strip())
+        return max(0, val)
+    except (ValueError, TypeError):
+        return default_sec
+
+
+def get_refresh_intervals(
+    settings: Optional[dict[str, str]] = None,
+) -> dict[str, int]:
+    if settings is None:
+        settings = get_app_settings()
+    return {
+        "system": _parse_interval_sec(settings.get("refresh_system_sec"), 1),
+        "raid": _parse_interval_sec(settings.get("refresh_raid_sec"), 15),
+        "notifications": _parse_interval_sec(
+            settings.get("refresh_notifications_sec"), 60
+        ),
     }
 
 

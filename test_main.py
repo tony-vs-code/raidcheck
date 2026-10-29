@@ -830,6 +830,34 @@ class SqlitePersistenceTests(unittest.TestCase):
         self.assertIsNone(main.verify_session(token2))
         main.delete_session(None)
 
+    def test_refresh_intervals_defaults_and_custom_settings(self):
+        # 1. Default intervals
+        intervals = main.get_refresh_intervals()
+        self.assertEqual(intervals, {"system": 1, "raid": 15, "notifications": 60})
+
+        # 2. Custom SQLite settings including 0 for paused
+        main.update_app_settings(
+            {
+                "refresh_system_sec": "5",
+                "refresh_raid_sec": "0",
+                "refresh_notifications_sec": "120",
+            }
+        )
+        custom = main.get_refresh_intervals()
+        self.assertEqual(custom, {"system": 5, "raid": 0, "notifications": 120})
+
+        # 3. Direct dictionary argument support and fallback for invalid values
+        override = main.get_refresh_intervals(
+            {
+                "refresh_system_sec": "invalid",
+                "refresh_raid_sec": "30",
+                "refresh_notifications_sec": "-5",
+            }
+        )
+        self.assertEqual(override["system"], 1)  # fallback to default
+        self.assertEqual(override["raid"], 30)
+        self.assertEqual(override["notifications"], 0)  # max(0, -5) -> 0
+
     def test_app_settings_env_seed_update_and_fallback(self):
         env_values = {
             "DISCORD_TOKEN": "env_discord_token_1234",
@@ -1351,6 +1379,9 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="notification-history-table"', index_resp.text)
         self.assertIn('id="auth-overlay"', index_resp.text)
         self.assertIn('id="settings-modal"', index_resp.text)
+        self.assertIn('id="system-interval-select"', index_resp.text)
+        self.assertIn('id="raid-interval-select"', index_resp.text)
+        self.assertIn('id="notifications-interval-select"', index_resp.text)
 
         css_resp = asgi_get(api.app, "/static/styles.css")
         self.assertEqual(css_resp.status_code, 200)
@@ -1438,6 +1469,92 @@ class FastAPIEndpointTests(unittest.TestCase):
             self.assertTrue(ws_query.accepted)
             self.assertEqual(len(ws_query.messages), 1)
             self.assertEqual(ws_query.messages[0]["type"], "snapshot")
+
+    def test_websocket_multi_rate_intervals_and_adaptive_raid(self):
+        # 1. Test WebSocket handling 'set_intervals' and persisting to SQLite
+        with (
+            patch.object(
+                main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)
+            ),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF_TABLE),
+        ):
+            ws_set = asgi_ws(
+                api.app,
+                "/api/ws",
+                cookies=self.auth_cookies,
+                client_messages=[
+                    {
+                        "action": "set_intervals",
+                        "intervals": {"system": 2, "raid": 30, "notifications": 120},
+                    }
+                ],
+            )
+            self.assertTrue(ws_set.accepted)
+            self.assertEqual(len(ws_set.messages), 2)  # 1 snapshot, 1 intervals_updated
+
+            intervals_msg = ws_set.messages[1]
+            self.assertEqual(intervals_msg["type"], "intervals_updated")
+            self.assertEqual(
+                intervals_msg["refresh_intervals"],
+                {"system": 2, "raid": 30, "notifications": 120},
+            )
+
+            # Verify persisted in SQLite
+            persisted = main.get_refresh_intervals()
+            self.assertEqual(
+                persisted, {"system": 2, "raid": 30, "notifications": 120}
+            )
+
+        # 2. Test WebSocket refresh_module 'raid' when status is 'degraded' (adaptive_fast=True, effective_interval=5)
+        with (
+            patch.object(
+                main, "check_raid_status", return_value=("degraded", SAMPLE_DETAILS)
+            ),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF_TABLE),
+        ):
+            ws_raid = asgi_ws(
+                api.app,
+                "/api/ws",
+                cookies=self.auth_cookies,
+                client_messages=[
+                    {"action": "refresh_module", "module": "raid"},
+                ],
+            )
+            self.assertTrue(ws_raid.accepted)
+            self.assertEqual(len(ws_raid.messages), 2)  # snapshot, module_update
+
+            raid_module_msg = ws_raid.messages[1]
+            self.assertEqual(raid_module_msg["type"], "module_update")
+            self.assertEqual(raid_module_msg["module"], "raid")
+            self.assertEqual(raid_module_msg["raid"]["status"], "degraded")
+            self.assertTrue(raid_module_msg["adaptive_fast"])
+            self.assertEqual(raid_module_msg["effective_interval"], 5)
+
+        # 3. Test WebSocket refresh_module 'notifications'
+        main.record_notification("degraded", 1700002000.0, weekly=False)
+        with (
+            patch.object(
+                main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)
+            ),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF_TABLE),
+        ):
+            ws_notif = asgi_ws(
+                api.app,
+                "/api/ws",
+                cookies=self.auth_cookies,
+                client_messages=[
+                    {"action": "refresh_module", "module": "notifications"},
+                ],
+            )
+            self.assertTrue(ws_notif.accepted)
+            self.assertEqual(len(ws_notif.messages), 2)  # snapshot, module_update
+
+            notif_module_msg = ws_notif.messages[1]
+            self.assertEqual(notif_module_msg["type"], "module_update")
+            self.assertEqual(notif_module_msg["module"], "notifications")
+            self.assertIn("notification_state", notif_module_msg)
+            self.assertIn("history", notif_module_msg)
+            self.assertGreaterEqual(len(notif_module_msg["history"]), 1)
 
 
 if __name__ == "__main__":
