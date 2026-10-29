@@ -226,9 +226,29 @@ body {
 }
 
 .auto-refresh-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 0.72rem;
   color: var(--accent-primary);
   font-weight: 600;
+}
+
+.auto-refresh-pill.ws-live {
+  color: var(--state-clean);
+}
+
+.auto-refresh-pill.ws-live::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--state-clean);
+  box-shadow: 0 0 6px var(--state-clean);
+}
+
+.auto-refresh-pill.ws-reconnecting {
+  color: var(--state-degraded);
 }
 
 .last-updated {

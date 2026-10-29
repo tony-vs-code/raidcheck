@@ -1,4 +1,5 @@
 const AUTO_REFRESH_INTERVAL_MS = 10000;
+const WS_RECONNECT_DELAY_MS = 3000;
 const SESSION_TOKEN_STORAGE_KEY = "systemalerts_session_token";
 const VALID_RAID_STATES = new Set([
   "clean",
@@ -13,6 +14,8 @@ const VALID_RAID_STATES = new Set([
 ]);
 
 let refreshTimerId = null;
+let wsConnection = null;
+let wsReconnectTimerId = null;
 let isFetching = false;
 let isAuthenticated = false;
 let currentGoogleClientId = "";
@@ -583,10 +586,186 @@ function stopPolling() {
   }
 }
 
-function startPolling() {
+function startPolling({ immediate = true } = {}) {
   stopPolling();
-  refreshDashboard();
+  if (immediate) {
+    refreshDashboard();
+  }
   refreshTimerId = window.setInterval(refreshDashboard, AUTO_REFRESH_INTERVAL_MS);
+}
+
+/**
+ * Update #auto-refresh-indicator to reflect WebSocket or fallback polling state.
+ */
+function updateConnectionIndicator(state) {
+  const indicator = document.getElementById("auto-refresh-indicator");
+  if (!indicator) return;
+
+  indicator.classList.remove("ws-live", "ws-reconnecting");
+
+  if (state === "live") {
+    indicator.textContent = "LIVE (WebSocket)";
+    indicator.classList.add("ws-live");
+  } else if (state === "reconnecting") {
+    indicator.textContent = "Reconnecting...";
+    indicator.classList.add("ws-reconnecting");
+  } else {
+    indicator.textContent = "Auto-refresh: 10s";
+  }
+}
+
+/**
+ * Cleanly close the active WebSocket connection and cancel pending reconnect timers.
+ */
+function closeWebSocket() {
+  if (wsReconnectTimerId) {
+    window.clearTimeout(wsReconnectTimerId);
+    wsReconnectTimerId = null;
+  }
+  if (wsConnection) {
+    wsConnection.onopen = null;
+    wsConnection.onmessage = null;
+    wsConnection.onerror = null;
+    wsConnection.onclose = null;
+    try {
+      wsConnection.close();
+    } catch {
+      // Ignore close errors
+    }
+    wsConnection = null;
+  }
+}
+
+/**
+ * Process incoming JSON messages from /api/ws ('snapshot' or 'module_update').
+ */
+function handleWebSocketMessage(rawData) {
+  let msg;
+  try {
+    msg = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
+  } catch (err) {
+    console.error("Invalid WebSocket JSON payload:", err);
+    return;
+  }
+  if (!msg || typeof msg !== "object") return;
+
+  const refreshBtn = document.getElementById("refresh-btn");
+  if (refreshBtn) refreshBtn.classList.remove("loading");
+
+  if (msg.type === "module_update") {
+    if (msg.system || msg.module === "system") {
+      renderSystemMetrics(msg.system);
+    }
+    if (msg.raid || msg.module === "raid") {
+      renderRaidDetails(msg.raid);
+    }
+    if ("notification_state" in msg || msg.module === "notification_state") {
+      renderWeeklyNotificationState(msg.notification_state ?? null);
+    }
+    if (msg.history || msg.module === "history") {
+      renderNotificationHistory(msg.history);
+    }
+    if (msg.version || msg.version_info) {
+      updateVersionBadge(msg.version_info || msg.version);
+    }
+  } else {
+    // 'snapshot' or full payload
+    if (msg.raid) renderRaidDetails(msg.raid);
+    if (msg.system) renderSystemMetrics(msg.system);
+    if ("notification_state" in msg) {
+      renderWeeklyNotificationState(msg.notification_state ?? null);
+    }
+    if (msg.history) renderNotificationHistory(msg.history);
+    if (msg.version || msg.version_info) {
+      updateVersionBadge(msg.version_info || msg.version);
+    }
+  }
+
+  setErrorState(null);
+
+  const lastUpdatedEl = document.getElementById("last-updated");
+  if (lastUpdatedEl) {
+    lastUpdatedEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  }
+}
+
+/**
+ * Connect to ws:// (or wss://) + window.location.host + '/api/ws' for real-time updates.
+ */
+function connectWebSocket() {
+  if (!isAuthenticated || typeof window.WebSocket !== "function") return;
+
+  closeWebSocket();
+
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const authToken = getStoredToken();
+  const query = authToken ? `?token=${encodeURIComponent(authToken)}` : "";
+  const wsUrl = `${protocol}//${window.location.host}/api/ws${query}`;
+
+  try {
+    wsConnection = new window.WebSocket(wsUrl);
+  } catch (err) {
+    console.error("WebSocket creation error:", err);
+    updateConnectionIndicator("reconnecting");
+    startPolling({ immediate: false });
+    wsReconnectTimerId = window.setTimeout(
+      connectWebSocket,
+      WS_RECONNECT_DELAY_MS
+    );
+    return;
+  }
+
+  wsConnection.onopen = () => {
+    updateConnectionIndicator("live");
+    // Pause the 10s HTTP polling timer while WebSocket is open
+    stopPolling();
+  };
+
+  wsConnection.onmessage = (event) => {
+    handleWebSocketMessage(event.data);
+  };
+
+  wsConnection.onerror = () => {
+    // Let onclose handle reconnection and fallback polling
+  };
+
+  wsConnection.onclose = (event) => {
+    wsConnection = null;
+    if (event && event.code === 4401) {
+      handleUnauthorized();
+      return;
+    }
+    if (!isAuthenticated) {
+      return;
+    }
+    updateConnectionIndicator("reconnecting");
+    startPolling({ immediate: false });
+    wsReconnectTimerId = window.setTimeout(
+      connectWebSocket,
+      WS_RECONNECT_DELAY_MS
+    );
+  };
+}
+
+/**
+ * Trigger an immediate refresh over WebSocket when connected, or fall back to HTTP.
+ */
+function handleManualRefresh() {
+  if (
+    wsConnection &&
+    typeof window.WebSocket === "function" &&
+    wsConnection.readyState === window.WebSocket.OPEN
+  ) {
+    const refreshBtn = document.getElementById("refresh-btn");
+    if (refreshBtn) refreshBtn.classList.add("loading");
+    try {
+      wsConnection.send(JSON.stringify({ action: "refresh" }));
+      return;
+    } catch {
+      // Fall back to HTTP refresh below if send fails
+    }
+  }
+  refreshDashboard();
 }
 
 /**
@@ -658,6 +837,7 @@ async function handleGoogleCredentialResponse(response) {
 
 function openAuthOverlay({ setupRequired = false, googleClientId = "" } = {}) {
   isAuthenticated = false;
+  closeWebSocket();
   stopPolling();
 
   const overlay = document.getElementById("auth-overlay");
@@ -703,6 +883,7 @@ function onAuthenticatedSuccess(username) {
   if (userBox) userBox.classList.remove("hidden");
 
   startPolling();
+  connectWebSocket();
   checkForUpdates({ silent: true });
 }
 
@@ -810,6 +991,7 @@ async function handleLoginSubmit(event) {
 }
 
 async function handleLogout() {
+  closeWebSocket();
   try {
     await apiFetch("/api/auth/logout", { method: "POST" });
   } catch {
@@ -894,6 +1076,7 @@ async function applyReleaseUpdate() {
       throw new Error(data.detail || `Update failed (HTTP ${resp.status})`);
     }
 
+    closeWebSocket();
     stopPolling();
     pollUntilServerRestarts();
   } catch (err) {
@@ -1107,7 +1290,7 @@ async function handleSettingsSubmit(event) {
 
     populateSettingsForm(data);
     showSettingsFeedback("Settings saved to SQLite.", true);
-    refreshDashboard();
+    handleManualRefresh();
   } catch (err) {
     showSettingsFeedback(
       err instanceof Error ? err.message : String(err),
@@ -1124,7 +1307,7 @@ async function handleSettingsSubmit(event) {
 function initDashboard() {
   document
     .getElementById("refresh-btn")
-    ?.addEventListener("click", () => refreshDashboard());
+    ?.addEventListener("click", () => handleManualRefresh());
 
   document
     .getElementById("auth-setup-form")

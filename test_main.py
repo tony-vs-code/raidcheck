@@ -179,6 +179,81 @@ def asgi_post(
     )
 
 
+class AsgiWebSocketResult:
+    """Result container for in-process ASGI WebSocket session."""
+
+    def __init__(
+        self,
+        accepted: bool,
+        close_code: int | None,
+        messages: list[dict],
+    ) -> None:
+        self.accepted = accepted
+        self.close_code = close_code
+        self.messages = messages
+
+
+def asgi_ws(
+    app,
+    path: str,
+    *,
+    client_messages: list[dict] | None = None,
+    headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
+) -> AsgiWebSocketResult:
+    """Execute a WebSocket session directly against an ASGI app."""
+    parsed = urlsplit(path)
+    req_headers: list[tuple[bytes, bytes]] = [(b"host", b"testserver")]
+    if headers:
+        for k, v in headers.items():
+            req_headers.append((k.lower().encode("latin1"), v.encode("latin1")))
+    if cookies:
+        cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        req_headers.append((b"cookie", cookie_str.encode("latin1")))
+
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0"},
+        "scheme": "ws",
+        "path": parsed.path or "/api/ws",
+        "raw_path": (parsed.path or "/api/ws").encode("ascii"),
+        "query_string": parsed.query.encode("ascii"),
+        "headers": req_headers,
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+        "subprotocols": [],
+    }
+
+    inbound_queue: list[dict] = [{"type": "websocket.connect"}]
+    for msg in client_messages or []:
+        inbound_queue.append({"type": "websocket.receive", "text": json.dumps(msg)})
+    inbound_queue.append({"type": "websocket.disconnect", "code": 1000})
+
+    accepted = False
+    close_code: int | None = None
+    sent_messages: list[dict] = []
+
+    async def receive():
+        if inbound_queue:
+            return inbound_queue.pop(0)
+        return {"type": "websocket.disconnect", "code": 1000}
+
+    async def send(message):
+        nonlocal accepted, close_code
+        msg_type = message.get("type")
+        if msg_type == "websocket.accept":
+            accepted = True
+        elif msg_type == "websocket.send":
+            text = message.get("text")
+            if text is not None:
+                sent_messages.append(json.loads(text))
+        elif msg_type == "websocket.close":
+            close_code = message.get("code", 1000)
+
+    asyncio.run(app(scope, receive, send))
+    return AsgiWebSocketResult(accepted, close_code, sent_messages)
+
+
 class RaidFormattingTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -1307,6 +1382,62 @@ class FastAPIEndpointTests(unittest.TestCase):
         raidcheck_web_content = raidcheck_web_service.read_text(encoding="utf-8")
         self.assertIn("WantedBy=multi-user.target", raidcheck_web_content)
         self.assertIn("main.py web", raidcheck_web_content)
+
+    def test_websocket_auth_snapshot_and_refresh_actions(self):
+        # 1. Unauthenticated connection attempt is closed with code 4401
+        unauth_ws = asgi_ws(api.app, "/api/ws")
+        self.assertEqual(unauth_ws.close_code, 4401)
+        self.assertEqual(unauth_ws.messages, [])
+
+        # 2. Authenticated connection via session_token cookie receives initial snapshot
+        #    and responds to {'action': 'refresh'} and {'action': 'refresh_module', 'module': 'system'}
+        main.record_notification("clean", 1700001000.0, weekly=True)
+        with (
+            patch.object(
+                main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)
+            ),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF_TABLE),
+        ):
+            ws_cookie = asgi_ws(
+                api.app,
+                "/api/ws",
+                cookies=self.auth_cookies,
+                client_messages=[
+                    {"action": "refresh"},
+                    {"action": "refresh_module", "module": "system"},
+                ],
+            )
+            self.assertTrue(ws_cookie.accepted)
+            self.assertEqual(len(ws_cookie.messages), 3)
+
+            # First message: initial snapshot
+            initial_snapshot = ws_cookie.messages[0]
+            self.assertEqual(initial_snapshot["type"], "snapshot")
+            self.assertEqual(initial_snapshot["raid"]["status"], "clean")
+            self.assertIn("system", initial_snapshot)
+            self.assertIsNotNone(initial_snapshot["notification_state"])
+            self.assertEqual(len(initial_snapshot["history"]), 1)
+            self.assertIn("version", initial_snapshot)
+
+            # Second message: response to {'action': 'refresh'}
+            refreshed_snapshot = ws_cookie.messages[1]
+            self.assertEqual(refreshed_snapshot["type"], "snapshot")
+            self.assertEqual(refreshed_snapshot["raid"]["array_size"], "9.31 GiB")
+
+            # Third message: response to {'action': 'refresh_module', 'module': 'system'}
+            module_msg = ws_cookie.messages[2]
+            self.assertEqual(module_msg["type"], "module_update")
+            self.assertEqual(module_msg["module"], "system")
+            self.assertIn("cpu_percent", module_msg["system"])
+
+            # 3. Authenticated connection via ?token= query parameter also receives snapshot
+            ws_query = asgi_ws(
+                api.app,
+                f"/api/ws?token={self.session_token}",
+            )
+            self.assertTrue(ws_query.accepted)
+            self.assertEqual(len(ws_query.messages), 1)
+            self.assertEqual(ws_query.messages[0]["type"], "snapshot")
 
 
 if __name__ == "__main__":

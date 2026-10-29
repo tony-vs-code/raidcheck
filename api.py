@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 import sqlite3
@@ -7,7 +8,16 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -19,6 +29,33 @@ app = FastAPI(title="System Alerts Dashboard")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class ConnectionManager:
+    def __init__(self) -> None:
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        if websocket not in self.active_connections:
+            self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, payload: dict[str, Any]) -> None:
+        stale: list[WebSocket] = []
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_json(payload)
+            except Exception:
+                stale.append(connection)
+        for connection in stale:
+            self.disconnect(connection)
+
+
+ws_manager = ConnectionManager()
 
 
 class SetupRequest(BaseModel):
@@ -170,6 +207,74 @@ def _get_formatted_notification_state() -> Optional[dict[str, Any]]:
     }
 
 
+def _get_formatted_history(limit: int = 20) -> list[dict[str, Any]]:
+    try:
+        rows = main.get_notification_history(limit)
+    except (OSError, sqlite3.Error):
+        rows = []
+
+    return [
+        {
+            "status": status,
+            "sent_at": float(sent_at),
+            "sent_at_formatted": main.format_timestamp(float(sent_at)),
+            "weekly": bool(weekly),
+            "kind": "weekly summary" if weekly else "alert",
+        }
+        for status, sent_at, weekly in rows
+    ]
+
+
+def _get_raid_summary() -> dict[str, Any]:
+    raid_status, raid_details = main.check_raid_status()
+    duf_output = main.get_duf_output()
+    raid_summary = main._extract_raid_summary_data(
+        raid_status, raid_details, duf_output
+    )
+    raid_summary.setdefault("raid_device", main.resolve_raid_device() or "None")
+    return raid_summary
+
+
+def _build_full_snapshot() -> dict[str, Any]:
+    return {
+        "type": "snapshot",
+        "raid": _get_raid_summary(),
+        "system": get_system_metrics(),
+        "notification_state": _get_formatted_notification_state(),
+        "history": _get_formatted_history(20),
+        "version": main.get_current_version_info(),
+    }
+
+
+def _build_module_update(module_name: str) -> dict[str, Any]:
+    mod = (module_name or "").strip().lower()
+    if mod == "system":
+        return {
+            "type": "module_update",
+            "module": "system",
+            "system": get_system_metrics(),
+        }
+    if mod in ("raid", "disks"):
+        return {
+            "type": "module_update",
+            "module": mod,
+            "raid": _get_raid_summary(),
+        }
+    if mod in ("schedule", "notification_state"):
+        return {
+            "type": "module_update",
+            "module": mod,
+            "notification_state": _get_formatted_notification_state(),
+        }
+    if mod == "history":
+        return {
+            "type": "module_update",
+            "module": "history",
+            "history": _get_formatted_history(20),
+        }
+    return _build_full_snapshot()
+
+
 def _format_settings_response(settings: dict[str, str]) -> dict[str, Any]:
     raw_token = settings.get("discord_token", "")
     discord_token_configured = bool(raw_token)
@@ -306,13 +411,8 @@ def api_auth_logout(request: Request, response: Response) -> dict[str, Any]:
 
 @app.get("/api/status")
 def api_status(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    raid_status, raid_details = main.check_raid_status()
-    duf_output = main.get_duf_output()
-    raid_summary = main._extract_raid_summary_data(raid_status, raid_details, duf_output)
-    raid_summary.setdefault("raid_device", main.resolve_raid_device() or "None")
-
     return {
-        "raid": raid_summary,
+        "raid": _get_raid_summary(),
         "system": get_system_metrics(),
         "notification_state": _get_formatted_notification_state(),
         "version": main.get_current_version_info(),
@@ -324,22 +424,66 @@ def api_history(
     limit: int = Query(default=20, ge=1),
     _user: str = Depends(require_auth),
 ) -> dict[str, list[dict[str, Any]]]:
-    try:
-        rows = main.get_notification_history(limit)
-    except (OSError, sqlite3.Error):
-        rows = []
+    return {"history": _get_formatted_history(limit)}
 
-    history = [
-        {
-            "status": status,
-            "sent_at": float(sent_at),
-            "sent_at_formatted": main.format_timestamp(float(sent_at)),
-            "weekly": bool(weekly),
-            "kind": "weekly summary" if weekly else "alert",
-        }
-        for status, sent_at, weekly in rows
-    ]
-    return {"history": history}
+
+def _extract_ws_token(websocket: WebSocket) -> Optional[str]:
+    cookie_token = websocket.cookies.get("session_token")
+    if cookie_token:
+        return cookie_token.strip()
+    query_token = websocket.query_params.get("token")
+    if query_token:
+        return query_token.strip()
+    auth_header = websocket.headers.get("authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    return None
+
+
+@app.websocket("/api/ws")
+async def api_websocket(websocket: WebSocket) -> None:
+    token = _extract_ws_token(websocket)
+    try:
+        username = main.verify_session(token)
+    except (OSError, sqlite3.Error):
+        username = None
+
+    if not username:
+        await websocket.accept()
+        await websocket.close(code=4401)
+        return
+
+    await ws_manager.connect(websocket)
+    try:
+        await websocket.send_json(_build_full_snapshot())
+        tick = 0
+        while True:
+            try:
+                raw_text = await asyncio.wait_for(
+                    websocket.receive_text(), timeout=2.0
+                )
+                try:
+                    data = json.loads(raw_text)
+                except ValueError:
+                    data = {}
+                if isinstance(data, dict):
+                    action = data.get("action")
+                    if action == "refresh":
+                        await websocket.send_json(_build_full_snapshot())
+                    elif action == "refresh_module":
+                        await websocket.send_json(
+                            _build_module_update(str(data.get("module") or ""))
+                        )
+            except asyncio.TimeoutError:
+                tick += 1
+                if tick % 5 == 0:
+                    await websocket.send_json(_build_full_snapshot())
+                else:
+                    await websocket.send_json(_build_module_update("system"))
+    except WebSocketDisconnect:
+        pass
+    finally:
+        ws_manager.disconnect(websocket)
 
 
 @app.get("/api/settings")
