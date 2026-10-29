@@ -132,6 +132,33 @@
             />
             <small class="form-hint">Comma-separated list of Google accounts permitted to sign in.</small>
           </div>
+
+          <div class="form-group full-width">
+            <label for="setting-timezone">Dashboard Timezone</label>
+            <select id="setting-timezone" name="timezone" class="module-interval-select" style="width: 100%; padding: 8px 10px; font-size: 0.88rem;">
+              <option value="auto">Auto-detect browser timezone</option>
+              <option value="UTC">UTC (Coordinated Universal Time)</option>
+              <option value="America/New_York">America/New_York (US Eastern)</option>
+              <option value="America/Chicago">America/Chicago (US Central)</option>
+              <option value="America/Denver">America/Denver (US Mountain)</option>
+              <option value="America/Los_Angeles">America/Los_Angeles (US Pacific)</option>
+              <option value="America/Anchorage">America/Anchorage (Alaska)</option>
+              <option value="Pacific/Honolulu">Pacific/Honolulu (Hawaii)</option>
+              <option value="America/Sao_Paulo">America/Sao_Paulo (São Paulo)</option>
+              <option value="Europe/London">Europe/London (London / GMT)</option>
+              <option value="Europe/Paris">Europe/Paris (Paris / CET)</option>
+              <option value="Europe/Berlin">Europe/Berlin (Berlin / CET)</option>
+              <option value="Europe/Kyiv">Europe/Kyiv (Kyiv / EET)</option>
+              <option value="Asia/Dubai">Asia/Dubai (Dubai / GST)</option>
+              <option value="Asia/Kolkata">Asia/Kolkata (India / IST)</option>
+              <option value="Asia/Singapore">Asia/Singapore (Singapore / SGT)</option>
+              <option value="Asia/Shanghai">Asia/Shanghai (China / CST)</option>
+              <option value="Asia/Tokyo">Asia/Tokyo (Tokyo / JST)</option>
+              <option value="Australia/Sydney">Australia/Sydney (Sydney / AEST)</option>
+              <option value="Pacific/Auckland">Pacific/Auckland (Auckland / NZST)</option>
+            </select>
+            <small id="timezone-hint" class="form-hint">Current resolved timezone: UTC</small>
+          </div>
         </div>
 
         <div class="modal-actions">
@@ -232,7 +259,7 @@
             name="compose_yaml"
             rows="14"
             class="mono-textarea"
-            placeholder="version: '3.8'&#10;services:&#10;  app:&#10;    image: nginx:alpine&#10;    ports:&#10;      - '8080:80'&#10;    restart: unless-stopped"
+            placeholder="services:&#10;  app:&#10;    image: nginx:alpine&#10;    ports:&#10;      - '8088:80'&#10;    restart: unless-stopped"
             required
             spellcheck="false"
           ></textarea>
@@ -264,6 +291,60 @@
           </button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Volume Details Modal (#volume-details-modal) -->
+  <div id="volume-details-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="volume-details-title">
+    <div class="modal-card volume-modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="volume-details-title" class="modal-title">Volume Details</h2>
+          <p id="volume-details-subtitle" class="modal-subtitle">Storage mount parameters &amp; attached containers</p>
+        </div>
+        <button id="close-volume-details-btn" type="button" class="btn-icon-close" aria-label="Close volume details modal">&times;</button>
+      </div>
+
+      <div id="volume-details-content" class="volume-details-body">
+        <dl class="details-list single-col">
+          <div class="detail-item">
+            <dt>Volume Name</dt>
+            <dd id="vol-detail-name" class="mono-text">--</dd>
+          </div>
+          <div class="detail-item">
+            <dt>Driver</dt>
+            <dd id="vol-detail-driver">--</dd>
+          </div>
+          <div class="detail-item">
+            <dt>Scope</dt>
+            <dd id="vol-detail-scope">--</dd>
+          </div>
+          <div class="detail-item">
+            <dt>Mountpoint</dt>
+            <dd id="vol-detail-mountpoint" class="mono-text">--</dd>
+          </div>
+          <div class="detail-item">
+            <dt>Size</dt>
+            <dd id="vol-detail-size">--</dd>
+          </div>
+          <div class="detail-item">
+            <dt>Created Date</dt>
+            <dd id="vol-detail-created">--</dd>
+          </div>
+          <div class="detail-item">
+            <dt>Labels</dt>
+            <dd id="vol-detail-labels">None</dd>
+          </div>
+          <div class="detail-item">
+            <dt>Attached Containers</dt>
+            <dd id="vol-detail-containers">None</dd>
+          </div>
+        </dl>
+      </div>
+
+      <div class="modal-actions">
+        <button id="close-vol-modal-btn" type="button" class="btn-secondary">Close</button>
+      </div>
     </div>
   </div>
 
@@ -349,20 +430,6 @@
         <span>Overview</span>
       </button>
       <button
-        id="nav-tab-notifications"
-        class="nav-tab"
-        type="button"
-        role="tab"
-        aria-selected="false"
-        aria-controls="view-notifications"
-      >
-        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-          <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
-        </svg>
-        <span>Notifications</span>
-      </button>
-      <button
         id="nav-tab-containers"
         class="nav-tab"
         type="button"
@@ -375,6 +442,20 @@
           <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
         </svg>
         <span>Containers</span>
+      </button>
+      <button
+        id="nav-tab-notifications"
+        class="nav-tab"
+        type="button"
+        role="tab"
+        aria-selected="false"
+        aria-controls="view-notifications"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+        </svg>
+        <span>Notifications</span>
       </button>
     </nav>
 
@@ -991,15 +1072,20 @@
           </div>
           <div class="subview-actions">
             <input
-              id="docker-container-search"
+              id="containers-search-input"
               type="text"
               class="search-input"
-              placeholder="Filter containers..."
+              placeholder="Search containers..."
             />
-            <label class="toolbar-checkbox-label">
-              <input type="checkbox" id="docker-containers-all-toggle" checked />
-              <span>Show All</span>
-            </label>
+            <select id="containers-filter-stack" class="module-interval-select" aria-label="Filter containers by stack">
+              <option value="all">All Stacks</option>
+              <option value="standalone">Standalone (No Stack)</option>
+            </select>
+            <select id="containers-filter-status" class="module-interval-select" aria-label="Filter containers by status">
+              <option value="all">All Containers</option>
+              <option value="running">Running Only</option>
+              <option value="stopped">Stopped Only</option>
+            </select>
           </div>
         </div>
         <div class="table-container">
@@ -1086,14 +1172,15 @@
                 <th>Name</th>
                 <th>Driver</th>
                 <th>Scope</th>
-                <th>Mountpoint</th>
+                <th>Size</th>
+                <th>Mountpoint / In-Use Containers</th>
                 <th>Created</th>
                 <th class="actions-col">Actions</th>
               </tr>
             </thead>
             <tbody id="docker-volumes-tbody">
               <tr>
-                <td colspan="6" class="empty-state">No volumes found.</td>
+                <td colspan="7" class="empty-state">No volumes found.</td>
               </tr>
             </tbody>
           </table>
@@ -1156,6 +1243,75 @@
           </div>
         </div>
         <div id="docker-updates-feedback" class="auth-alert hidden" role="status"></div>
+
+        <!-- Automated Update Schedule Configuration Card -->
+        <article class="card update-schedule-card" style="margin-bottom: 20px;">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title">Automated Update Schedule</h3>
+              <p class="card-subtitle">Configure automated image pull &amp; container redeployment routine</p>
+            </div>
+            <span id="update-schedule-badge" class="status-badge status-disabled">DISABLED</span>
+          </div>
+
+          <form id="update-schedule-form" class="schedule-form" onsubmit="return false;">
+            <div class="schedule-grid">
+              <div class="form-group toggle-group">
+                <div class="toggle-container">
+                  <label class="toggle-switch" for="schedule-enabled-toggle">
+                    <input
+                      type="checkbox"
+                      id="schedule-enabled-toggle"
+                      name="schedule_enabled"
+                      class="toggle-input"
+                    />
+                    <span class="toggle-slider"></span>
+                  </label>
+                  <div class="toggle-label-group">
+                    <label for="schedule-enabled-toggle" class="toggle-label">Enable Automated Updates</label>
+                    <small class="form-hint">Automatically scan, pull new images, and restart containers on schedule.</small>
+                  </div>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="schedule-day-select">Day of Week</label>
+                <select id="schedule-day-select" name="schedule_day" class="module-interval-select schedule-select">
+                  <option value="daily">Every Day / Daily</option>
+                  <option value="sunday">Sunday</option>
+                  <option value="monday">Monday</option>
+                  <option value="tuesday">Tuesday</option>
+                  <option value="wednesday">Wednesday</option>
+                  <option value="thursday">Thursday</option>
+                  <option value="friday">Friday</option>
+                  <option value="saturday">Saturday</option>
+                </select>
+                <small class="form-hint">When the scheduled update executes.</small>
+              </div>
+
+              <div class="form-group">
+                <label for="schedule-time-input">Execution Time (HH:MM)</label>
+                <input
+                  type="time"
+                  id="schedule-time-input"
+                  name="schedule_time"
+                  class="search-input"
+                  value="03:00"
+                />
+                <small class="form-hint" id="schedule-time-hint">24-hour time in dashboard timezone.</small>
+              </div>
+            </div>
+
+            <div class="schedule-actions-row">
+              <button id="btn-save-schedule" type="button" class="btn-primary">
+                Save Schedule
+              </button>
+              <span id="schedule-next-run" class="schedule-next-run">Next run: --</span>
+            </div>
+
+            <div id="schedule-feedback" class="auth-alert hidden" role="status"></div>
+          </form>
+        </article>
         <div class="table-container">
           <table class="data-table" id="docker-updates-table">
             <thead>

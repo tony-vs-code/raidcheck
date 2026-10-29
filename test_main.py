@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 import io
 import json
 from pathlib import Path
@@ -1718,16 +1719,25 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="raid-interval-select"', index_resp.text)
         self.assertIn('id="notifications-interval-select"', index_resp.text)
 
-        # Navigation tabs and view panels
+        # Navigation tabs and view panels (verifying Containers is between Overview and Notifications)
         self.assertIn('id="nav-tab-overview"', index_resp.text)
-        self.assertIn('id="nav-tab-notifications"', index_resp.text)
         self.assertIn('id="nav-tab-containers"', index_resp.text)
+        self.assertIn('id="nav-tab-notifications"', index_resp.text)
         self.assertIn(">Overview</span>", index_resp.text)
-        self.assertIn(">Notifications</span>", index_resp.text)
         self.assertIn(">Containers</span>", index_resp.text)
+        self.assertIn(">Notifications</span>", index_resp.text)
         self.assertIn('id="view-overview"', index_resp.text)
-        self.assertIn('id="view-notifications"', index_resp.text)
         self.assertIn('id="view-containers"', index_resp.text)
+        self.assertIn('id="view-notifications"', index_resp.text)
+
+        # Verify nav order: Overview -> Containers -> Notifications
+        idx_nav_overview = index_resp.text.find('id="nav-tab-overview"')
+        idx_nav_containers = index_resp.text.find('id="nav-tab-containers"')
+        idx_nav_notifs = index_resp.text.find('id="nav-tab-notifications"')
+        self.assertTrue(
+            -1 < idx_nav_overview < idx_nav_containers < idx_nav_notifs,
+            "Nav order must be Overview, Containers, Notifications",
+        )
 
         # Docker UI elements in Containers view
         self.assertIn('id="docker-install-banner"', index_resp.text)
@@ -1741,6 +1751,21 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="docker-stat-images"', index_resp.text)
         self.assertIn('id="docker-stat-volumes"', index_resp.text)
         self.assertIn('id="docker-stat-networks"', index_resp.text)
+
+        # Container filters
+        self.assertIn('id="containers-search-input"', index_resp.text)
+        self.assertIn('id="containers-filter-stack"', index_resp.text)
+        self.assertIn('id="containers-filter-status"', index_resp.text)
+
+        # Automated Update Schedule UI
+        self.assertIn('update-schedule-card', index_resp.text)
+        self.assertIn('id="update-schedule-form"', index_resp.text)
+        self.assertIn('id="update-schedule-badge"', index_resp.text)
+        self.assertIn('id="schedule-enabled-toggle"', index_resp.text)
+        self.assertIn('id="schedule-day-select"', index_resp.text)
+        self.assertIn('id="schedule-time-input"', index_resp.text)
+        self.assertIn('id="btn-save-schedule"', index_resp.text)
+        self.assertIn('id="schedule-next-run"', index_resp.text)
 
         # Docker sub-tabs and tables
         self.assertIn('id="subtab-docker-stacks"', index_resp.text)
@@ -1761,6 +1786,15 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="container-logs-viewer"', index_resp.text)
         self.assertIn('id="stack-editor-modal"', index_resp.text)
         self.assertIn('id="stack-editor-form"', index_resp.text)
+        self.assertIn('id="volume-details-modal"', index_resp.text)
+        self.assertIn('id="vol-detail-name"', index_resp.text)
+        self.assertIn('id="vol-detail-driver"', index_resp.text)
+        self.assertIn('id="vol-detail-mountpoint"', index_resp.text)
+        self.assertIn('id="vol-detail-containers"', index_resp.text)
+        self.assertIn('id="close-volume-details-btn"', index_resp.text)
+
+        # Timezone selector in settings modal
+        self.assertIn('id="setting-timezone"', index_resp.text)
 
         # Notifications tab ('Notifications'), view panels, and Discord setup card
         self.assertIn('id="discord-config-form"', index_resp.text)
@@ -2009,6 +2043,9 @@ class TestDockerBackend(unittest.TestCase):
             ("GET", "/api/docker/updates"),
             ("POST", "/api/docker/updates/apply"),
             ("POST", "/api/docker/updates/config"),
+            ("GET", "/api/docker/updates/schedule"),
+            ("POST", "/api/docker/updates/schedule"),
+            ("GET", "/api/docker/volumes/testvol"),
         ]
         for method, path in endpoints:
             resp = asgi_request(api.app, method, path)
@@ -2538,6 +2575,315 @@ class TestDockerBackend(unittest.TestCase):
             self.assertTrue(data["success"])
             self.assertFalse(data["updated"][0]["success"])
             self.assertIn("Compose failed", data["updated"][0]["error"])
+
+    def test_external_stack_protection(self):
+        external_stack_info = {
+            "name": "ext_stack",
+            "compose_yaml": "services:\n  ext:\n    image: ext:latest\n",
+            "status": "running",
+            "managed": False,
+            "created_at": 0.0,
+            "updated_at": 0.0,
+            "containers": [],
+        }
+
+        with (
+            patch.object(main.docker_manager, "is_running", return_value=True),
+            patch.object(
+                main.docker_manager,
+                "get_stack",
+                side_effect=lambda name: external_stack_info if name == "ext_stack" else None,
+            ),
+        ):
+            # 1. Direct method calls raise ValueError with exact required messages
+            with self.assertRaises(ValueError) as ctx_save:
+                main.docker_manager.save_stack("ext_stack", "services:\n  x:\n    image: y\n")
+            self.assertEqual(
+                str(ctx_save.exception),
+                "Stack is managed externally and cannot be edited in SystemAlerts",
+            )
+
+            with self.assertRaises(ValueError) as ctx_del:
+                main.docker_manager.delete_stack("ext_stack")
+            self.assertEqual(
+                str(ctx_del.exception),
+                "Stack is managed externally and cannot be deleted",
+            )
+
+            with self.assertRaises(ValueError) as ctx_act:
+                main.docker_manager.execute_stack_action("ext_stack", "restart")
+            self.assertEqual(
+                str(ctx_act.exception),
+                "Stack is managed externally. Stack actions cannot be executed from SystemAlerts; manage constituent containers directly",
+            )
+
+            # 2. HTTP POST /api/docker/stacks returns 400
+            post_resp = asgi_post(
+                api.app,
+                "/api/docker/stacks",
+                cookies=self.auth_cookies,
+                json_body={
+                    "name": "ext_stack",
+                    "compose_yaml": "services:\n  x:\n    image: y\n",
+                    "deploy": False,
+                },
+            )
+            self.assertEqual(post_resp.status_code, 400)
+            self.assertEqual(
+                post_resp.json()["detail"],
+                "Stack is managed externally and cannot be edited in SystemAlerts",
+            )
+
+            # 3. HTTP PUT /api/docker/stacks/ext_stack returns 400
+            put_resp = asgi_request(
+                api.app,
+                "PUT",
+                "/api/docker/stacks/ext_stack",
+                cookies=self.auth_cookies,
+                json_body={
+                    "name": "ext_stack",
+                    "compose_yaml": "services:\n  x:\n    image: y\n",
+                    "deploy": False,
+                },
+            )
+            self.assertEqual(put_resp.status_code, 400)
+            self.assertEqual(
+                put_resp.json()["detail"],
+                "Stack is managed externally and cannot be edited in SystemAlerts",
+            )
+
+            # 4. HTTP DELETE /api/docker/stacks/ext_stack returns 400
+            del_resp = asgi_request(
+                api.app,
+                "DELETE",
+                "/api/docker/stacks/ext_stack",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(del_resp.status_code, 400)
+            self.assertEqual(
+                del_resp.json()["detail"],
+                "Stack is managed externally and cannot be deleted",
+            )
+
+            # 5. HTTP POST /api/docker/stacks/ext_stack/action returns 400
+            act_resp = asgi_post(
+                api.app,
+                "/api/docker/stacks/ext_stack/action",
+                cookies=self.auth_cookies,
+                json_body={"action": "start"},
+            )
+            self.assertEqual(act_resp.status_code, 400)
+            self.assertEqual(
+                act_resp.json()["detail"],
+                "Stack is managed externally. Stack actions cannot be executed from SystemAlerts; manage constituent containers directly",
+            )
+
+    def test_clean_docker_error_formatting(self):
+        raw_error = (
+            "[+] Pulling 3/3\n"
+            " 7b229517ed22: Pulling fs layer\n"
+            " 3da1513d2124: Downloading [===>     ]  1.049MB/3.853MB\n"
+            " 3ec36f3670df: Extracting 100%\n"
+            " 7b229517ed22: Download complete\n"
+            " 7b229517ed22: Pull complete\n"
+            "Digest: sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a\n"
+            "Status: Downloaded newer image for nginx:alpine\n"
+            "WARNG[0000] the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion\n"
+            "Error response from daemon: Bind for 0.0.0.0:80 failed: port is already allocated\n"
+        )
+        cleaned = main._clean_docker_error(raw_error)
+        self.assertEqual(
+            cleaned,
+            "Error response from daemon: Bind for 0.0.0.0:80 failed: port is already allocated",
+        )
+
+        # Test _run_cmd surfaces cleaned error when CalledProcessError occurs
+        cpe = CalledProcessError(1, ["docker", "compose", "up"], stderr=raw_error)
+        with patch("subprocess.run", side_effect=cpe):
+            with self.assertRaises(RuntimeError) as ctx:
+                main.docker_manager._run_cmd(["docker", "compose", "up"])
+            self.assertEqual(
+                str(ctx.exception),
+                "Error response from daemon: Bind for 0.0.0.0:80 failed: port is already allocated",
+            )
+
+    def test_volume_enhanced_listing_and_inspection(self):
+        def fake_run_docker(args, timeout=30):
+            if args[:2] == ["volume", "ls"]:
+                return (
+                    '{"Name": "data_vol", "Driver": "local", "Scope": "local", '
+                    '"Mountpoint": "/var/lib/docker/volumes/data_vol/_data", "CreatedAt": "2026-10-28"}\n'
+                )
+            if args[:3] == ["system", "df", "-v"]:
+                return json.dumps(
+                    {
+                        "Volumes": [
+                            {
+                                "Name": "data_vol",
+                                "Size": "145MB",
+                                "Mountpoint": "/var/lib/docker/volumes/data_vol/_data",
+                            }
+                        ]
+                    }
+                )
+            if args[:3] == ["ps", "-a", "-q"]:
+                return "cid1\n"
+            if args[:2] == ["inspect", "--format"] and "cid1" in args:
+                return '{"name": "/my_web_app", "mounts": [{"Type": "volume", "Name": "data_vol"}]}\n'
+            if args[:2] == ["volume", "inspect"] and "data_vol" in args:
+                return json.dumps(
+                    [
+                        {
+                            "Name": "data_vol",
+                            "Driver": "local",
+                            "Scope": "local",
+                            "Mountpoint": "/var/lib/docker/volumes/data_vol/_data",
+                            "CreatedAt": "2026-10-28T00:00:00Z",
+                            "Labels": {"env": "prod"},
+                            "Options": None,
+                        }
+                    ]
+                )
+            if args[:2] == ["volume", "inspect"] and "nonexistent" in args:
+                raise RuntimeError("Error response from daemon: get nonexistent: no such volume")
+            return ""
+
+        with (
+            patch.object(main.docker_manager, "is_running", return_value=True),
+            patch.object(main.docker_manager, "_run_docker", side_effect=fake_run_docker),
+        ):
+            # 1. Enhanced list_volumes
+            vols_resp = asgi_get(api.app, "/api/docker/volumes", cookies=self.auth_cookies)
+            self.assertEqual(vols_resp.status_code, 200)
+            vols = vols_resp.json()["volumes"]
+            self.assertEqual(len(vols), 1)
+            v0 = vols[0]
+            self.assertEqual(v0["name"], "data_vol")
+            self.assertEqual(v0["size"], "145MB")
+            self.assertEqual(v0["mountpoint"], "/var/lib/docker/volumes/data_vol/_data")
+            self.assertEqual(v0["containers"], ["my_web_app"])
+
+            # 2. Volume inspect endpoint
+            inspect_resp = asgi_get(
+                api.app, "/api/docker/volumes/data_vol", cookies=self.auth_cookies
+            )
+            self.assertEqual(inspect_resp.status_code, 200)
+            inv = inspect_resp.json()
+            self.assertEqual(inv["name"], "data_vol")
+            self.assertEqual(inv["size"], "145MB")
+            self.assertEqual(inv["driver"], "local")
+            self.assertEqual(inv["scope"], "local")
+            self.assertEqual(inv["mountpoint"], "/var/lib/docker/volumes/data_vol/_data")
+            self.assertEqual(inv["containers"], ["my_web_app"])
+            self.assertEqual(inv["labels"], {"env": "prod"})
+
+            # 3. Nonexistent volume inspect returns 404
+            missing_resp = asgi_get(
+                api.app, "/api/docker/volumes/nonexistent", cookies=self.auth_cookies
+            )
+            self.assertEqual(missing_resp.status_code, 404)
+
+    def test_docker_update_schedule_flow_and_checker(self):
+        # 1. GET schedule returns defaults
+        get_resp = asgi_get(
+            api.app, "/api/docker/updates/schedule", cookies=self.auth_cookies
+        )
+        self.assertEqual(get_resp.status_code, 200)
+        sched = get_resp.json()["schedule"]
+        self.assertFalse(sched["enabled"])
+        self.assertEqual(sched["day"], "daily")
+        self.assertEqual(sched["time"], "03:00")
+        self.assertTrue(sched["notify_discord"])
+
+        # 2. POST with invalid day / time returns 400
+        bad_day = asgi_post(
+            api.app,
+            "/api/docker/updates/schedule",
+            cookies=self.auth_cookies,
+            json_body={"day": "someday", "time": "03:00"},
+        )
+        self.assertEqual(bad_day.status_code, 400)
+
+        bad_time = asgi_post(
+            api.app,
+            "/api/docker/updates/schedule",
+            cookies=self.auth_cookies,
+            json_body={"day": "daily", "time": "25:61"},
+        )
+        self.assertEqual(bad_time.status_code, 400)
+
+        # 3. POST valid schedule
+        ok_resp = asgi_post(
+            api.app,
+            "/api/docker/updates/schedule",
+            cookies=self.auth_cookies,
+            json_body={
+                "enabled": True,
+                "day": "monday",
+                "time": "04:15",
+                "notify_discord": False,
+            },
+        )
+        self.assertEqual(ok_resp.status_code, 200)
+        saved = ok_resp.json()["schedule"]
+        self.assertTrue(saved["enabled"])
+        self.assertEqual(saved["day"], "monday")
+        self.assertEqual(saved["time"], "04:15")
+        self.assertFalse(saved["notify_discord"])
+
+        # 4. should_run_scheduled_docker_update
+        # Monday at 04:15 -> Matches! (2026-10-26 was a Monday)
+        monday_dt = datetime(2026, 10, 26, 4, 15, 0)
+        self.assertTrue(main.should_run_scheduled_docker_update(monday_dt))
+
+        # Tuesday at 04:15 -> Day mismatch -> False
+        tuesday_dt = datetime(2026, 10, 27, 4, 15, 0)
+        self.assertFalse(main.should_run_scheduled_docker_update(tuesday_dt))
+
+        # Monday at 04:16 -> Time mismatch -> False
+        monday_wrong_time = datetime(2026, 10, 26, 4, 16, 0)
+        self.assertFalse(main.should_run_scheduled_docker_update(monday_wrong_time))
+
+        # Disabled schedule -> False
+        main.set_docker_auto_update_schedule({"enabled": False, "day": "monday", "time": "04:15"})
+        self.assertFalse(main.should_run_scheduled_docker_update(monday_dt))
+
+        # 5. run_scheduled_docker_updates execution
+        main.set_docker_auto_update_schedule({"enabled": True, "day": "daily", "time": "03:00", "notify_discord": True})
+        target_dt = datetime(2026, 10, 28, 3, 0, 0)
+        with (
+            patch.object(main.docker_manager, "apply_updates", return_value={"success": True, "updated": [{"type": "container", "name": "c1", "success": True}]}),
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send,
+        ):
+            res = asyncio.run(main.run_scheduled_docker_updates(now_dt=target_dt))
+            self.assertTrue(res["executed"])
+            mock_send.assert_awaited_once()
+
+            # Calling again in the same minute should not re-run (duplicate prevention)
+            res_dup = asyncio.run(main.run_scheduled_docker_updates(now_dt=target_dt))
+            self.assertFalse(res_dup["executed"])
+
+    def test_timezone_settings_and_status(self):
+        # 1. Default timezone in settings is UTC
+        get_resp = asgi_get(api.app, "/api/settings", cookies=self.auth_cookies)
+        self.assertEqual(get_resp.status_code, 200)
+        self.assertEqual(get_resp.json().get("timezone"), "UTC")
+
+        # 2. Update timezone via POST /api/settings
+        post_resp = asgi_post(
+            api.app,
+            "/api/settings",
+            cookies=self.auth_cookies,
+            json_body={"timezone": "America/New_York"},
+        )
+        self.assertEqual(post_resp.status_code, 200)
+        self.assertEqual(post_resp.json().get("timezone"), "America/New_York")
+
+        # 3. GET /api/status surfaces timezone globally
+        status_resp = asgi_get(api.app, "/api/status", cookies=self.auth_cookies)
+        self.assertEqual(status_resp.status_code, 200)
+        self.assertEqual(status_resp.json().get("timezone"), "America/New_York")
+        self.assertEqual(status_resp.json().get("settings", {}).get("timezone"), "America/New_York")
 
 
 if __name__ == "__main__":

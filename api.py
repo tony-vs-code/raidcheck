@@ -87,6 +87,7 @@ class SettingsUpdateRequest(BaseModel):
     refresh_raid_sec: Optional[int | str] = None
     refresh_notifications_sec: Optional[int | str] = None
     docker_auto_update_frequency: Optional[str] = None
+    timezone: Optional[str] = None
 
 
 class StackCreateRequest(BaseModel):
@@ -119,6 +120,13 @@ class UpdatesConfigRequest(BaseModel):
 class UpdatesApplyRequest(BaseModel):
     containers: Optional[list[str]] = None
     stacks: Optional[list[str]] = None
+
+
+class UpdateScheduleRequest(BaseModel):
+    enabled: Optional[bool] = False
+    day: Optional[str] = "daily"
+    time: Optional[str] = "03:00"
+    notify_discord: Optional[bool] = True
 
 
 def _extract_session_token(request: Request) -> Optional[str]:
@@ -278,6 +286,8 @@ def _get_raid_summary() -> dict[str, Any]:
 
 
 def _build_full_snapshot() -> dict[str, Any]:
+    settings = main.get_app_settings()
+    tz = settings.get("timezone", "UTC")
     return {
         "type": "snapshot",
         "raid": _get_raid_summary(),
@@ -286,6 +296,10 @@ def _build_full_snapshot() -> dict[str, Any]:
         "history": _get_formatted_history(20),
         "version": main.get_current_version_info(),
         "refresh_intervals": main.get_refresh_intervals(),
+        "timezone": tz,
+        "settings": {
+            "timezone": tz,
+        },
     }
 
 
@@ -350,6 +364,8 @@ def _format_settings_response(settings: dict[str, str]) -> dict[str, Any]:
         "docker_auto_update_frequency": settings.get(
             "docker_auto_update_frequency", "disabled"
         ),
+        "docker_auto_update_schedule": main.get_docker_auto_update_schedule(),
+        "timezone": settings.get("timezone", "UTC"),
     }
 
 
@@ -465,11 +481,17 @@ def api_auth_logout(request: Request, response: Response) -> dict[str, Any]:
 
 @app.get("/api/status")
 def api_status(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    settings = main.get_app_settings()
+    tz = settings.get("timezone", "UTC")
     return {
         "raid": _get_raid_summary(),
         "system": get_system_metrics(),
         "notification_state": _get_formatted_notification_state(),
         "version": main.get_current_version_info(),
+        "timezone": tz,
+        "settings": {
+            "timezone": tz,
+        },
     }
 
 
@@ -673,6 +695,8 @@ def api_update_settings(
         updates["docker_auto_update_frequency"] = (
             payload.docker_auto_update_frequency.strip().lower()
         )
+    if payload.timezone is not None and payload.timezone.strip():
+        updates["timezone"] = payload.timezone.strip()
 
     updated = main.update_app_settings(updates)
     result = _format_settings_response(updated)
@@ -736,6 +760,25 @@ def api_docker_create_stack(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.put("/api/docker/stacks/{name}")
+def api_docker_update_stack(
+    name: str,
+    payload: StackCreateRequest,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        stack = main.docker_manager.save_stack(
+            name,
+            payload.compose_yaml,
+            deploy=bool(payload.deploy),
+        )
+        return {"success": True, "stack": stack}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.get("/api/docker/stacks/{name}")
 def api_docker_get_stack(
     name: str,
@@ -772,6 +815,8 @@ def api_docker_delete_stack(
     try:
         main.docker_manager.delete_stack(name, down=down)
         return {"success": True, "deleted": name}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -867,6 +912,24 @@ def api_docker_volumes(_user: str = Depends(require_auth)) -> dict[str, Any]:
     return {"volumes": main.docker_manager.list_volumes()}
 
 
+@app.get("/api/docker/volumes/{name}")
+def api_docker_inspect_volume(
+    name: str,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        data = main.docker_manager.inspect_volume(name)
+        result = dict(data)
+        result["volume"] = data
+        return result
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.delete("/api/docker/volumes/{name}")
 def api_docker_remove_volume(
     name: str,
@@ -924,6 +987,39 @@ def api_docker_updates_config(
 ) -> dict[str, Any]:
     try:
         return main.docker_manager.set_auto_update_config(payload.frequency)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/docker/updates/schedule")
+def api_docker_get_update_schedule(
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    schedule = main.get_docker_auto_update_schedule()
+    return {
+        "schedule": schedule,
+        "enabled": schedule.get("enabled", False),
+        "day": schedule.get("day", "daily"),
+        "time": schedule.get("time", "03:00"),
+        "notify_discord": schedule.get("notify_discord", True),
+    }
+
+
+@app.post("/api/docker/updates/schedule")
+def api_docker_set_update_schedule(
+    payload: UpdateScheduleRequest,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        schedule = main.set_docker_auto_update_schedule(payload.model_dump())
+        return {
+            "success": True,
+            "schedule": schedule,
+            "enabled": schedule.get("enabled", False),
+            "day": schedule.get("day", "daily"),
+            "time": schedule.get("time", "03:00"),
+            "notify_discord": schedule.get("notify_discord", True),
+        }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

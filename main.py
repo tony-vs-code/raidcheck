@@ -44,6 +44,8 @@ APP_SETTING_KEYS = (
     "refresh_raid_sec",
     "refresh_notifications_sec",
     "docker_auto_update_frequency",
+    "docker_auto_update_schedule",
+    "timezone",
 )
 
 client = discord.Client(intents=discord.Intents.default())
@@ -367,6 +369,20 @@ def _default_app_settings_from_env() -> dict[str, str]:
         "docker_auto_update_frequency": str(
             config("DOCKER_AUTO_UPDATE_FREQUENCY", default="disabled") or "disabled"
         ),
+        "docker_auto_update_schedule": str(
+            config(
+                "DOCKER_AUTO_UPDATE_SCHEDULE",
+                default=json.dumps(
+                    {
+                        "enabled": False,
+                        "day": "daily",
+                        "time": "03:00",
+                        "notify_discord": True,
+                    }
+                ),
+            )
+        ),
+        "timezone": str(config("TIMEZONE", default="UTC") or "UTC"),
     }
 
 
@@ -1151,6 +1167,68 @@ class DockerManager:
             return [dc_bin]
         return ["docker", "compose"]
 
+    @staticmethod
+    def _clean_docker_error(raw_err: str) -> str:
+        if not raw_err:
+            return ""
+        # Strip ANSI escape sequences
+        text = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", raw_err)
+
+        ignore_patterns = [
+            r"pulling fs layer",
+            r"downloading",
+            r"extracting",
+            r"download complete",
+            r"pull complete",
+            r"verifying checksum",
+            r"already exists",
+            r"waiting",
+            r"^[0-9a-f]{8,}:",
+            r"^\[\+\] pulling",
+            r"^\[\*\]",
+            r"digest:\s+sha256:",
+            r"status:\s+downloaded newer image",
+            r"status:\s+image is up to date",
+            r"the attribute [`'\"].*[`'\"] is obsolete",
+            r"^warn\[\d+\]",
+            r"^warning:",
+        ]
+
+        meaningful_lines: list[str] = []
+        for raw_line in text.replace("\r", "\n").split("\n"):
+            line = raw_line.strip()
+            if not line:
+                continue
+            lower_line = line.lower()
+            if any(re.search(pat, lower_line) for pat in ignore_patterns):
+                continue
+            meaningful_lines.append(line)
+
+        if not meaningful_lines:
+            return text.strip() or raw_err.strip()
+
+        error_idx = -1
+        for idx, l in enumerate(meaningful_lines):
+            low = l.lower()
+            if (
+                "error response from daemon:" in low
+                or low.startswith("error:")
+                or "failed to" in low
+            ):
+                error_idx = idx
+                break
+
+        if error_idx != -1:
+            selected = meaningful_lines[error_idx:]
+        else:
+            selected = (
+                meaningful_lines[-5:]
+                if len(meaningful_lines) > 5
+                else meaningful_lines
+            )
+
+        return "\n".join(selected).strip()
+
     def _run_cmd(
         self,
         cmd: list[str],
@@ -1169,9 +1247,11 @@ class DockerManager:
             )
             return proc.stdout
         except subprocess.CalledProcessError as exc:
-            err = exc.stderr.strip() if exc.stderr else exc.stdout.strip()
+            raw_err = exc.stderr.strip() if exc.stderr else exc.stdout.strip()
+            clean_err = self._clean_docker_error(raw_err)
             raise RuntimeError(
-                err or f"Command {' '.join(cmd)} failed with exit code {exc.returncode}"
+                clean_err
+                or f"Command {' '.join(cmd)} failed with exit code {exc.returncode}"
             ) from exc
         except FileNotFoundError as exc:
             raise FileNotFoundError(f"Executable not found: {cmd[0]}") from exc
@@ -1622,6 +1702,12 @@ class DockerManager:
         if not compose_yaml or not compose_yaml.strip():
             raise ValueError("Compose YAML cannot be empty.")
 
+        existing = self.get_stack(clean_name)
+        if existing and not existing.get("managed", True):
+            raise ValueError(
+                "Stack is managed externally and cannot be edited in SystemAlerts"
+            )
+
         stack_dir = self.stacks_dir / clean_name
         stack_dir.mkdir(parents=True, exist_ok=True)
         stack_file = stack_dir / "docker-compose.yml"
@@ -1678,6 +1764,16 @@ class DockerManager:
             )
         if not self.is_running():
             raise RuntimeError("Docker daemon is not running.")
+
+        existing = self.get_stack(clean_name)
+        if existing and not existing.get("managed", True):
+            raise ValueError(
+                "Stack is managed externally. Stack actions cannot be executed from SystemAlerts; manage constituent containers directly"
+            )
+        if not existing:
+            raise FileNotFoundError(
+                f"Compose file for stack '{clean_name}' not found."
+            )
 
         stack_file = self.stacks_dir / clean_name / "docker-compose.yml"
         if not stack_file.is_file():
@@ -1766,6 +1862,10 @@ class DockerManager:
 
     def delete_stack(self, name: str, down: bool = True) -> bool:
         clean_name = name.strip()
+        existing = self.get_stack(clean_name)
+        if existing and not existing.get("managed", True):
+            raise ValueError("Stack is managed externally and cannot be deleted")
+
         stack_file = self.stacks_dir / clean_name / "docker-compose.yml"
         if down and self.is_running() and stack_file.is_file():
             try:
@@ -1860,23 +1960,148 @@ class DockerManager:
     def list_volumes(self) -> list[dict[str, Any]]:
         if not self.is_running():
             return []
+
+        # Find container mounts
+        vol_to_containers: dict[str, list[str]] = {}
+        try:
+            c_ids_raw = self._run_docker(["ps", "-a", "-q"], timeout=5)
+            c_ids = [c.strip() for c in c_ids_raw.splitlines() if c.strip()]
+            if c_ids:
+                inspect_out = self._run_docker(
+                    [
+                        "inspect",
+                        "--format",
+                        '{"name": {{json .Name}}, "mounts": {{json .Mounts}}}',
+                    ]
+                    + c_ids,
+                    timeout=10,
+                )
+                for line in inspect_out.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        c_data = json.loads(line)
+                        c_name = str(c_data.get("name") or "").lstrip("/")
+                        for m in c_data.get("mounts") or []:
+                            v_name = m.get("Name")
+                            if v_name:
+                                if c_name not in vol_to_containers.setdefault(v_name, []):
+                                    vol_to_containers[v_name].append(c_name)
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logging.debug(f"Could not inspect container mounts for volumes: {exc}")
+
+        # Query sizes via system df
+        vol_sizes: dict[str, str] = {}
+        try:
+            df_out = self._run_docker(["system", "df", "-v", "--format", "json"], timeout=15)
+            if df_out.strip():
+                df_data = json.loads(df_out)
+                for v in df_data.get("Volumes") or []:
+                    v_name = str(v.get("Name") or "")
+                    if v_name:
+                        vol_sizes[v_name] = str(v.get("Size") or "")
+        except Exception as exc:
+            logging.debug(f"Could not get volume df info: {exc}")
+
         try:
             out = self._run_docker(["volume", "ls", "--format", "{{json .}}"], timeout=10)
         except Exception as exc:
             logging.warning(f"Failed to list volumes: {exc}")
             return []
+
         items = self._parse_json_lines(out)
-        return [
-            {
-                "name": str(item.get("Name") or ""),
-                "driver": str(item.get("Driver") or ""),
-                "scope": str(item.get("Scope") or ""),
-                "mountpoint": str(item.get("Mountpoint") or ""),
-                "created_at": str(item.get("CreatedAt") or ""),
-                "size": str(item.get("Size") or ""),
-            }
-            for item in items
-        ]
+        result = []
+        seen_names = set()
+        for item in items:
+            name = str(item.get("Name") or "")
+            seen_names.add(name)
+            size = vol_sizes.get(name) or str(item.get("Size") or "") or "N/A"
+            result.append(
+                {
+                    "name": name,
+                    "driver": str(item.get("Driver") or ""),
+                    "scope": str(item.get("Scope") or ""),
+                    "mountpoint": str(item.get("Mountpoint") or ""),
+                    "created_at": str(item.get("CreatedAt") or ""),
+                    "size": size,
+                    "containers": vol_to_containers.get(name, []),
+                }
+            )
+        return result
+
+    def inspect_volume(self, volume_name: str) -> dict[str, Any]:
+        clean_name = volume_name.strip()
+        if not clean_name:
+            raise ValueError("Volume name cannot be empty.")
+        if not self.is_running():
+            raise RuntimeError("Docker daemon is not running.")
+        try:
+            out = self._run_docker(["volume", "inspect", clean_name], timeout=10)
+            items = json.loads(out)
+            if not items or not isinstance(items, list):
+                raise FileNotFoundError(f"Volume '{clean_name}' not found.")
+            v = items[0]
+        except Exception as exc:
+            raise FileNotFoundError(f"Volume '{clean_name}' not found.") from exc
+
+        # Query size
+        size = "N/A"
+        try:
+            df_out = self._run_docker(["system", "df", "-v", "--format", "json"], timeout=10)
+            if df_out.strip():
+                df_data = json.loads(df_out)
+                for vol in df_data.get("Volumes") or []:
+                    if str(vol.get("Name") or "") == clean_name:
+                        size = str(vol.get("Size") or "N/A")
+                        break
+        except Exception:
+            pass
+
+        # Query mounting containers
+        mounting_containers: list[str] = []
+        try:
+            c_ids_raw = self._run_docker(["ps", "-a", "-q"], timeout=5)
+            c_ids = [c.strip() for c in c_ids_raw.splitlines() if c.strip()]
+            if c_ids:
+                inspect_out = self._run_docker(
+                    [
+                        "inspect",
+                        "--format",
+                        '{"name": {{json .Name}}, "mounts": {{json .Mounts}}}',
+                    ]
+                    + c_ids,
+                    timeout=10,
+                )
+                for line in inspect_out.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        c_data = json.loads(line)
+                        c_name = str(c_data.get("name") or "").lstrip("/")
+                        for m in c_data.get("mounts") or []:
+                            if m.get("Name") == clean_name:
+                                if c_name not in mounting_containers:
+                                    mounting_containers.append(c_name)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        return {
+            "name": clean_name,
+            "driver": str(v.get("Driver") or "local"),
+            "scope": str(v.get("Scope") or "local"),
+            "mountpoint": str(v.get("Mountpoint") or ""),
+            "created_at": str(v.get("CreatedAt") or ""),
+            "size": size,
+            "labels": v.get("Labels") or {},
+            "options": v.get("Options") or {},
+            "containers": mounting_containers,
+        }
 
     def remove_volume(self, volume_name: str, force: bool = False) -> dict[str, Any]:
         clean_name = volume_name.strip()
@@ -2088,6 +2313,152 @@ class DockerManager:
         return {"success": True, "updated": updated}
 
 
+DEFAULT_DOCKER_UPDATE_SCHEDULE = {
+    "enabled": False,
+    "day": "daily",
+    "time": "03:00",
+    "notify_discord": True,
+}
+
+_last_scheduled_docker_update_run: Optional[str] = None
+
+
+def get_docker_auto_update_schedule() -> dict[str, Any]:
+    settings = get_app_settings()
+    raw = settings.get("docker_auto_update_schedule", "")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {
+                    "enabled": bool(parsed.get("enabled", False)),
+                    "day": str(parsed.get("day", "daily")).lower(),
+                    "time": str(parsed.get("time", "03:00")),
+                    "notify_discord": bool(parsed.get("notify_discord", True)),
+                }
+        except (ValueError, TypeError):
+            pass
+    return DEFAULT_DOCKER_UPDATE_SCHEDULE.copy()
+
+
+def set_docker_auto_update_schedule(schedule_data: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(schedule_data.get("enabled", False))
+    day = str(schedule_data.get("day", "daily")).strip().lower()
+    valid_days = {
+        "daily",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    }
+    if day not in valid_days:
+        raise ValueError(
+            f"Invalid schedule day '{day}'. Must be one of {sorted(valid_days)}"
+        )
+
+    time_str = str(schedule_data.get("time", "03:00")).strip()
+    match = re.match(r"^(\d{1,2}):(\d{2})$", time_str)
+    if not match:
+        raise ValueError("Invalid schedule time. Must be in HH:MM format (e.g. '03:00')")
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError("Invalid schedule time. Hour must be 0-23 and minute 0-59")
+    formatted_time = f"{hour:02d}:{minute:02d}"
+
+    notify_discord = bool(schedule_data.get("notify_discord", True))
+
+    updated_schedule = {
+        "enabled": enabled,
+        "day": day,
+        "time": formatted_time,
+        "notify_discord": notify_discord,
+    }
+    update_app_settings({"docker_auto_update_schedule": json.dumps(updated_schedule)})
+    return updated_schedule
+
+
+def should_run_scheduled_docker_update(now_dt: Optional[datetime] = None) -> bool:
+    global _last_scheduled_docker_update_run
+    schedule = get_docker_auto_update_schedule()
+    if not schedule.get("enabled", False):
+        return False
+
+    if now_dt is None:
+        now_dt = datetime.now()
+
+    # Match day
+    sched_day = schedule.get("day", "daily").lower()
+    current_weekday = now_dt.strftime("%A").lower()
+    if sched_day != "daily" and sched_day != current_weekday:
+        return False
+
+    # Match time (HH:MM)
+    sched_time = schedule.get("time", "03:00")
+    try:
+        sh, sm = map(int, sched_time.split(":"))
+    except ValueError:
+        return False
+
+    if now_dt.hour != sh or now_dt.minute != sm:
+        return False
+
+    # Avoid duplicate execution within the same minute
+    current_minute_key = now_dt.strftime("%Y-%m-%d %H:%M")
+    if _last_scheduled_docker_update_run == current_minute_key:
+        return False
+
+    return True
+
+
+async def run_scheduled_docker_updates(
+    force: bool = False,
+    now_dt: Optional[datetime] = None,
+) -> dict[str, Any]:
+    global _last_scheduled_docker_update_run
+    if now_dt is None:
+        now_dt = datetime.now()
+
+    if not force and not should_run_scheduled_docker_update(now_dt):
+        return {"executed": False, "reason": "schedule_not_matched"}
+
+    _last_scheduled_docker_update_run = now_dt.strftime("%Y-%m-%d %H:%M")
+    try:
+        update_result = docker_manager.apply_updates()
+    except Exception as exc:
+        logging.error(f"Failed to execute scheduled docker update: {exc}")
+        return {"executed": False, "error": str(exc)}
+
+    schedule = get_docker_auto_update_schedule()
+    if schedule.get("notify_discord", True):
+        updated_items = update_result.get("updated", [])
+        if updated_items:
+            try:
+                embed = discord.Embed(
+                    title="🐳 Docker Automated Update Report",
+                    description=f"Automated update completed at {now_dt.strftime('%Y-%m-%d %H:%M')}.",
+                    color=0x2ECC71,
+                )
+                for item in updated_items[:10]:
+                    itype = item.get("type", "resource").capitalize()
+                    iname = item.get("name") or item.get("id") or "unknown"
+                    istatus = (
+                        "Updated successfully"
+                        if item.get("success")
+                        else f"Failed: {item.get('error', '')}"
+                    )
+                    embed.add_field(name=f"{itype}: {iname}", value=istatus, inline=False)
+                await send_message(embed)
+            except Exception as exc:
+                logging.warning(
+                    f"Could not send Docker schedule Discord notification: {exc}"
+                )
+
+    return {"executed": True, "result": update_result}
+
+
 docker_manager = DockerManager()
 get_docker_status = docker_manager.get_status
 install_docker = docker_manager.install_docker
@@ -2104,6 +2475,7 @@ pull_docker_image = docker_manager.pull_image
 remove_docker_image = docker_manager.remove_image
 prune_docker_images = docker_manager.prune_images
 list_docker_volumes = docker_manager.list_volumes
+inspect_docker_volume = docker_manager.inspect_volume
 remove_docker_volume = docker_manager.remove_volume
 list_docker_networks = docker_manager.list_networks
 remove_docker_network = docker_manager.remove_network
@@ -2111,6 +2483,7 @@ check_docker_updates = docker_manager.check_updates
 apply_docker_updates = docker_manager.apply_updates
 get_docker_auto_update_config = docker_manager.get_auto_update_config
 set_docker_auto_update_config = docker_manager.set_auto_update_config
+_clean_docker_error = DockerManager._clean_docker_error
 
 
 @client.event
@@ -2118,6 +2491,15 @@ async def on_ready() -> None:
     logging.info(f"Logged in as {client.user}")
     await run_raid_check(force=True)
     monitor_raid.start()
+    monitor_docker_schedule.start()
+
+
+@tasks.loop(minutes=1)
+async def monitor_docker_schedule() -> None:
+    try:
+        await run_scheduled_docker_updates(force=False)
+    except Exception as exc:
+        logging.error(f"Error checking docker auto update schedule: {exc}")
 
 
 @tasks.loop(hours=2)

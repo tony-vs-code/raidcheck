@@ -122,15 +122,101 @@ function formatUptimeFromBoot(bootTimeSeconds) {
   return `${minutes}m`;
 }
 
+const TIMEZONE_STORAGE_KEY = "systemalerts_user_timezone";
+
+function getStoredTimezone() {
+  try {
+    return localStorage.getItem(TIMEZONE_STORAGE_KEY) || "auto";
+  } catch {
+    return "auto";
+  }
+}
+
+function setStoredTimezone(tz) {
+  try {
+    if (tz) {
+      localStorage.setItem(TIMEZONE_STORAGE_KEY, tz);
+    } else {
+      localStorage.removeItem(TIMEZONE_STORAGE_KEY);
+    }
+  } catch {}
+}
+
+function getEffectiveTimezone() {
+  const stored = getStoredTimezone();
+  if (!stored || stored === "auto") {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    } catch {
+      return "UTC";
+    }
+  }
+  return stored;
+}
+
+/**
+ * Centralized date/time formatter that formats timestamps across the dashboard
+ * according to the configured timezone.
+ */
+function formatDateTime(val, options = {}) {
+  if (val === null || val === undefined || val === "" || val === 0) {
+    return "--";
+  }
+  let date = null;
+  if (val instanceof Date) {
+    date = val;
+  } else if (typeof val === "number" || (!isNaN(val) && !String(val).includes("-") && !String(val).includes("T") && !String(val).includes(":"))) {
+    const num = Number(val);
+    if (!Number.isFinite(num) || num <= 0) return "--";
+    date = new Date(num > 1e11 ? num : num * 1000);
+  } else if (typeof val === "string") {
+    const parsed = Date.parse(val);
+    if (!isNaN(parsed)) {
+      date = new Date(parsed);
+    } else {
+      return val;
+    }
+  }
+
+  if (!date || isNaN(date.getTime())) {
+    return String(val || "--");
+  }
+
+  const tz = getEffectiveTimezone();
+  try {
+    const defaultOptions = {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    };
+    return new Intl.DateTimeFormat(undefined, { ...defaultOptions, ...options }).format(date);
+  } catch {
+    return date.toLocaleString();
+  }
+}
+
+function formatTimeOnly(val) {
+  return formatDateTime(val, {
+    year: undefined,
+    month: undefined,
+    day: undefined,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
 /**
  * Format unix timestamp seconds into local date-time string.
  */
 function formatTimestampLocal(unixSeconds) {
-  const sec = Number(unixSeconds);
-  if (!Number.isFinite(sec) || sec <= 0) {
-    return "--";
-  }
-  return new Date(sec * 1000).toLocaleString();
+  return formatDateTime(unixSeconds);
 }
 
 /**
@@ -1463,6 +1549,15 @@ function populateSettingsForm(data) {
     syncIntervalSelects(data.refresh_intervals);
   }
 
+  const tzSelect = document.getElementById("setting-timezone");
+  const tzHint = document.getElementById("timezone-hint");
+  if (tzSelect) {
+    tzSelect.value = getStoredTimezone();
+  }
+  if (tzHint) {
+    tzHint.textContent = `Current resolved timezone: ${getEffectiveTimezone()}`;
+  }
+
   populateDiscordForm(data);
 }
 
@@ -1504,6 +1599,15 @@ async function handleSettingsSubmit(event) {
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
       throw new Error(data.detail || `Failed to save settings (${resp.status})`);
+    }
+
+    const tzSelect = document.getElementById("setting-timezone");
+    if (tzSelect) {
+      setStoredTimezone(tzSelect.value);
+      const tzHint = document.getElementById("timezone-hint");
+      if (tzHint) {
+        tzHint.textContent = `Current resolved timezone: ${getEffectiveTimezone()}`;
+      }
     }
 
     populateSettingsForm(data);
@@ -2074,23 +2178,14 @@ async function fetchDockerStacks() {
     tbody.innerHTML = stacks.map((s) => {
       const isRunning = s.status === "running" || (Number(s.running_count || 0) > 0);
       const statusClass = isRunning ? "status-clean" : (s.status === "stopped" || s.status === "down" ? "status-degraded" : "status-none");
-      const managedBadge = s.managed
+      const isManaged = Boolean(s.managed);
+      const managedBadge = isManaged
         ? `<span class="kind-badge kind-weekly" title="Managed in SQLite">Managed</span>`
         : `<span class="kind-badge" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">External</span>`;
       
       const safeName = escapeHtml(s.name);
-      return `<tr>
-        <td><strong>${safeName}</strong></td>
-        <td>
-          <span class="status-badge ${statusClass}">
-            <span class="status-dot"></span>
-            ${escapeHtml(s.status || "unknown")}
-          </span>
-        </td>
-        <td>${Number(s.running_count || 0)} / ${Number(s.containers_count || 0)} running</td>
-        <td>${managedBadge}</td>
-        <td class="actions-col">
-          <div class="btn-action-group">
+      const actionsContent = isManaged
+        ? `<div class="btn-action-group">
             ${
               isRunning
                 ? `<button type="button" class="btn-action" data-stack-action="restart" data-stack="${safeName}">Restart</button>
@@ -2101,8 +2196,20 @@ async function fetchDockerStacks() {
             <button type="button" class="btn-action" data-stack-action="pull" data-stack="${safeName}">Pull</button>
             <button type="button" class="btn-action" data-stack-action="edit" data-stack="${safeName}">Edit</button>
             <button type="button" class="btn-action btn-action-danger" data-stack-action="delete" data-stack="${safeName}">Delete</button>
-          </div>
+          </div>`
+        : `<span class="kind-badge" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;" title="Managed outside SystemAlerts. Manage individual containers in Containers tab.">Read-Only (External)</span>`;
+
+      return `<tr>
+        <td><strong>${safeName}</strong></td>
+        <td>
+          <span class="status-badge ${statusClass}">
+            <span class="status-dot"></span>
+            ${escapeHtml(s.status || "unknown")}
+          </span>
         </td>
+        <td>${Number(s.running_count || 0)} / ${Number(s.containers_count || 0)} running</td>
+        <td>${managedBadge}</td>
+        <td class="actions-col">${actionsContent}</td>
       </tr>`;
     }).join("");
 
@@ -2228,12 +2335,11 @@ function closeStackEditor() {
 function insertExampleYaml() {
   const yamlInput = document.getElementById("stack-yaml-input");
   if (!yamlInput) return;
-  yamlInput.value = `version: "3.8"
-services:
+  yamlInput.value = `services:
   app:
     image: nginx:alpine
     ports:
-      - "8080:80"
+      - "8088:80"
     restart: unless-stopped
 `;
 }
@@ -2287,8 +2393,17 @@ async function handleSaveStack() {
     } else {
       if (feedback) {
         feedback.className = "auth-alert feedback-error";
-        feedback.textContent = data.detail || "Failed to save Compose stack.";
+        let errMsg = data.detail || "Failed to save Compose stack.";
+        if (typeof errMsg === "object") {
+          try {
+            errMsg = JSON.stringify(errMsg, null, 2);
+          } catch {
+            errMsg = String(errMsg);
+          }
+        }
+        feedback.textContent = errMsg;
         feedback.classList.remove("hidden");
+        feedback.scrollIntoView({ behavior: "smooth", block: "nearest" });
       }
     }
   } catch (err) {
@@ -2296,6 +2411,7 @@ async function handleSaveStack() {
       feedback.className = "auth-alert feedback-error";
       feedback.textContent = `Error: ${err.message}`;
       feedback.classList.remove("hidden");
+      feedback.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   } finally {
     if (saveBtn) saveBtn.disabled = false;
@@ -2309,14 +2425,36 @@ async function fetchDockerContainers() {
   const tbody = document.getElementById("docker-containers-tbody");
   if (!tbody) return;
 
-  const showAllToggle = document.getElementById("docker-containers-all-toggle");
-  const showAll = showAllToggle ? !!showAllToggle.checked : true;
-
   try {
-    const resp = await apiFetch(`/api/docker/containers?all=${showAll}`);
+    const resp = await apiFetch(`/api/docker/containers?all=true`);
     if (!resp.ok) return;
     const data = await resp.json();
     cachedDockerContainers = data.containers || [];
+
+    // Populate stack filter dropdown
+    const stackFilterEl = document.getElementById("containers-filter-stack");
+    if (stackFilterEl) {
+      const currentSelected = stackFilterEl.value || "all";
+      const stacks = new Set();
+      cachedDockerContainers.forEach((c) => {
+        if (c.stack && String(c.stack).trim() !== "") {
+          stacks.add(String(c.stack).trim());
+        }
+      });
+      const sortedStacks = Array.from(stacks).sort();
+      let optionsHtml = `<option value="all">All Stacks</option><option value="standalone">Standalone (No Stack)</option>`;
+      sortedStacks.forEach((st) => {
+        const safeSt = escapeHtml(st);
+        optionsHtml += `<option value="${safeSt}">${safeSt}</option>`;
+      });
+      stackFilterEl.innerHTML = optionsHtml;
+      if (currentSelected === "all" || currentSelected === "standalone" || stacks.has(currentSelected)) {
+        stackFilterEl.value = currentSelected;
+      } else {
+        stackFilterEl.value = "all";
+      }
+    }
+
     renderDockerContainers();
   } catch (err) {
     console.warn("Failed to fetch Docker containers:", err);
@@ -2327,20 +2465,54 @@ function renderDockerContainers() {
   const tbody = document.getElementById("docker-containers-tbody");
   if (!tbody) return;
 
-  const query = (document.getElementById("docker-container-search")?.value || "").trim().toLowerCase();
+  const searchInput =
+    document.getElementById("containers-search-input") ||
+    document.getElementById("docker-container-search");
+  const query = (searchInput?.value || "").trim().toLowerCase();
+
+  const statusFilterEl = document.getElementById("containers-filter-status");
+  const statusFilter = statusFilterEl?.value || "all";
+
+  const stackFilterEl = document.getElementById("containers-filter-stack");
+  const stackFilter = stackFilterEl?.value || "all";
 
   let filtered = cachedDockerContainers;
+
+  // 1. Text Search Filter
   if (query) {
     filtered = filtered.filter((c) =>
       (c.name || "").toLowerCase().includes(query) ||
       (c.id || "").toLowerCase().includes(query) ||
       (c.image || "").toLowerCase().includes(query) ||
-      (c.stack || "").toLowerCase().includes(query)
+      (c.stack || "").toLowerCase().includes(query) ||
+      (c.ports || "").toLowerCase().includes(query)
     );
   }
 
+  // 2. Status Filter: "all", "running", "stopped"
+  if (statusFilter === "running") {
+    filtered = filtered.filter((c) => {
+      const st = (c.state || "").toLowerCase();
+      const statusStr = (c.status || "").toLowerCase();
+      return st === "running" || statusStr.includes("up");
+    });
+  } else if (statusFilter === "stopped") {
+    filtered = filtered.filter((c) => {
+      const st = (c.state || "").toLowerCase();
+      const statusStr = (c.status || "").toLowerCase();
+      return st !== "running" && !statusStr.includes("up");
+    });
+  }
+
+  // 3. Stack Filter: "all", "standalone", or specific stack name
+  if (stackFilter === "standalone") {
+    filtered = filtered.filter((c) => !c.stack || String(c.stack).trim() === "");
+  } else if (stackFilter !== "all") {
+    filtered = filtered.filter((c) => String(c.stack).trim() === stackFilter);
+  }
+
   if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">${query ? "No matching containers." : "No containers found."}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">${query || statusFilter !== "all" || stackFilter !== "all" ? "No containers matching current filters." : "No containers found."}</td></tr>`;
     return;
   }
 
@@ -2697,8 +2869,10 @@ async function handleRemoveImage(imageId, imageTag) {
   }
 }
 
+let cachedDockerVolumes = [];
+
 /**
- * Volumes Tab: Fetch, Remove.
+ * Volumes Tab: Fetch, Inspect, Remove.
  */
 async function fetchDockerVolumes() {
   const tbody = document.getElementById("docker-volumes-tbody");
@@ -2709,35 +2883,76 @@ async function fetchDockerVolumes() {
     if (!resp.ok) return;
     const data = await resp.json();
     const volumes = data.volumes || [];
+    cachedDockerVolumes = volumes;
 
     if (volumes.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No persistent volumes found.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No persistent volumes found.</td></tr>`;
       return;
     }
 
     tbody.innerHTML = volumes.map((v) => {
       const safeName = escapeHtml(v.name);
-      const safeDriver = escapeHtml(v.driver);
-      const safeScope = escapeHtml(v.scope);
+      const safeDriver = escapeHtml(v.driver || "local");
+      const safeScope = escapeHtml(v.scope || "local");
+      const safeSize = escapeHtml(v.size || "--");
       const safeMount = escapeHtml(v.mountpoint || "-");
-      const safeCreated = escapeHtml(v.created_at || "-");
+      const safeCreated = formatDateTime(v.created_at);
 
-      return `<tr>
-        <td><strong>${safeName}</strong></td>
+      // Check attached containers
+      const attached = [];
+      if (Array.isArray(v.containers) && v.containers.length > 0) {
+        attached.push(...v.containers);
+      } else {
+        cachedDockerContainers.forEach((c) => {
+          if (c.ports && c.ports.includes(v.name)) attached.push(c.name || c.id);
+        });
+      }
+      const inUseBadge = attached.length > 0
+        ? `<span class="kind-badge kind-weekly" title="In use by: ${attached.map(escapeHtml).join(', ')}">${attached.length} in use</span>`
+        : `<span style="color: var(--text-muted); font-size: 0.76rem;">Unattached</span>`;
+
+      return `<tr data-vol-row="${safeName}">
+        <td><strong class="vol-name-link" data-vol-inspect="${safeName}" style="cursor: pointer; color: var(--accent-primary);">${safeName}</strong></td>
         <td><span class="mono-text">${safeDriver}</span></td>
         <td>${safeScope}</td>
-        <td><span class="mono-text" style="font-size: 0.75rem;">${safeMount}</span></td>
+        <td>${safeSize}</td>
+        <td>
+          <div style="display: flex; flex-direction: column; gap: 3px;">
+            <span class="mono-text" style="font-size: 0.74rem;" title="${safeMount}">${safeMount}</span>
+            <div>${inUseBadge}</div>
+          </div>
+        </td>
         <td>${safeCreated}</td>
         <td class="actions-col">
-          <button type="button" class="btn-action btn-action-danger" data-vol-delete="${safeName}">Remove</button>
+          <div class="btn-action-group">
+            <button type="button" class="btn-action" data-vol-inspect="${safeName}">Inspect</button>
+            <button type="button" class="btn-action btn-action-danger" data-vol-delete="${safeName}">Remove</button>
+          </div>
         </td>
       </tr>`;
     }).join("");
 
     tbody.querySelectorAll("button[data-vol-delete]").forEach((btn) => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
         const name = btn.getAttribute("data-vol-delete");
         handleRemoveVolume(name);
+      });
+    });
+
+    tbody.querySelectorAll("[data-vol-inspect]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const name = el.getAttribute("data-vol-inspect");
+        openVolumeDetails(name);
+      });
+    });
+
+    tbody.querySelectorAll("tr[data-vol-row]").forEach((tr) => {
+      tr.addEventListener("click", (e) => {
+        if (e.target.closest("button") || e.target.closest("a")) return;
+        const name = tr.getAttribute("data-vol-row");
+        if (name) openVolumeDetails(name);
       });
     });
   } catch (err) {
@@ -2764,6 +2979,93 @@ async function handleRemoveVolume(volumeName) {
     fetchDockerVolumes();
     fetchDockerStatus();
   }
+}
+
+/**
+ * Volume Details Modal: Inspection of volume attributes and attachments.
+ */
+async function openVolumeDetails(volumeName) {
+  const modal = document.getElementById("volume-details-modal");
+  const title = document.getElementById("volume-details-title");
+  const nameEl = document.getElementById("vol-detail-name");
+  const driverEl = document.getElementById("vol-detail-driver");
+  const scopeEl = document.getElementById("vol-detail-scope");
+  const mountEl = document.getElementById("vol-detail-mountpoint");
+  const sizeEl = document.getElementById("vol-detail-size");
+  const createdEl = document.getElementById("vol-detail-created");
+  const labelsEl = document.getElementById("vol-detail-labels");
+  const containersEl = document.getElementById("vol-detail-containers");
+
+  if (title) title.textContent = `Volume: ${volumeName}`;
+  if (nameEl) nameEl.textContent = volumeName;
+
+  const cachedVol = cachedDockerVolumes.find((v) => v.name === volumeName) || {};
+  if (driverEl) driverEl.textContent = cachedVol.driver || "--";
+  if (scopeEl) scopeEl.textContent = cachedVol.scope || "--";
+  if (mountEl) mountEl.textContent = cachedVol.mountpoint || "--";
+  if (sizeEl) sizeEl.textContent = cachedVol.size || "N/A";
+  if (createdEl) createdEl.textContent = formatDateTime(cachedVol.created_at);
+  if (labelsEl) labelsEl.textContent = "None";
+  if (containersEl) containersEl.textContent = "Scanning attached containers...";
+
+  modal?.classList.remove("hidden");
+
+  try {
+    const resp = await apiFetch(`/api/docker/volumes/${encodeURIComponent(volumeName)}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      const v = data.volume || data;
+      if (nameEl) nameEl.textContent = v.name || volumeName;
+      if (driverEl) driverEl.textContent = v.driver || "--";
+      if (scopeEl) scopeEl.textContent = v.scope || "--";
+      if (mountEl) mountEl.textContent = v.mountpoint || "--";
+      if (sizeEl) sizeEl.textContent = v.size || "N/A";
+      if (createdEl) createdEl.textContent = formatDateTime(v.created_at || v.created);
+
+      if (labelsEl) {
+        if (v.labels && typeof v.labels === "object" && Object.keys(v.labels).length > 0) {
+          labelsEl.innerHTML = Object.entries(v.labels)
+            .map(([k, val]) => `<span class="kind-badge">${escapeHtml(k)}=${escapeHtml(val)}</span>`)
+            .join(" ");
+        } else {
+          labelsEl.textContent = "None";
+        }
+      }
+
+      if (containersEl) {
+        const attached = Array.isArray(v.containers) ? v.containers : [];
+        if (attached.length > 0) {
+          containersEl.innerHTML = attached
+            .map((c) => `<span class="kind-badge kind-weekly">${escapeHtml(typeof c === 'string' ? c : (c.name || c.id))}</span>`)
+            .join(" ");
+        } else {
+          containersEl.textContent = "No containers currently attached to this volume.";
+        }
+      }
+      return;
+    }
+  } catch (err) {
+    console.debug("Could not fetch detailed volume endpoint:", err);
+  }
+
+  // Fallback to local scan
+  if (containersEl) {
+    const attached = [];
+    cachedDockerContainers.forEach((c) => {
+      if (c.ports && c.ports.includes(volumeName)) attached.push(c.name || c.id);
+    });
+    if (attached.length > 0) {
+      containersEl.innerHTML = attached
+        .map((c) => `<span class="kind-badge kind-weekly">${escapeHtml(c)}</span>`)
+        .join(" ");
+    } else {
+      containersEl.textContent = "No containers currently attached to this volume.";
+    }
+  }
+}
+
+function closeVolumeDetails() {
+  document.getElementById("volume-details-modal")?.classList.add("hidden");
 }
 
 /**
@@ -2858,6 +3160,8 @@ async function fetchDockerUpdates() {
     if (freqSelect && data.config?.frequency) {
       freqSelect.value = data.config.frequency;
     }
+
+    fetchUpdateSchedule();
 
     const updates = data.updates || [];
     const updatesAvailableCount = updates.filter((u) => u.update_available).length;
@@ -2972,6 +3276,154 @@ async function handleApplyUpdates(containers = null, stacks = null) {
   }
 }
 
+async function fetchUpdateSchedule() {
+  const enabledToggle = document.getElementById("schedule-enabled-toggle");
+  const daySelect = document.getElementById("schedule-day-select");
+  const timeInput = document.getElementById("schedule-time-input");
+  const badge = document.getElementById("update-schedule-badge");
+  const nextRunEl = document.getElementById("schedule-next-run");
+
+  try {
+    const resp = await apiFetch("/api/docker/updates/schedule");
+    if (resp.ok) {
+      const data = await resp.json();
+      const schedule = data.schedule || data;
+      if (enabledToggle && schedule.enabled !== undefined) {
+        enabledToggle.checked = Boolean(schedule.enabled);
+      }
+      if (daySelect && schedule.day) daySelect.value = schedule.day;
+      if (timeInput && schedule.time) timeInput.value = schedule.time;
+      if (badge) {
+        badge.className = "status-badge";
+        if (schedule.enabled) {
+          badge.classList.add("status-clean");
+          badge.textContent = "ENABLED";
+        } else {
+          badge.classList.add("status-disabled");
+          badge.textContent = "DISABLED";
+        }
+      }
+      if (nextRunEl) {
+        nextRunEl.textContent = schedule.next_run
+          ? `Next run: ${formatDateTime(schedule.next_run)}`
+          : (schedule.enabled ? `Scheduled (${schedule.day || 'daily'} at ${schedule.time || '03:00'})` : "Schedule disabled");
+      }
+      return;
+    }
+  } catch (err) {
+    console.debug("Schedule API fetch error, checking local store:", err);
+  }
+
+  // Fallback from localStorage
+  try {
+    const stored = JSON.parse(localStorage.getItem("systemalerts_update_schedule") || "{}");
+    if (stored) {
+      if (enabledToggle && stored.enabled !== undefined) enabledToggle.checked = Boolean(stored.enabled);
+      if (daySelect && stored.day) daySelect.value = stored.day;
+      if (timeInput && stored.time) timeInput.value = stored.time;
+      if (badge) {
+        badge.className = "status-badge";
+        if (stored.enabled) {
+          badge.classList.add("status-clean");
+          badge.textContent = "ENABLED";
+        } else {
+          badge.classList.add("status-disabled");
+          badge.textContent = "DISABLED";
+        }
+      }
+      if (nextRunEl) {
+        nextRunEl.textContent = stored.enabled
+          ? `Scheduled: ${stored.day || 'daily'} at ${stored.time || '03:00'}`
+          : "Schedule disabled";
+      }
+    }
+  } catch {}
+}
+
+async function handleSaveUpdateSchedule() {
+  const enabledToggle = document.getElementById("schedule-enabled-toggle");
+  const daySelect = document.getElementById("schedule-day-select");
+  const timeInput = document.getElementById("schedule-time-input");
+  const feedback = document.getElementById("schedule-feedback");
+  const badge = document.getElementById("update-schedule-badge");
+  const nextRunEl = document.getElementById("schedule-next-run");
+  const saveBtn = document.getElementById("btn-save-schedule");
+
+  const enabled = Boolean(enabledToggle?.checked);
+  const day = daySelect?.value || "daily";
+  const time = timeInput?.value || "03:00";
+
+  const payload = { enabled, day, time };
+
+  if (saveBtn) saveBtn.disabled = true;
+
+  try {
+    const resp = await apiFetch("/api/docker/updates/schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      if (feedback) {
+        feedback.className = "auth-alert feedback-success";
+        feedback.textContent = data.message || "Automated update schedule saved.";
+        feedback.classList.remove("hidden");
+      }
+      if (badge) {
+        badge.className = "status-badge";
+        if (enabled) {
+          badge.classList.add("status-clean");
+          badge.textContent = "ENABLED";
+        } else {
+          badge.classList.add("status-disabled");
+          badge.textContent = "DISABLED";
+        }
+      }
+      if (nextRunEl) {
+        nextRunEl.textContent = data.next_run
+          ? `Next run: ${formatDateTime(data.next_run)}`
+          : (enabled ? `Scheduled (${day} at ${time})` : "Schedule disabled");
+      }
+      return;
+    }
+  } catch (err) {
+    console.debug("Schedule POST endpoint fallback:", err);
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+
+  // Graceful fallback to localStorage
+  try {
+    localStorage.setItem("systemalerts_update_schedule", JSON.stringify(payload));
+    if (feedback) {
+      feedback.className = "auth-alert feedback-success";
+      feedback.textContent = `Automated update schedule saved (${day} at ${time}).`;
+      feedback.classList.remove("hidden");
+    }
+    if (badge) {
+      badge.className = "status-badge";
+      if (enabled) {
+        badge.classList.add("status-clean");
+        badge.textContent = "ENABLED";
+      } else {
+        badge.classList.add("status-disabled");
+        badge.textContent = "DISABLED";
+      }
+    }
+    if (nextRunEl) {
+      nextRunEl.textContent = enabled ? `Scheduled: ${day} at ${time}` : "Schedule disabled";
+    }
+  } catch (err) {
+    if (feedback) {
+      feedback.className = "auth-alert feedback-error";
+      feedback.textContent = `Error saving schedule: ${err.message}`;
+      feedback.classList.remove("hidden");
+    }
+  }
+}
+
 /**
  * Initialize listeners and run startup authentication check.
  */
@@ -2982,12 +3434,12 @@ function initDashboard() {
     ?.addEventListener("click", () => switchViewTab("overview", true));
 
   document
-    .getElementById("nav-tab-notifications")
-    ?.addEventListener("click", () => switchViewTab("notifications", true));
-
-  document
     .getElementById("nav-tab-containers")
     ?.addEventListener("click", () => switchViewTab("containers", true));
+
+  document
+    .getElementById("nav-tab-notifications")
+    ?.addEventListener("click", () => switchViewTab("notifications", true));
 
   // Docker Sub-Tabs
   const subtabs = ["stacks", "containers", "images", "volumes", "networks", "updates"];
@@ -3045,10 +3497,19 @@ function initDashboard() {
     .getElementById("stack-template-btn")
     ?.addEventListener("click", insertExampleYaml);
 
-  // Containers
+  // Containers Filters & Search
+  const searchInput =
+    document.getElementById("containers-search-input") ||
+    document.getElementById("docker-container-search");
+  searchInput?.addEventListener("input", renderDockerContainers);
+
   document
-    .getElementById("docker-container-search")
-    ?.addEventListener("input", renderDockerContainers);
+    .getElementById("containers-filter-stack")
+    ?.addEventListener("change", renderDockerContainers);
+
+  document
+    .getElementById("containers-filter-status")
+    ?.addEventListener("change", renderDockerContainers);
 
   document
     .getElementById("docker-containers-all-toggle")
@@ -3063,7 +3524,7 @@ function initDashboard() {
     .getElementById("btn-prune-images")
     ?.addEventListener("click", handlePruneImages);
 
-  // Updates
+  // Updates & Schedule
   document
     .getElementById("btn-save-update-freq")
     ?.addEventListener("click", handleSaveUpdateFrequency);
@@ -3075,6 +3536,26 @@ function initDashboard() {
   document
     .getElementById("btn-apply-all-updates")
     ?.addEventListener("click", () => handleApplyUpdates());
+
+  document
+    .getElementById("btn-save-schedule")
+    ?.addEventListener("click", handleSaveUpdateSchedule);
+
+  document
+    .getElementById("schedule-enabled-toggle")
+    ?.addEventListener("change", (e) => {
+      const badge = document.getElementById("update-schedule-badge");
+      if (badge) {
+        badge.className = "status-badge";
+        if (e.target.checked) {
+          badge.classList.add("status-clean");
+          badge.textContent = "ENABLED";
+        } else {
+          badge.classList.add("status-disabled");
+          badge.textContent = "DISABLED";
+        }
+      }
+    });
 
   // Logs Modal
   document
@@ -3113,13 +3594,43 @@ function initDashboard() {
       }
     });
 
+  // Volume Details Modal
+  document
+    .getElementById("close-volume-details-btn")
+    ?.addEventListener("click", closeVolumeDetails);
+
+  document
+    .getElementById("close-vol-modal-btn")
+    ?.addEventListener("click", closeVolumeDetails);
+
   // Global Escape Key to dismiss modals
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       closeStackEditor();
       closeContainerLogs();
+      closeVolumeDetails();
     }
   });
+
+  // Timezone Setting Change
+  const tzSelect = document.getElementById("setting-timezone");
+  if (tzSelect) {
+    tzSelect.value = getStoredTimezone();
+    const tzHint = document.getElementById("timezone-hint");
+    if (tzHint) {
+      tzHint.textContent = `Current resolved timezone: ${getEffectiveTimezone()}`;
+    }
+    tzSelect.addEventListener("change", (e) => {
+      setStoredTimezone(e.target.value);
+      if (tzHint) {
+        tzHint.textContent = `Current resolved timezone: ${getEffectiveTimezone()}`;
+      }
+      handleManualRefresh();
+      if (currentViewTab === "containers") {
+        refreshDockerSubtab(currentDockerSubtab);
+      }
+    });
+  }
 
   // Notifications
   document
