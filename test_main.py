@@ -2281,6 +2281,7 @@ class TestDockerBackend(unittest.TestCase):
             ("DELETE", "/api/docker/networks/net123"),
             ("GET", "/api/docker/updates"),
             ("POST", "/api/docker/updates/apply"),
+            ("GET", "/api/docker/updates/config"),
             ("POST", "/api/docker/updates/config"),
             ("GET", "/api/docker/updates/schedule"),
             ("POST", "/api/docker/updates/schedule"),
@@ -2583,6 +2584,14 @@ class TestDockerBackend(unittest.TestCase):
             self.assertEqual(apply_resp.status_code, 200)
             self.assertTrue(apply_resp.json()["success"])
 
+            # Get auto updates config before setting
+            get_cfg_init = asgi_get(
+                api.app,
+                "/api/docker/updates/config",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(get_cfg_init.status_code, 200)
+
             # Configure auto updates
             cfg_resp = asgi_post(
                 api.app,
@@ -2595,6 +2604,297 @@ class TestDockerBackend(unittest.TestCase):
             self.assertEqual(
                 main.get_app_settings().get("docker_auto_update_frequency"), "hourly"
             )
+
+            # Verify GET returns the newly updated frequency
+            get_cfg_after = asgi_get(
+                api.app,
+                "/api/docker/updates/config",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(get_cfg_after.status_code, 200)
+            self.assertEqual(get_cfg_after.json()["frequency"], "hourly")
+
+    def test_docker_auto_update_config_persistence_and_api(self):
+        # 1. Ensure initial config returns a valid dict with frequency
+        resp = asgi_get(
+            api.app,
+            "/api/docker/updates/config",
+            cookies=self.auth_cookies,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("frequency", resp.json())
+
+        # 2. Update to "daily" and verify persistence in SQLite and GET endpoint
+        post_daily = asgi_post(
+            api.app,
+            "/api/docker/updates/config",
+            cookies=self.auth_cookies,
+            json_body={"frequency": "daily"},
+        )
+        self.assertEqual(post_daily.status_code, 200)
+        self.assertEqual(post_daily.json(), {"frequency": "daily"})
+        self.assertEqual(
+            main.get_app_settings().get("docker_auto_update_frequency"), "daily"
+        )
+
+        get_daily = asgi_get(
+            api.app,
+            "/api/docker/updates/config",
+            cookies=self.auth_cookies,
+        )
+        self.assertEqual(get_daily.status_code, 200)
+        self.assertEqual(get_daily.json(), {"frequency": "daily"})
+
+        # 3. Update to "disabled" and verify persistence
+        post_dis = asgi_post(
+            api.app,
+            "/api/docker/updates/config",
+            cookies=self.auth_cookies,
+            json_body={"frequency": "disabled"},
+        )
+        self.assertEqual(post_dis.status_code, 200)
+        self.assertEqual(post_dis.json(), {"frequency": "disabled"})
+        self.assertEqual(
+            main.get_app_settings().get("docker_auto_update_frequency"), "disabled"
+        )
+
+        get_dis = asgi_get(
+            api.app,
+            "/api/docker/updates/config",
+            cookies=self.auth_cookies,
+        )
+        self.assertEqual(get_dis.status_code, 200)
+        self.assertEqual(get_dis.json(), {"frequency": "disabled"})
+
+    def test_docker_check_updates_caching_and_concurrency(self):
+        dm = main.DockerManager()
+        dm.invalidate_cache()
+
+        sample_containers = [
+            {"id": "c1", "name": "web", "image": "nginx:alpine", "stack": "frontend"},
+            {"id": "c2", "name": "db", "image": "postgres:15", "stack": "backend"},
+            {"id": "c3", "name": "cache", "image": "redis:7", "stack": "backend"},
+        ]
+
+        run_docker_calls = []
+
+        def fake_run_docker(cmd, *args, **kwargs):
+            run_docker_calls.append(cmd)
+            if cmd[:2] == ["inspect", "--format"]:
+                return "sha256:1234567890abcdef"
+            if cmd[:2] == ["manifest", "inspect"]:
+                return "{}"
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=sample_containers) as mock_list,
+            patch.object(dm, "_run_docker", side_effect=fake_run_docker),
+        ):
+            # 1. First call: cache miss, runs checks concurrently
+            res1 = dm.check_updates(force=False)
+            self.assertEqual(len(res1["updates"]), 3)
+            self.assertEqual(mock_list.call_count, 1)
+            initial_docker_calls = len(run_docker_calls)
+            self.assertGreaterEqual(initial_docker_calls, 3)
+
+            # 2. Second call without force: cache hit, 0ms, list_containers not called again
+            res2 = dm.check_updates(force=False)
+            self.assertEqual(res1["updates"], res2["updates"])
+            self.assertEqual(mock_list.call_count, 1)
+            self.assertEqual(len(run_docker_calls), initial_docker_calls)
+
+            # 3. Third call with force=True: bypasses cache
+            res3 = dm.check_updates(force=True)
+            self.assertEqual(len(res3["updates"]), 3)
+            self.assertEqual(mock_list.call_count, 2)
+            self.assertGreater(len(run_docker_calls), initial_docker_calls)
+
+            # 4. Invalidate cache: forces next call to re-run
+            dm.invalidate_cache()
+            res4 = dm.check_updates(force=False)
+            self.assertEqual(mock_list.call_count, 3)
+
+        # 5. Verify API endpoint accepts ?force=true and ?force=false
+        with patch.object(main.docker_manager, "check_updates", return_value={"updates": [], "config": {}}) as mock_chk:
+            resp_no_force = asgi_get(api.app, "/api/docker/updates", cookies=self.auth_cookies)
+            self.assertEqual(resp_no_force.status_code, 200)
+            mock_chk.assert_called_with(force=False)
+
+            resp_force = asgi_get(api.app, "/api/docker/updates?force=true", cookies=self.auth_cookies)
+            self.assertEqual(resp_force.status_code, 200)
+            mock_chk.assert_called_with(force=True)
+
+    def test_docker_check_updates_remote_digest_detection(self):
+        dm = main.DockerManager()
+        dm.invalidate_cache()
+
+        sample_container = [
+            {"id": "c1", "name": "web", "image": "nginx:latest", "stack": "frontend"}
+        ]
+
+        local_inspect = json.dumps([
+            {
+                "Id": "sha256:111111111111222222222222",
+                "RepoDigests": ["nginx@sha256:aaaa1111aaaa1111aaaa1111"],
+            }
+        ])
+
+        # Case 1: Remote digest does NOT match local RepoDigests -> update_available is True
+        remote_multi_arch_new = json.dumps({
+            "manifests": [
+                {
+                    "digest": "sha256:bbbb2222bbbb2222bbbb2222",
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                }
+            ]
+        })
+
+        def fake_docker_update_avail(cmd, *args, **kwargs):
+            if cmd[:2] == ["image", "inspect"]:
+                return local_inspect
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                return remote_multi_arch_new
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=sample_container),
+            patch.object(dm, "_run_docker", side_effect=fake_docker_update_avail),
+            patch("platform.machine", return_value="x86_64"),
+        ):
+            dm.invalidate_cache()
+            res = dm.check_updates(force=True)
+            self.assertEqual(len(res["updates"]), 1)
+            upd = res["updates"][0]
+            self.assertTrue(upd["update_available"])
+            self.assertEqual(upd["current_id"], "111111111111")
+            self.assertEqual(upd["latest_id"], "bbbb2222bbbb")
+
+        # Case 2: Remote digest matches local RepoDigests -> update_available is False
+        remote_matching = json.dumps({
+            "manifests": [
+                {
+                    "digest": "sha256:aaaa1111aaaa1111aaaa1111",
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                }
+            ]
+        })
+
+        def fake_docker_up_to_date(cmd, *args, **kwargs):
+            if cmd[:2] == ["image", "inspect"]:
+                return local_inspect
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                return remote_matching
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=sample_container),
+            patch.object(dm, "_run_docker", side_effect=fake_docker_up_to_date),
+            patch("platform.machine", return_value="x86_64"),
+        ):
+            dm.invalidate_cache()
+            res = dm.check_updates(force=True)
+            self.assertEqual(len(res["updates"]), 1)
+            upd = res["updates"][0]
+            self.assertFalse(upd["update_available"])
+            self.assertEqual(upd["current_id"], "111111111111")
+            self.assertEqual(upd["latest_id"], "111111111111")
+
+        # Case 3: Remote inspect fails -> graceful handling, update_available is False
+        def fake_docker_remote_fails(cmd, *args, **kwargs):
+            if cmd[:2] == ["image", "inspect"]:
+                return local_inspect
+            raise RuntimeError("Network error reaching registry")
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=sample_container),
+            patch.object(dm, "_run_docker", side_effect=fake_docker_remote_fails),
+        ):
+            dm.invalidate_cache()
+            res = dm.check_updates(force=True)
+            self.assertEqual(len(res["updates"]), 1)
+            upd = res["updates"][0]
+            self.assertFalse(upd["update_available"])
+            self.assertEqual(upd["current_id"], "111111111111")
+            self.assertEqual(upd["latest_id"], "111111111111")
+
+    def test_docker_get_remote_image_digest_fallback_chain(self):
+        dm = main.DockerManager()
+
+        # 1. Empty image input
+        self.assertIsNone(dm._get_remote_image_digest(""))
+        self.assertIsNone(dm._get_remote_image_digest("   "))
+
+        # 2. Buildx single manifest format with config.digest
+        single_manifest = json.dumps({"config": {"digest": "sha256:singleconfig1234"}})
+        with patch.object(dm, "_run_docker", return_value=single_manifest):
+            self.assertEqual(dm._get_remote_image_digest("app:v1"), "sha256:singleconfig1234")
+
+        # 3. Fallback to manifest inspect -v with list of platform descriptors
+        def fake_manifest_v(cmd, *args, **kwargs):
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                raise RuntimeError("buildx not supported")
+            if cmd[:3] == ["manifest", "inspect", "-v"]:
+                return json.dumps([
+                    {
+                        "Descriptor": {
+                            "digest": "sha256:armdigest5678",
+                            "platform": {"architecture": "arm64", "os": "linux"},
+                        }
+                    }
+                ])
+            return ""
+
+        with (
+            patch.object(dm, "_run_docker", side_effect=fake_manifest_v),
+            patch("platform.machine", return_value="aarch64"),
+        ):
+            self.assertEqual(dm._get_remote_image_digest("app:v1"), "sha256:armdigest5678")
+
+        # 4. Fallback to manifest inspect -v with dict Descriptor
+        def fake_manifest_v_dict(cmd, *args, **kwargs):
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                raise RuntimeError("buildx not supported")
+            if cmd[:3] == ["manifest", "inspect", "-v"]:
+                return json.dumps({
+                    "Descriptor": {
+                        "digest": "sha256:dictdesc9999",
+                    }
+                })
+            return ""
+
+        with patch.object(dm, "_run_docker", side_effect=fake_manifest_v_dict):
+            self.assertEqual(dm._get_remote_image_digest("app:v1"), "sha256:dictdesc9999")
+
+        # 5. Fallback to manifest inspect standard
+        def fake_manifest_std(cmd, *args, **kwargs):
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                raise RuntimeError("buildx not supported")
+            if cmd[:3] == ["manifest", "inspect", "-v"]:
+                raise RuntimeError("-v not supported")
+            if cmd[:2] == ["manifest", "inspect"]:
+                return json.dumps({
+                    "manifests": [
+                        {
+                            "digest": "sha256:stddigest0000",
+                            "platform": {"architecture": "amd64", "os": "linux"},
+                        }
+                    ]
+                })
+            return ""
+
+        with (
+            patch.object(dm, "_run_docker", side_effect=fake_manifest_std),
+            patch("platform.machine", return_value="x86_64"),
+        ):
+            self.assertEqual(dm._get_remote_image_digest("app:v1"), "sha256:stddigest0000")
+
+        # 6. All fail returns None
+        with patch.object(dm, "_run_docker", side_effect=RuntimeError("all fail")):
+            self.assertIsNone(dm._get_remote_image_digest("app:v1"))
 
     def test_docker_error_handling_and_validation(self):
         # 1. Invalid stack action

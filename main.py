@@ -7,6 +7,7 @@ import hmac
 import http.client
 import json
 import os
+import platform
 import secrets
 import shutil
 import socket
@@ -1476,11 +1477,14 @@ class DockerManager:
         stacks_dir: Optional[Path] = None,
         cache_ttl: float = 1.5,
         socket_path: str = "/var/run/docker.sock",
+        updates_cache_ttl: float = 120.0,
     ) -> None:
         self.stacks_dir = Path(stacks_dir) if stacks_dir else STACKS_DIR
         self._cache_ttl = cache_ttl
         self.socket_path = str(socket_path)
         self._cache: dict[str, tuple[float, Any]] = {}
+        self._updates_cache: Optional[tuple[float, dict[str, Any]]] = None
+        self._updates_cache_ttl = updates_cache_ttl
         self._cache_lock = threading.Lock()
 
     def _socket_request(
@@ -1517,6 +1521,7 @@ class DockerManager:
         """Clear short-lived TTL caches for Docker inspections."""
         with self._cache_lock:
             self._cache.clear()
+            self._updates_cache = None
 
     def _get_cached(self, key: str, bypass_cache: bool = False) -> Any:
         if bypass_cache:
@@ -2815,50 +2820,172 @@ class DockerManager:
         update_app_settings({"docker_auto_update_frequency": freq})
         return {"frequency": freq}
 
-    def check_updates(self) -> dict[str, Any]:
+    def _get_remote_image_digest(self, img: str) -> Optional[str]:
+        clean_img = img.strip()
+        if not clean_img:
+            return None
+
+        arch = (
+            "amd64"
+            if platform.machine() in ("x86_64", "AMD64")
+            else ("arm64" if platform.machine() in ("aarch64", "arm64") else platform.machine())
+        )
+
+        # Attempt 1: buildx imagetools inspect --raw
+        try:
+            raw = self._run_docker(["buildx", "imagetools", "inspect", "--raw", clean_img], timeout=8)
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                manifests = data.get("manifests")
+                if isinstance(manifests, list) and manifests:
+                    for m in manifests:
+                        plat = m.get("platform", {})
+                        if plat.get("architecture") == arch and plat.get("os") == "linux":
+                            digest = m.get("digest")
+                            if digest:
+                                return digest
+                    first_digest = manifests[0].get("digest")
+                    if first_digest:
+                        return first_digest
+                elif "config" in data:
+                    cfg_digest = data.get("config", {}).get("digest")
+                    if cfg_digest:
+                        return cfg_digest
+        except Exception:
+            pass
+
+        # Fallback attempt 2: manifest inspect -v
+        try:
+            raw = self._run_docker(["manifest", "inspect", "-v", clean_img], timeout=8)
+            data = json.loads(raw)
+            if isinstance(data, list):
+                for entry in data:
+                    if isinstance(entry, dict):
+                        plat = entry.get("Descriptor", {}).get("platform", {})
+                        if plat.get("architecture") == arch and plat.get("os") == "linux":
+                            digest = entry.get("Descriptor", {}).get("digest")
+                            if digest:
+                                return digest
+                if data and isinstance(data[0], dict):
+                    first_digest = data[0].get("Descriptor", {}).get("digest")
+                    if first_digest:
+                        return first_digest
+            elif isinstance(data, dict):
+                digest = data.get("Descriptor", {}).get("digest")
+                if digest:
+                    return digest
+        except Exception:
+            pass
+
+        # Fallback attempt 3: manifest inspect
+        try:
+            raw = self._run_docker(["manifest", "inspect", clean_img], timeout=8)
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                manifests = data.get("manifests")
+                if isinstance(manifests, list) and manifests:
+                    for m in manifests:
+                        plat = m.get("platform", {})
+                        if plat.get("architecture") == arch and plat.get("os") == "linux":
+                            digest = m.get("digest")
+                            if digest:
+                                return digest
+                    first_digest = manifests[0].get("digest")
+                    if first_digest:
+                        return first_digest
+                elif "config" in data:
+                    cfg_digest = data.get("config", {}).get("digest")
+                    if cfg_digest:
+                        return cfg_digest
+        except Exception:
+            pass
+
+        return None
+
+    def check_updates(self, force: bool = False) -> dict[str, Any]:
         frequency = self.get_auto_update_config().get("frequency", "disabled")
         if not self.is_running():
             return {"updates": [], "config": {"frequency": frequency}}
 
+        if not force:
+            with self._cache_lock:
+                if self._updates_cache is not None:
+                    cached_ts, cached_res = self._updates_cache
+                    if (time.time() - cached_ts) < self._updates_cache_ttl:
+                        res = copy.deepcopy(cached_res)
+                        res["config"] = {"frequency": frequency}
+                        return res
+
         containers = self.list_containers(all=False)
-        results = []
-        for c in containers:
+        valid_containers = [
+            c
+            for c in containers
+            if c.get("image", "").strip() and "<none>" not in c.get("image", "")
+        ]
+
+        def _check_container(c: dict[str, Any]) -> dict[str, Any]:
             img = c.get("image", "").strip()
-            if not img or "<none>" in img:
-                continue
-            current_id = ""
+            local_data: dict[str, Any] = {}
             try:
-                current_id = self._run_docker(
-                    ["inspect", "--format", "{{.Id}}", img], timeout=5
-                ).strip()[:12]
+                raw_local = self._run_docker(["image", "inspect", img], timeout=5)
+                parsed = json.loads(raw_local)
+                if isinstance(parsed, list) and parsed:
+                    local_data = parsed[0]
+                elif isinstance(parsed, dict):
+                    local_data = parsed
             except Exception:
                 pass
 
-            update_available = False
-            latest_id = current_id
-            try:
-                self._run_docker(["manifest", "inspect", img], timeout=8)
-            except Exception:
-                pass
+            repo_digests = local_data.get("RepoDigests") or []
+            local_id = str(local_data.get("Id", "") or "")
+            current_id = local_id.replace("sha256:", "")[:12] if local_id else ""
+            if not current_id:
+                try:
+                    current_id = self._run_docker(
+                        ["inspect", "--format", "{{.Id}}", img], timeout=5
+                    ).strip().replace("sha256:", "")[:12]
+                except Exception:
+                    pass
 
-            results.append(
-                {
-                    "container_id": c.get("id"),
-                    "container_name": c.get("name"),
-                    "image": img,
-                    "stack": c.get("stack", ""),
-                    "update_available": update_available,
-                    "current_id": current_id,
-                    "latest_id": latest_id,
-                }
-            )
+            remote_digest = self._get_remote_image_digest(img)
 
-        return {
+            if remote_digest:
+                if any(remote_digest in rd for rd in repo_digests):
+                    update_available = False
+                    latest_id = current_id
+                else:
+                    update_available = True
+                    latest_id = remote_digest.replace("sha256:", "")[:12]
+            else:
+                update_available = False
+                latest_id = current_id
+
+            return {
+                "container_id": c.get("id"),
+                "container_name": c.get("name"),
+                "image": img,
+                "stack": c.get("stack", ""),
+                "update_available": update_available,
+                "current_id": current_id,
+                "latest_id": latest_id,
+            }
+
+        results = []
+        if valid_containers:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                results = list(executor.map(_check_container, valid_containers))
+
+        response = {
             "updates": results,
             "config": {
                 "frequency": frequency,
             },
         }
+
+        with self._cache_lock:
+            self._updates_cache = (time.time(), copy.deepcopy(response))
+
+        return response
 
     def apply_updates(
         self,

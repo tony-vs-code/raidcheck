@@ -16,6 +16,8 @@ Direct Linux sysfs and Docker Unix socket streaming, interactive update modal, i
 - Professional typographic styling and crisp SVG vector stroke icons across all components, eliminating emojis entirely.
 
 ## Reliability & Fixes
+- Added authenticated GET /api/docker/updates/config and auto-save on select change for Docker image auto-check frequency.
+- Restricted the container Update action button to only appear on containers with pullable image updates.
 - Added comprehensive unit and integration tests covering sysfs RAID parsing, statvfs metrics, Docker socket requests, and changelog endpoints.
 - Self-testing workflow enforcement across all subagents.
 - Automated Pull Request creation and branch management via GitHub CLI.
