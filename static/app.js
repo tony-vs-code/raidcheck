@@ -29,6 +29,24 @@ let activeLogContainerId = null;
 let activeLogContainerName = "";
 let logsTimerId = null;
 let cachedDockerContainers = [];
+let cachedDockerVolumes = [];
+
+let isFetchingDockerStatus = false;
+let isFetchingDockerStacks = false;
+let isFetchingDockerContainers = false;
+let isFetchingDockerImages = false;
+let isFetchingDockerVolumes = false;
+let isFetchingDockerNetworks = false;
+let isFetchingDockerUpdates = false;
+let isFetchingContainerLogs = false;
+let isFetchingUpdateSchedule = false;
+
+let lastDockerSubtabFetchTime = 0;
+let dockerSubtabThrottleTimer = null;
+const DOCKER_SUBTAB_THROTTLE_MS = 800;
+
+let lastContainersRenderKey = "";
+let lastStacksRenderKey = "";
 
 /**
  * Retrieve stored session token if present.
@@ -1008,7 +1026,7 @@ function handleWebSocketMessage(rawData) {
       renderDockerStatus(msg.docker || msg);
       setModuleLastUpdated("docker");
       if (currentViewTab === "containers") {
-        refreshDockerSubtab(currentDockerSubtab);
+        throttledRefreshDockerSubtab(currentDockerSubtab);
       }
     }
   } else {
@@ -1045,7 +1063,7 @@ function handleWebSocketMessage(rawData) {
       renderDockerStatus(msg.docker);
       setModuleLastUpdated("docker");
       if (currentViewTab === "containers") {
-        refreshDockerSubtab(currentDockerSubtab);
+        throttledRefreshDockerSubtab(currentDockerSubtab);
       }
     }
   }
@@ -2036,9 +2054,55 @@ function switchDockerSubtab(subtabName, updateHash = true) {
 }
 
 /**
+ * Check if the active or specified Docker subtab request is currently in-flight.
+ */
+function isDockerSubtabInFlight(subtabName = currentDockerSubtab) {
+  switch (subtabName) {
+    case "stacks":
+      return isFetchingDockerStacks;
+    case "containers":
+      return isFetchingDockerContainers;
+    case "images":
+      return isFetchingDockerImages;
+    case "volumes":
+      return isFetchingDockerVolumes;
+    case "networks":
+      return isFetchingDockerNetworks;
+    case "updates":
+      return isFetchingDockerUpdates;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Throttled subtab refresh to prevent rapid WebSocket ticks from spamming HTTP requests.
+ */
+function throttledRefreshDockerSubtab(subtabName = currentDockerSubtab) {
+  if (isDockerSubtabInFlight(subtabName)) return;
+  const now = Date.now();
+  const elapsed = now - lastDockerSubtabFetchTime;
+  if (elapsed >= DOCKER_SUBTAB_THROTTLE_MS) {
+    if (dockerSubtabThrottleTimer) {
+      clearTimeout(dockerSubtabThrottleTimer);
+      dockerSubtabThrottleTimer = null;
+    }
+    refreshDockerSubtab(subtabName);
+  } else if (!dockerSubtabThrottleTimer) {
+    dockerSubtabThrottleTimer = setTimeout(() => {
+      dockerSubtabThrottleTimer = null;
+      if (currentViewTab === "containers" && !isDockerSubtabInFlight(currentDockerSubtab)) {
+        refreshDockerSubtab(currentDockerSubtab);
+      }
+    }, DOCKER_SUBTAB_THROTTLE_MS - elapsed);
+  }
+}
+
+/**
  * Fetch data for active Docker subtab.
  */
 function refreshDockerSubtab(subtabName) {
+  lastDockerSubtabFetchTime = Date.now();
   switch (subtabName) {
     case "stacks":
       fetchDockerStacks();
@@ -2180,6 +2244,8 @@ function renderDockerStatus(data) {
  * Fetch Docker daemon status and quick stats.
  */
 async function fetchDockerStatus() {
+  if (isFetchingDockerStatus) return;
+  isFetchingDockerStatus = true;
   const refreshBtn = document.getElementById("refresh-docker-btn");
   if (refreshBtn) refreshBtn.classList.add("loading");
 
@@ -2191,6 +2257,7 @@ async function fetchDockerStatus() {
   } catch (err) {
     console.warn("Failed to fetch Docker status:", err);
   } finally {
+    isFetchingDockerStatus = false;
     if (refreshBtn) refreshBtn.classList.remove("loading");
   }
 }
@@ -2240,12 +2307,20 @@ async function handleInstallDocker() {
 async function fetchDockerStacks() {
   const tbody = document.getElementById("docker-stacks-tbody");
   if (!tbody) return;
+  if (isFetchingDockerStacks) return;
+  isFetchingDockerStacks = true;
 
   try {
     const resp = await apiFetch("/api/docker/stacks");
     if (!resp.ok) return;
     const data = await resp.json();
     const stacks = data.stacks || [];
+
+    const stacksKey = JSON.stringify(stacks);
+    if (lastStacksRenderKey === stacksKey && tbody.children.length > 0) {
+      return;
+    }
+    lastStacksRenderKey = stacksKey;
 
     if (stacks.length === 0) {
       tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No Compose stacks configured yet. Click 'Deploy New Stack' to add one.</td></tr>`;
@@ -2305,6 +2380,8 @@ async function fetchDockerStacks() {
     });
   } catch (err) {
     console.warn("Failed to fetch Docker stacks:", err);
+  } finally {
+    isFetchingDockerStacks = false;
   }
 }
 
@@ -2330,6 +2407,7 @@ async function handleStackAction(stackName, action, buttonEl) {
   } catch (err) {
     alert(`Error executing stack action: ${err.message}`);
   } finally {
+    lastStacksRenderKey = "";
     fetchDockerStacks();
     fetchDockerStatus();
   }
@@ -2354,6 +2432,7 @@ async function handleDeleteStack(stackName) {
   } catch (err) {
     alert(`Error deleting stack: ${err.message}`);
   } finally {
+    lastStacksRenderKey = "";
     fetchDockerStacks();
     fetchDockerStatus();
   }
@@ -2464,6 +2543,7 @@ async function handleSaveStack() {
 
     const data = await resp.json().catch(() => ({}));
     if (resp.ok) {
+      lastStacksRenderKey = "";
       closeStackEditor();
       fetchDockerStacks();
       fetchDockerStatus();
@@ -2501,6 +2581,8 @@ async function handleSaveStack() {
 async function fetchDockerContainers() {
   const tbody = document.getElementById("docker-containers-tbody");
   if (!tbody) return;
+  if (isFetchingDockerContainers) return;
+  isFetchingDockerContainers = true;
 
   try {
     const resp = await apiFetch(`/api/docker/containers?all=true`);
@@ -2508,7 +2590,7 @@ async function fetchDockerContainers() {
     const data = await resp.json();
     cachedDockerContainers = data.containers || [];
 
-    // Populate stack filter dropdown
+    // Populate stack filter dropdown only if options changed
     const stackFilterEl = document.getElementById("containers-filter-stack");
     if (stackFilterEl) {
       const currentSelected = stackFilterEl.value || "all";
@@ -2524,17 +2606,22 @@ async function fetchDockerContainers() {
         const safeSt = escapeHtml(st);
         optionsHtml += `<option value="${safeSt}">${safeSt}</option>`;
       });
-      stackFilterEl.innerHTML = optionsHtml;
-      if (currentSelected === "all" || currentSelected === "standalone" || stacks.has(currentSelected)) {
-        stackFilterEl.value = currentSelected;
-      } else {
-        stackFilterEl.value = "all";
+      if (stackFilterEl.dataset.renderedOptions !== optionsHtml) {
+        stackFilterEl.dataset.renderedOptions = optionsHtml;
+        stackFilterEl.innerHTML = optionsHtml;
+        if (currentSelected === "all" || currentSelected === "standalone" || stacks.has(currentSelected)) {
+          stackFilterEl.value = currentSelected;
+        } else {
+          stackFilterEl.value = "all";
+        }
       }
     }
 
     renderDockerContainers();
   } catch (err) {
     console.warn("Failed to fetch Docker containers:", err);
+  } finally {
+    isFetchingDockerContainers = false;
   }
 }
 
@@ -2552,6 +2639,17 @@ function renderDockerContainers() {
 
   const stackFilterEl = document.getElementById("containers-filter-stack");
   const stackFilter = stackFilterEl?.value || "all";
+
+  const renderKey = JSON.stringify({
+    query,
+    statusFilter,
+    stackFilter,
+    containers: cachedDockerContainers,
+  });
+  if (lastContainersRenderKey === renderKey && tbody.children.length > 0) {
+    return;
+  }
+  lastContainersRenderKey = renderKey;
 
   let filtered = cachedDockerContainers;
 
@@ -2674,6 +2772,7 @@ async function handleContainerAction(containerId, action, buttonEl) {
   } catch (err) {
     alert(`Error executing container action: ${err.message}`);
   } finally {
+    lastContainersRenderKey = "";
     fetchDockerContainers();
     fetchDockerStatus();
   }
@@ -2700,6 +2799,7 @@ async function handleRemoveContainer(containerId, containerName) {
   } catch (err) {
     alert(`Error removing container: ${err.message}`);
   } finally {
+    lastContainersRenderKey = "";
     fetchDockerContainers();
     fetchDockerStatus();
   }
@@ -2746,6 +2846,8 @@ function closeContainerLogs() {
 
 async function fetchContainerLogs() {
   if (!activeLogContainerId) return;
+  if (isFetchingContainerLogs) return;
+  isFetchingContainerLogs = true;
 
   const tailSelect = document.getElementById("logs-tail-select");
   const tsToggle = document.getElementById("logs-timestamps-toggle");
@@ -2770,6 +2872,8 @@ async function fetchContainerLogs() {
     }
   } catch (err) {
     if (viewer) viewer.textContent = `Error fetching logs: ${err.message}`;
+  } finally {
+    isFetchingContainerLogs = false;
   }
 }
 
@@ -2800,6 +2904,8 @@ function scrollLogsToBottom() {
 async function fetchDockerImages() {
   const tbody = document.getElementById("docker-images-tbody");
   if (!tbody) return;
+  if (isFetchingDockerImages) return;
+  isFetchingDockerImages = true;
 
   try {
     const resp = await apiFetch("/api/docker/images");
@@ -2840,6 +2946,8 @@ async function fetchDockerImages() {
     });
   } catch (err) {
     console.warn("Failed to fetch Docker images:", err);
+  } finally {
+    isFetchingDockerImages = false;
   }
 }
 
@@ -2946,14 +3054,14 @@ async function handleRemoveImage(imageId, imageTag) {
   }
 }
 
-let cachedDockerVolumes = [];
-
 /**
  * Volumes Tab: Fetch, Inspect, Remove.
  */
 async function fetchDockerVolumes() {
   const tbody = document.getElementById("docker-volumes-tbody");
   if (!tbody) return;
+  if (isFetchingDockerVolumes) return;
+  isFetchingDockerVolumes = true;
 
   try {
     const resp = await apiFetch("/api/docker/volumes");
@@ -3034,6 +3142,8 @@ async function fetchDockerVolumes() {
     });
   } catch (err) {
     console.warn("Failed to fetch Docker volumes:", err);
+  } finally {
+    isFetchingDockerVolumes = false;
   }
 }
 
@@ -3151,6 +3261,8 @@ function closeVolumeDetails() {
 async function fetchDockerNetworks() {
   const tbody = document.getElementById("docker-networks-tbody");
   if (!tbody) return;
+  if (isFetchingDockerNetworks) return;
+  isFetchingDockerNetworks = true;
 
   try {
     const resp = await apiFetch("/api/docker/networks");
@@ -3197,6 +3309,8 @@ async function fetchDockerNetworks() {
     });
   } catch (err) {
     console.warn("Failed to fetch Docker networks:", err);
+  } finally {
+    isFetchingDockerNetworks = false;
   }
 }
 
@@ -3227,6 +3341,8 @@ async function handleRemoveNetwork(networkId, networkName) {
 async function fetchDockerUpdates() {
   const tbody = document.getElementById("docker-updates-tbody");
   if (!tbody) return;
+  if (isFetchingDockerUpdates) return;
+  isFetchingDockerUpdates = true;
 
   try {
     const resp = await apiFetch("/api/docker/updates");
@@ -3290,6 +3406,8 @@ async function fetchDockerUpdates() {
     });
   } catch (err) {
     console.warn("Failed to fetch Docker updates:", err);
+  } finally {
+    isFetchingDockerUpdates = false;
   }
 }
 
@@ -3354,6 +3472,9 @@ async function handleApplyUpdates(containers = null, stacks = null) {
 }
 
 async function fetchUpdateSchedule() {
+  if (isFetchingUpdateSchedule) return;
+  isFetchingUpdateSchedule = true;
+
   const enabledToggle = document.getElementById("schedule-enabled-toggle");
   const daySelect = document.getElementById("schedule-day-select");
   const timeInput = document.getElementById("schedule-time-input");
@@ -3389,6 +3510,8 @@ async function fetchUpdateSchedule() {
     }
   } catch (err) {
     console.debug("Schedule API fetch error, checking local store:", err);
+  } finally {
+    isFetchingUpdateSchedule = false;
   }
 
   // Fallback from localStorage

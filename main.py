@@ -1,4 +1,6 @@
 import argparse
+import concurrent.futures
+import copy
 import glob
 import hashlib
 import hmac
@@ -8,6 +10,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import aiohttp
 import discord
@@ -1148,8 +1151,34 @@ async def run_raid_check(force: bool = False) -> None:
 class DockerManager:
     """Manages Docker daemon, Compose stacks, containers, images, volumes, and networks."""
 
-    def __init__(self, stacks_dir: Optional[Path] = None) -> None:
+    def __init__(
+        self, stacks_dir: Optional[Path] = None, cache_ttl: float = 1.5
+    ) -> None:
         self.stacks_dir = Path(stacks_dir) if stacks_dir else STACKS_DIR
+        self._cache_ttl = cache_ttl
+        self._cache: dict[str, tuple[float, Any]] = {}
+        self._cache_lock = threading.Lock()
+
+    def invalidate_cache(self) -> None:
+        """Clear short-lived TTL caches for Docker inspections."""
+        with self._cache_lock:
+            self._cache.clear()
+
+    def _get_cached(self, key: str, bypass_cache: bool = False) -> Any:
+        if bypass_cache:
+            return None
+        with self._cache_lock:
+            entry = self._cache.get(key)
+            if entry is not None:
+                ts, val = entry
+                if (time.time() - ts) < self._cache_ttl:
+                    return copy.deepcopy(val)
+                self._cache.pop(key, None)
+        return None
+
+    def _set_cache(self, key: str, val: Any) -> None:
+        with self._cache_lock:
+            self._cache[key] = (time.time(), copy.deepcopy(val))
 
     def _get_compose_cmd(self) -> list[str]:
         docker_bin = shutil.which("docker")
@@ -1352,7 +1381,11 @@ class DockerManager:
             pass
         return ""
 
-    def get_stats(self) -> dict[str, int]:
+    def get_stats(self, bypass_cache: bool = False) -> dict[str, int]:
+        cached = self._get_cached("stats", bypass_cache=bypass_cache)
+        if cached is not None:
+            return cached
+
         default_stats = {
             "containers": 0,
             "running": 0,
@@ -1365,49 +1398,78 @@ class DockerManager:
         if not self.is_running():
             return default_stats
 
-        try:
-            c_list = self.list_containers(all=True)
-            containers = len(c_list)
-            running = sum(
+        def _fetch_containers() -> tuple[int, int, int]:
+            c_list = self.list_containers(all=True, bypass_cache=bypass_cache)
+            c_total = len(c_list)
+            r_total = sum(
                 1
                 for c in c_list
-                if c.get("state") == "running" or "up" in str(c.get("status", "")).lower()
+                if c.get("state") == "running"
+                or "up" in str(c.get("status", "")).lower()
             )
-            stopped = max(0, containers - running)
-        except Exception:
-            containers, running, stopped = 0, 0, 0
+            s_total = max(0, c_total - r_total)
+            return c_total, r_total, s_total
 
-        try:
+        def _fetch_images() -> int:
             img_out = self._run_docker(["images", "-q"], timeout=5)
-            images = len(
+            return len(
                 set(line.strip() for line in img_out.splitlines() if line.strip())
             )
-        except Exception:
-            images = 0
 
-        try:
+        def _fetch_volumes() -> int:
             vol_out = self._run_docker(["volume", "ls", "-q"], timeout=5)
-            volumes = len(
+            return len(
                 [line.strip() for line in vol_out.splitlines() if line.strip()]
             )
-        except Exception:
-            volumes = 0
 
-        try:
+        def _fetch_networks() -> int:
             net_out = self._run_docker(["network", "ls", "-q"], timeout=5)
-            networks = len(
+            return len(
                 [line.strip() for line in net_out.splitlines() if line.strip()]
             )
-        except Exception:
-            networks = 0
 
-        try:
+        def _fetch_stacks() -> int:
             stacks_list = self.list_stacks()
-            stacks = len(stacks_list)
-        except Exception:
-            stacks = 0
+            return len(stacks_list)
 
-        return {
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            fut_c = executor.submit(_fetch_containers)
+            fut_i = executor.submit(_fetch_images)
+            fut_v = executor.submit(_fetch_volumes)
+            fut_n = executor.submit(_fetch_networks)
+            fut_s = executor.submit(_fetch_stacks)
+
+            try:
+                containers, running, stopped = fut_c.result(timeout=6)
+            except Exception as exc:
+                logging.debug(f"Failed to fetch container stats: {exc}")
+                containers, running, stopped = 0, 0, 0
+
+            try:
+                images = fut_i.result(timeout=6)
+            except Exception as exc:
+                logging.debug(f"Failed to fetch image stats: {exc}")
+                images = 0
+
+            try:
+                volumes = fut_v.result(timeout=6)
+            except Exception as exc:
+                logging.debug(f"Failed to fetch volume stats: {exc}")
+                volumes = 0
+
+            try:
+                networks = fut_n.result(timeout=6)
+            except Exception as exc:
+                logging.debug(f"Failed to fetch network stats: {exc}")
+                networks = 0
+
+            try:
+                stacks = fut_s.result(timeout=6)
+            except Exception as exc:
+                logging.debug(f"Failed to fetch stack stats: {exc}")
+                stacks = 0
+
+        stats = {
             "containers": containers,
             "running": running,
             "stopped": stopped,
@@ -1416,17 +1478,26 @@ class DockerManager:
             "networks": networks,
             "stacks": stacks,
         }
+        self._set_cache("stats", stats)
+        return stats
 
-    def get_status(self) -> dict[str, Any]:
-        return {
+    def get_status(self, bypass_cache: bool = False) -> dict[str, Any]:
+        cached = self._get_cached("status", bypass_cache=bypass_cache)
+        if cached is not None:
+            return cached
+
+        status = {
             "installed": self.is_installed(),
             "running": self.is_running(),
             "version": self.get_version(),
             "compose_version": self.get_compose_version(),
-            "stats": self.get_stats(),
+            "stats": self.get_stats(bypass_cache=bypass_cache),
         }
+        self._set_cache("status", status)
+        return status
 
     def install_docker(self) -> dict[str, Any]:
+        self.invalidate_cache()
         if self.is_installed():
             return {
                 "status": "already_installed",
@@ -1450,14 +1521,21 @@ class DockerManager:
         except Exception as exc:
             raise RuntimeError(f"Failed to trigger Docker installation: {exc}") from exc
 
-    def list_containers(self, all: bool = True) -> list[dict[str, Any]]:
+    def list_containers(
+        self, all: bool = True, bypass_cache: bool = False
+    ) -> list[dict[str, Any]]:
+        cache_key = f"containers_{all}"
+        cached = self._get_cached(cache_key, bypass_cache=bypass_cache)
+        if cached is not None:
+            return cached
+
         if not self.is_running():
             return []
         args = ["ps", "--format", "{{json .}}"]
         if all:
             args.append("-a")
         try:
-            out = self._run_docker(args, timeout=10)
+            out = self._run_docker(args, timeout=5)
         except Exception as exc:
             logging.warning(f"Failed to list containers: {exc}")
             return []
@@ -1497,6 +1575,7 @@ class DockerManager:
                     "stack": stack_name,
                 }
             )
+        self._set_cache(cache_key, containers)
         return containers
 
     def execute_container_action(
@@ -1515,6 +1594,7 @@ class DockerManager:
             act = "remove"
         else:
             self._run_docker([act, container_id], timeout=30)
+        self.invalidate_cache()
         return {"success": True, "action": act, "id": container_id}
 
     def get_container_logs(
@@ -1742,6 +1822,7 @@ class DockerManager:
         finally:
             connection.close()
 
+        self.invalidate_cache()
         res = self.get_stack(clean_name)
         return (
             res
@@ -1856,6 +1937,7 @@ class DockerManager:
         except (OSError, sqlite3.Error):
             pass
 
+        self.invalidate_cache()
         return {
             "success": True,
             "name": clean_name,
@@ -1894,6 +1976,7 @@ class DockerManager:
                 connection.close()
         except (OSError, sqlite3.Error):
             pass
+        self.invalidate_cache()
         return True
 
     def list_images(self) -> list[dict[str, Any]]:
@@ -1936,6 +2019,7 @@ class DockerManager:
         if not self.is_running():
             raise RuntimeError("Docker daemon is not running.")
         out = self._run_docker(["pull", clean_tag], timeout=300)
+        self.invalidate_cache()
         return {"success": True, "image": clean_tag, "output": out}
 
     def remove_image(self, image_id: str, force: bool = False) -> dict[str, Any]:
@@ -1949,6 +2033,7 @@ class DockerManager:
             args.append("-f")
         args.append(clean_id)
         out = self._run_docker(args, timeout=20)
+        self.invalidate_cache()
         return {"success": True, "id": clean_id, "output": out}
 
     def prune_images(self, all_images: bool = False) -> dict[str, Any]:
@@ -1958,6 +2043,7 @@ class DockerManager:
         if all_images:
             args.append("-a")
         out = self._run_docker(args, timeout=60)
+        self.invalidate_cache()
         return {"success": True, "output": out}
 
     def list_volumes(self) -> list[dict[str, Any]]:
@@ -2117,6 +2203,7 @@ class DockerManager:
             args.append("-f")
         args.append(clean_name)
         out = self._run_docker(args, timeout=20)
+        self.invalidate_cache()
         return {"success": True, "name": clean_name, "output": out}
 
     def list_networks(self) -> list[dict[str, Any]]:
@@ -2147,6 +2234,7 @@ class DockerManager:
         if not self.is_running():
             raise RuntimeError("Docker daemon is not running.")
         out = self._run_docker(["network", "rm", clean_id], timeout=20)
+        self.invalidate_cache()
         return {"success": True, "id": clean_id, "output": out}
 
     def get_auto_update_config(self) -> dict[str, str]:
@@ -2313,6 +2401,7 @@ class DockerManager:
                             }
                         )
 
+        self.invalidate_cache()
         return {"success": True, "updated": updated}
 
 
@@ -2487,6 +2576,7 @@ check_docker_updates = docker_manager.check_updates
 apply_docker_updates = docker_manager.apply_updates
 get_docker_auto_update_config = docker_manager.get_auto_update_config
 set_docker_auto_update_config = docker_manager.set_auto_update_config
+invalidate_docker_cache = docker_manager.invalidate_cache
 _clean_docker_error = DockerManager._clean_docker_error
 
 

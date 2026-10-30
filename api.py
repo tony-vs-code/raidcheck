@@ -305,7 +305,7 @@ def _build_full_snapshot() -> dict[str, Any]:
     }
 
 
-def _build_module_update(module_name: str) -> dict[str, Any]:
+async def _build_module_update(module_name: str) -> dict[str, Any]:
     mod = (module_name or "").strip().lower()
     if mod == "system":
         return {
@@ -337,12 +337,13 @@ def _build_module_update(module_name: str) -> dict[str, Any]:
             "history": _get_formatted_history(20),
         }
     if mod in ("docker", "containers"):
+        docker_status = await asyncio.to_thread(main.docker_mgr.get_status)
         return {
             "type": "module_update",
             "module": "docker",
-            "docker": main.docker_mgr.get_status(),
+            "docker": docker_status,
         }
-    return _build_full_snapshot()
+    return await asyncio.to_thread(_build_full_snapshot)
 
 
 def _format_settings_response(settings: dict[str, str]) -> dict[str, Any]:
@@ -547,7 +548,7 @@ async def api_websocket(websocket: WebSocket) -> None:
 
     await ws_manager.connect(websocket)
     try:
-        initial_snapshot = _build_full_snapshot()
+        initial_snapshot = await asyncio.to_thread(_build_full_snapshot)
         last_raid_status = initial_snapshot.get("raid", {}).get("status", "unknown")
         await websocket.send_json(initial_snapshot)
         elapsed = {"system": 0, "raid": 0, "notifications": 0, "docker": 0}
@@ -563,14 +564,14 @@ async def api_websocket(websocket: WebSocket) -> None:
                 if isinstance(data, dict):
                     action = data.get("action")
                     if action == "refresh":
-                        snap = _build_full_snapshot()
+                        snap = await asyncio.to_thread(_build_full_snapshot)
                         last_raid_status = snap.get("raid", {}).get(
                             "status", last_raid_status
                         )
                         elapsed = {"system": 0, "raid": 0, "notifications": 0, "docker": 0}
                         await websocket.send_json(snap)
                     elif action == "refresh_module":
-                        mod_payload = _build_module_update(
+                        mod_payload = await _build_module_update(
                             str(data.get("module") or "")
                         )
                         if (
@@ -624,7 +625,7 @@ async def api_websocket(websocket: WebSocket) -> None:
                     and elapsed["system"] >= intervals["system"]
                 ):
                     elapsed["system"] = 0
-                    await websocket.send_json(_build_module_update("system"))
+                    await websocket.send_json(await _build_module_update("system"))
 
                 adaptive_fast = last_raid_status in (
                     "recovering",
@@ -638,7 +639,7 @@ async def api_websocket(websocket: WebSocket) -> None:
                 )
                 if raid_interval > 0 and elapsed["raid"] >= raid_interval:
                     elapsed["raid"] = 0
-                    raid_msg = _build_module_update("raid")
+                    raid_msg = await _build_module_update("raid")
                     last_raid_status = raid_msg.get("raid", {}).get(
                         "status", last_raid_status
                     )
@@ -649,7 +650,7 @@ async def api_websocket(websocket: WebSocket) -> None:
                     and elapsed["notifications"] >= intervals["notifications"]
                 ):
                     elapsed["notifications"] = 0
-                    await websocket.send_json(_build_module_update("notifications"))
+                    await websocket.send_json(await _build_module_update("notifications"))
 
                 docker_interval = intervals.get("docker", 5)
                 if (
@@ -657,7 +658,7 @@ async def api_websocket(websocket: WebSocket) -> None:
                     and elapsed["docker"] >= docker_interval
                 ):
                     elapsed["docker"] = 0
-                    await websocket.send_json(_build_module_update("docker"))
+                    await websocket.send_json(await _build_module_update("docker"))
     except WebSocketDisconnect:
         pass
     finally:
@@ -750,30 +751,32 @@ def api_update_apply(_user: str = Depends(require_auth)) -> dict[str, Any]:
 
 
 @app.get("/api/docker/status")
-def api_docker_status(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return main.docker_manager.get_status()
+async def api_docker_status(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    return await asyncio.to_thread(main.docker_manager.get_status)
 
 
 @app.post("/api/docker/install")
-def api_docker_install(_user: str = Depends(require_auth)) -> dict[str, Any]:
+async def api_docker_install(_user: str = Depends(require_auth)) -> dict[str, Any]:
     try:
-        return main.docker_manager.install_docker()
+        return await asyncio.to_thread(main.docker_manager.install_docker)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/docker/stacks")
-def api_docker_stacks(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return {"stacks": main.docker_manager.list_stacks()}
+async def api_docker_stacks(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    stacks = await asyncio.to_thread(main.docker_manager.list_stacks)
+    return {"stacks": stacks}
 
 
 @app.post("/api/docker/stacks")
-def api_docker_create_stack(
+async def api_docker_create_stack(
     payload: StackCreateRequest,
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
-        stack = main.docker_manager.save_stack(
+        stack = await asyncio.to_thread(
+            main.docker_manager.save_stack,
             payload.name,
             payload.compose_yaml,
             deploy=bool(payload.deploy),
@@ -786,13 +789,14 @@ def api_docker_create_stack(
 
 
 @app.put("/api/docker/stacks/{name}")
-def api_docker_update_stack(
+async def api_docker_update_stack(
     name: str,
     payload: StackCreateRequest,
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
-        stack = main.docker_manager.save_stack(
+        stack = await asyncio.to_thread(
+            main.docker_manager.save_stack,
             name,
             payload.compose_yaml,
             deploy=bool(payload.deploy),
@@ -805,24 +809,26 @@ def api_docker_update_stack(
 
 
 @app.get("/api/docker/stacks/{name}")
-def api_docker_get_stack(
+async def api_docker_get_stack(
     name: str,
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
-    stack = main.docker_manager.get_stack(name)
+    stack = await asyncio.to_thread(main.docker_manager.get_stack, name)
     if not stack:
         raise HTTPException(status_code=404, detail=f"Stack '{name}' not found")
     return {"stack": stack}
 
 
 @app.post("/api/docker/stacks/{name}/action")
-def api_docker_stack_action(
+async def api_docker_stack_action(
     name: str,
     payload: StackActionRequest,
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
-        return main.docker_manager.execute_stack_action(name, payload.action)
+        return await asyncio.to_thread(
+            main.docker_manager.execute_stack_action, name, payload.action
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -832,13 +838,13 @@ def api_docker_stack_action(
 
 
 @app.delete("/api/docker/stacks/{name}")
-def api_docker_delete_stack(
+async def api_docker_delete_stack(
     name: str,
     down: bool = Query(True),
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
-        main.docker_manager.delete_stack(name, down=down)
+        await asyncio.to_thread(main.docker_manager.delete_stack, name, down=down)
         return {"success": True, "deleted": name}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -847,21 +853,24 @@ def api_docker_delete_stack(
 
 
 @app.get("/api/docker/containers")
-def api_docker_containers(
+async def api_docker_containers(
     all: bool = Query(True),
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
-    return {"containers": main.docker_manager.list_containers(all=all)}
+    containers = await asyncio.to_thread(main.docker_manager.list_containers, all=all)
+    return {"containers": containers}
 
 
 @app.post("/api/docker/containers/{id}/action")
-def api_docker_container_action(
+async def api_docker_container_action(
     id: str,
     payload: ContainerActionRequest,
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
-        return main.docker_manager.execute_container_action(id, payload.action)
+        return await asyncio.to_thread(
+            main.docker_manager.execute_container_action, id, payload.action
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -869,15 +878,18 @@ def api_docker_container_action(
 
 
 @app.get("/api/docker/containers/{id}/logs")
-def api_docker_container_logs(
+async def api_docker_container_logs(
     id: str,
     tail: int = Query(200, ge=1, le=5000),
     timestamps: bool = Query(True),
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
-        logs = main.docker_manager.get_container_logs(
-            id, tail=tail, timestamps=timestamps
+        logs = await asyncio.to_thread(
+            main.docker_manager.get_container_logs,
+            id,
+            tail=tail,
+            timestamps=timestamps,
         )
         return {"logs": logs}
     except RuntimeError as exc:
@@ -885,12 +897,13 @@ def api_docker_container_logs(
 
 
 @app.get("/api/docker/images")
-def api_docker_images(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return {"images": main.docker_manager.list_images()}
+async def api_docker_images(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    images = await asyncio.to_thread(main.docker_manager.list_images)
+    return {"images": images}
 
 
 @app.post("/api/docker/images/pull")
-def api_docker_pull_image(
+async def api_docker_pull_image(
     payload: ImagePullRequest,
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
@@ -898,7 +911,7 @@ def api_docker_pull_image(
     if not image_name:
         raise HTTPException(status_code=400, detail="Image tag is required")
     try:
-        return main.docker_manager.pull_image(image_name)
+        return await asyncio.to_thread(main.docker_manager.pull_image, image_name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -906,13 +919,15 @@ def api_docker_pull_image(
 
 
 @app.delete("/api/docker/images/{id}")
-def api_docker_remove_image(
+async def api_docker_remove_image(
     id: str,
     force: bool = Query(False),
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
-        return main.docker_manager.remove_image(id, force=force)
+        return await asyncio.to_thread(
+            main.docker_manager.remove_image, id, force=force
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -920,30 +935,33 @@ def api_docker_remove_image(
 
 
 @app.post("/api/docker/images/prune")
-def api_docker_prune_images(
+async def api_docker_prune_images(
     payload: Optional[ImagePruneRequest] = None,
     all: bool = Query(False),
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     prune_all = all or (payload.all if payload else False)
     try:
-        return main.docker_manager.prune_images(all_images=prune_all)
+        return await asyncio.to_thread(
+            main.docker_manager.prune_images, all_images=prune_all
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/docker/volumes")
-def api_docker_volumes(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return {"volumes": main.docker_manager.list_volumes()}
+async def api_docker_volumes(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    volumes = await asyncio.to_thread(main.docker_manager.list_volumes)
+    return {"volumes": volumes}
 
 
 @app.get("/api/docker/volumes/{name}")
-def api_docker_inspect_volume(
+async def api_docker_inspect_volume(
     name: str,
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
-        data = main.docker_manager.inspect_volume(name)
+        data = await asyncio.to_thread(main.docker_manager.inspect_volume, name)
         result = dict(data)
         result["volume"] = data
         return result
@@ -956,13 +974,15 @@ def api_docker_inspect_volume(
 
 
 @app.delete("/api/docker/volumes/{name}")
-def api_docker_remove_volume(
+async def api_docker_remove_volume(
     name: str,
     force: bool = Query(False),
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
-        return main.docker_manager.remove_volume(name, force=force)
+        return await asyncio.to_thread(
+            main.docker_manager.remove_volume, name, force=force
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -970,17 +990,18 @@ def api_docker_remove_volume(
 
 
 @app.get("/api/docker/networks")
-def api_docker_networks(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return {"networks": main.docker_manager.list_networks()}
+async def api_docker_networks(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    networks = await asyncio.to_thread(main.docker_manager.list_networks)
+    return {"networks": networks}
 
 
 @app.delete("/api/docker/networks/{id}")
-def api_docker_remove_network(
+async def api_docker_remove_network(
     id: str,
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
-        return main.docker_manager.remove_network(id)
+        return await asyncio.to_thread(main.docker_manager.remove_network, id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -988,19 +1009,23 @@ def api_docker_remove_network(
 
 
 @app.get("/api/docker/updates")
-def api_docker_updates(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return main.docker_manager.check_updates()
+async def api_docker_updates(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    return await asyncio.to_thread(main.docker_manager.check_updates)
 
 
 @app.post("/api/docker/updates/apply")
-def api_docker_updates_apply(
+async def api_docker_updates_apply(
     payload: Optional[UpdatesApplyRequest] = None,
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     containers = payload.containers if payload else None
     stacks = payload.stacks if payload else None
     try:
-        return main.docker_manager.apply_updates(containers=containers, stacks=stacks)
+        return await asyncio.to_thread(
+            main.docker_manager.apply_updates,
+            containers=containers,
+            stacks=stacks,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

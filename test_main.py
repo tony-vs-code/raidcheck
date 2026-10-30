@@ -2042,6 +2042,7 @@ class FastAPIEndpointTests(unittest.TestCase):
 
 class TestDockerBackend(unittest.TestCase):
     def setUp(self):
+        main.docker_manager.invalidate_cache()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "test_docker.sqlite3"
         self.stacks_path = Path(self.temp_dir.name) / "stacks"
@@ -2059,6 +2060,7 @@ class TestDockerBackend(unittest.TestCase):
         self.auth_cookies = {"session_token": self.session_token}
 
     def tearDown(self):
+        main.docker_manager.invalidate_cache()
         self.dm_stacks_patcher.stop()
         self.stacks_patcher.stop()
         self.db_patcher.stop()
@@ -2928,6 +2930,223 @@ class TestDockerBackend(unittest.TestCase):
         self.assertEqual(status_resp.status_code, 200)
         self.assertEqual(status_resp.json().get("timezone"), "America/New_York")
         self.assertEqual(status_resp.json().get("settings", {}).get("timezone"), "America/New_York")
+
+    def test_docker_cache_and_invalidation(self):
+        call_count = {"ps": 0}
+
+        def fake_run_docker(args, timeout=30):
+            if "ps" in args:
+                call_count["ps"] += 1
+                return (
+                    '{"ID": "c1", "Names": "web", "Image": "nginx", "State": "running", "Status": "Up 1m", "Labels": ""}\n'
+                )
+            if "info" in args:
+                return "24.0.0"
+            if "version" in args:
+                return "24.0.0"
+            if "compose" in args:
+                return "v2.20.0"
+            return ""
+
+        with (
+            patch.object(main.docker_manager, "is_running", return_value=True),
+            patch.object(main.docker_manager, "_run_docker", side_effect=fake_run_docker),
+        ):
+            # 1. First call populates cache
+            c1 = main.docker_manager.list_containers(all=True)
+            self.assertEqual(len(c1), 1)
+            self.assertEqual(call_count["ps"], 1)
+
+            # 2. Second call within TTL uses cache (no subprocess call)
+            c2 = main.docker_manager.list_containers(all=True)
+            self.assertEqual(len(c2), 1)
+            self.assertEqual(call_count["ps"], 1)
+
+            # 3. bypass_cache=True forces re-fetch
+            c3 = main.docker_manager.list_containers(all=True, bypass_cache=True)
+            self.assertEqual(len(c3), 1)
+            self.assertEqual(call_count["ps"], 2)
+
+            # 4. Invalidation clears cache
+            main.docker_manager.invalidate_cache()
+            c4 = main.docker_manager.list_containers(all=True)
+            self.assertEqual(len(c4), 1)
+            self.assertEqual(call_count["ps"], 3)
+
+            # 5. Mutation actions invalidate cache
+            with patch.object(main.docker_manager, "_run_docker", return_value=""):
+                main.docker_manager.execute_container_action("c1", "restart")
+            # Next call should fetch again
+            c5 = main.docker_manager.list_containers(all=True)
+            self.assertEqual(len(c5), 1)
+            self.assertEqual(call_count["ps"], 4)
+
+    def test_docker_concurrent_stats_and_fallback(self):
+        def fake_run_docker(args, timeout=30):
+            if "images" in args:
+                return "img1\nimg2\nimg3\n"
+            if "volume" in args:
+                return "vol1\nvol2\n"
+            if "network" in args:
+                raise RuntimeError("Network daemon unresponsive")
+            return ""
+
+        with (
+            patch.object(main.docker_manager, "is_running", return_value=True),
+            patch.object(
+                main.docker_manager,
+                "list_containers",
+                return_value=[
+                    {"id": "c1", "name": "c1", "state": "running", "status": "Up"},
+                    {"id": "c2", "name": "c2", "state": "exited", "status": "Exited"},
+                ],
+            ),
+            patch.object(main.docker_manager, "list_stacks", return_value=[{"name": "s1"}]),
+            patch.object(main.docker_manager, "_run_docker", side_effect=fake_run_docker),
+        ):
+            stats = main.docker_manager.get_stats(bypass_cache=True)
+            self.assertEqual(stats["containers"], 2)
+            self.assertEqual(stats["running"], 1)
+            self.assertEqual(stats["stopped"], 1)
+            self.assertEqual(stats["images"], 3)
+            self.assertEqual(stats["volumes"], 2)
+            # The failing network inspection gracefully falls back to 0 without crashing
+            self.assertEqual(stats["networks"], 0)
+            self.assertEqual(stats["stacks"], 1)
+
+    def test_docker_async_routes_and_websocket_update(self):
+        with (
+            patch.object(main.docker_manager, "is_installed", return_value=True),
+            patch.object(main.docker_manager, "is_running", return_value=True),
+            patch.object(main.docker_manager, "get_version", return_value="29.0.0"),
+            patch.object(main.docker_manager, "get_compose_version", return_value="v2.20.0"),
+            patch.object(
+                main.docker_manager,
+                "get_stats",
+                return_value={
+                    "containers": 1,
+                    "running": 1,
+                    "stopped": 0,
+                    "images": 1,
+                    "volumes": 1,
+                    "networks": 1,
+                    "stacks": 0,
+                },
+            ),
+        ):
+            # Test direct async endpoint
+            resp = asgi_get(api.app, "/api/docker/status", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["version"], "29.0.0")
+
+            # Test async module update helper
+            update = asyncio.run(api._build_module_update("docker"))
+            self.assertEqual(update["type"], "module_update")
+            self.assertEqual(update["module"], "docker")
+            self.assertEqual(update["docker"]["version"], "29.0.0")
+
+    def test_docker_cache_ttl_and_deep_copy_isolation(self):
+        """Verify that cache respects TTL expiration and deep copies prevent in-place mutation."""
+        mgr = main.DockerManager(stacks_dir=self.stacks_path, cache_ttl=0.2)
+        base_time = 1000.0
+
+        with (
+            patch.object(mgr, "is_running", return_value=True),
+            patch.object(
+                mgr,
+                "_run_docker",
+                return_value='{"ID": "c1", "Names": "app", "State": "running"}\n',
+            ),
+        ):
+            with patch("time.time", return_value=base_time):
+                c1 = mgr.list_containers(all=True)
+                self.assertEqual(len(c1), 1)
+                self.assertEqual(c1[0]["name"], "app")
+
+                # Test deep copy isolation: mutating c1 should not affect cached object
+                c1[0]["name"] = "mutated_value"
+                c2 = mgr.list_containers(all=True)
+                self.assertEqual(c2[0]["name"], "app")
+
+            # Fast forward time beyond TTL (0.2s)
+            with (
+                patch("time.time", return_value=base_time + 0.3),
+                patch.object(
+                    mgr,
+                    "_run_docker",
+                    return_value='{"ID": "c2", "Names": "new_app", "State": "running"}\n',
+                ) as mock_run,
+            ):
+                c3 = mgr.list_containers(all=True)
+                self.assertEqual(len(c3), 1)
+                self.assertEqual(c3[0]["name"], "new_app")
+                mock_run.assert_called_once()
+
+    def test_docker_mutations_invalidate_cache(self):
+        """Verify all mutation operations properly invalidate DockerManager cache."""
+        mgr = main.DockerManager(stacks_dir=self.stacks_path, cache_ttl=10.0)
+        mgr._set_cache("status", {"test": 123})
+        mgr._set_cache("containers_True", [{"id": "c1"}])
+
+        self.assertIsNotNone(mgr._get_cached("status"))
+
+        # 1. pull_image
+        with patch.object(mgr, "is_running", return_value=True), patch.object(
+            mgr, "_run_docker", return_value="pulled"
+        ):
+            mgr.pull_image("redis:alpine")
+            self.assertIsNone(mgr._get_cached("status"))
+
+        # Re-prime cache and test remove_image
+        mgr._set_cache("status", {"test": 123})
+        with patch.object(mgr, "is_running", return_value=True), patch.object(
+            mgr, "_run_docker", return_value="deleted"
+        ):
+            mgr.remove_image("img123")
+            self.assertIsNone(mgr._get_cached("status"))
+
+        # Re-prime cache and test prune_images
+        mgr._set_cache("status", {"test": 123})
+        with patch.object(mgr, "is_running", return_value=True), patch.object(
+            mgr, "_run_docker", return_value="pruned"
+        ):
+            mgr.prune_images()
+            self.assertIsNone(mgr._get_cached("status"))
+
+        # Re-prime cache and test remove_volume
+        mgr._set_cache("status", {"test": 123})
+        with patch.object(mgr, "is_running", return_value=True), patch.object(
+            mgr, "_run_docker", return_value="removed"
+        ):
+            mgr.remove_volume("vol123")
+            self.assertIsNone(mgr._get_cached("status"))
+
+        # Re-prime cache and test remove_network
+        mgr._set_cache("status", {"test": 123})
+        with patch.object(mgr, "is_running", return_value=True), patch.object(
+            mgr, "_run_docker", return_value="removed"
+        ):
+            mgr.remove_network("net123")
+            self.assertIsNone(mgr._get_cached("status"))
+
+    def test_docker_not_running_stats_fast_path(self):
+        """Verify get_stats immediately returns zeros when daemon is not running without running threadpool."""
+        mgr = main.DockerManager(stacks_dir=self.stacks_path)
+        with patch.object(mgr, "is_running", return_value=False):
+            stats = mgr.get_stats()
+            self.assertEqual(
+                stats,
+                {
+                    "containers": 0,
+                    "running": 0,
+                    "stopped": 0,
+                    "images": 0,
+                    "volumes": 0,
+                    "networks": 0,
+                    "stacks": 0,
+                },
+            )
+
 
 
 if __name__ == "__main__":

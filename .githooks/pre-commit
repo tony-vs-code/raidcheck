@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "==> [pre-commit hook] Checking for staged secrets..."
+STAGED_ENV=$(git diff --cached --name-only | grep -E "(^\.env$|\.env\.local$|\.pem$|\.key$)" || true)
+if [ -n "$STAGED_ENV" ]; then
+    echo "ERROR: Attempted to commit potential secret files:" >&2
+    echo "$STAGED_ENV" >&2
+    echo "Please unstage them with 'git reset -- <file>' before committing." >&2
+    exit 1
+fi
+
+echo "==> [pre-commit hook] Validating JavaScript syntax..."
+if git diff --cached --name-only | grep -q "static/app.js"; then
+    if command -v node >/dev/null 2>&1; then
+        node --check static/app.js
+        echo "==> [pre-commit hook] static/app.js syntax OK"
+    fi
+fi
+
+exit 0
