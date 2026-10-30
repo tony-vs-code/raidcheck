@@ -431,11 +431,14 @@ function renderRaidDetails(raid) {
   const isNoRaid = normalizeRaidState(status) === "none";
 
   // Header & Card badges
-  applyStatusBadge(
-    document.getElementById("raid-status-badge"),
-    document.getElementById("raid-status-text"),
-    status
-  );
+  const raidStatusBadge = document.getElementById("raid-status-badge");
+  if (raidStatusBadge) {
+    applyStatusBadge(
+      raidStatusBadge,
+      document.getElementById("raid-status-text"),
+      status
+    );
+  }
   applyStatusBadge(document.getElementById("raid-card-badge"), null, status);
 
   // Live Sysfs RAID Rebuild & Sync Progress Bar
@@ -4049,9 +4052,19 @@ function generateUpdateRowHtml(u) {
     ? `<span class="status-badge status-degraded"><span class="status-dot"></span>Update Available</span>`
     : `<span class="status-badge status-clean"><span class="status-dot"></span>Up to date</span>`;
 
-  const actionHtml = u.update_available
-    ? `<button type="button" class="btn-action btn-action-success" data-update-cid="${escapeHtml(u.container_id)}" data-update-stack="${escapeHtml(u.stack || '')}">Update</button>`
-    : `<span style="color: var(--text-muted); font-size: 0.8rem;">Current</span>`;
+  // External stack detection: if stack is present and managed_stack is false or not updatable
+  const isExternalStack = Boolean(
+    u.stack && (u.managed_stack === false || (!u.managed_stack && (u.can_update === false || u.update_available)))
+  );
+
+  let actionHtml = "";
+  if (isExternalStack) {
+    actionHtml = `<span class="kind-badge external-stack-badge" style="color: var(--text-muted); border-color: var(--border-color);" title="This container belongs to an external stack and cannot be managed or updated here">External Stack</span>`;
+  } else if (u.update_available && u.can_update !== false) {
+    actionHtml = `<button type="button" class="btn-action btn-action-success" data-update-cid="${escapeHtml(u.container_id)}" data-update-stack="${escapeHtml(u.stack || '')}">Update</button>`;
+  } else {
+    actionHtml = `<span style="color: var(--text-muted); font-size: 0.8rem;">Current</span>`;
+  }
 
   return `
     <td><strong>${safeName}</strong></td>
@@ -4099,7 +4112,7 @@ function renderDockerUpdates(updates) {
     activeCids.add(cid);
 
     const rowContent = generateUpdateRowHtml(u);
-    const rowKey = `${u.container_name}|${u.image}|${u.stack}|${u.current_id}|${u.latest_id}|${u.update_available}`;
+    const rowKey = `${u.container_name}|${u.image}|${u.stack}|${u.current_id}|${u.latest_id}|${u.update_available}|${u.managed_stack}|${u.can_update}`;
 
     let row = existingRowMap.get(cid);
     if (row) {
@@ -4174,7 +4187,11 @@ async function fetchDockerUpdates({ force = false } = {}) {
     const updates = Array.isArray(data.updates) ? data.updates : [];
     cachedDockerUpdates = updates;
 
-    const updatesAvailableCount = updates.filter((u) => u.update_available).length;
+    const hasAnyRawUpdates = updates.some((u) => Boolean(u.update_available));
+    const updatesAvailableCount = updates.filter(
+      (u) => Boolean(u.update_available) && u.can_update !== false
+    ).length;
+
     const badge = document.getElementById("subtab-badge-updates");
     if (badge) {
       badge.textContent = updatesAvailableCount;
@@ -4189,7 +4206,11 @@ async function fetchDockerUpdates({ force = false } = {}) {
     if (applyAllBtn) {
       if (updatesAvailableCount === 0) {
         applyAllBtn.disabled = true;
-        applyAllBtn.title = "No updates available to pull";
+        if (hasAnyRawUpdates) {
+          applyAllBtn.title = "No managed container updates available";
+        } else {
+          applyAllBtn.title = "No updates available to pull";
+        }
       } else {
         applyAllBtn.disabled = false;
         applyAllBtn.title = "Apply updates for all containers";

@@ -95,7 +95,6 @@
         <div class="sidebar-brand-info">
           <div class="sidebar-brand-title-row">
             <span class="sidebar-brand-name">SystemAlerts</span>
-            <span id="version-badge" class="version-badge" title="Current installed release version">v0.1.0</span>
           </div>
           <span class="sidebar-brand-desc">Server Manager</span>
         </div>
@@ -229,6 +228,10 @@
           </button>
           <button id="logout-btn" class="hidden" style="display:none" aria-hidden="true"></button>
         </div>
+
+        <div id="sidebar-version-display" class="sidebar-version-display">
+          <span id="version-badge" class="sidebar-version-text" title="Current installed release version">v0.1.0</span>
+        </div>
       </div>
     </aside>
 
@@ -247,24 +250,6 @@
         </div>
 
         <div class="topbar-right">
-          <div class="raid-status-pill" id="header-raid-pill">
-            <span class="status-label">RAID</span>
-            <span id="raid-status-badge" class="status-badge status-unknown" data-state="unknown">
-              <span class="status-dot"></span>
-              <span id="raid-status-text">UNKNOWN</span>
-            </span>
-          </div>
-
-          <div class="stream-indicators-row">
-            <span id="auto-refresh-indicator" class="auto-refresh-pill" title="Real-time WebSocket stream with 10s HTTP fallback">
-              LIVE (WebSocket)
-            </span>
-            <span id="live-stream-indicator" class="live-stream-indicator stream-active" title="Direct system streaming (POSIX statvfs, sysfs RAID, Docker socket)">
-              <span class="stream-pulse-dot"></span>
-              <span id="live-stream-text">Stream: Active</span>
-            </span>
-          </div>
-
           <span id="last-updated" class="last-updated">Never updated</span>
 
           <button id="refresh-btn" class="btn-refresh" type="button" aria-label="Refresh dashboard data">
@@ -308,13 +293,6 @@
               <h2 id="system-metrics-heading" class="section-title">System Metrics</h2>
               <div class="module-toolbar">
                 <span class="module-status-dot" title="Live stream active"></span>
-                <select id="system-interval-select" class="module-interval-select" aria-label="System Metrics refresh rate">
-                  <option value="1">1s (Live)</option>
-                  <option value="2">2s</option>
-                  <option value="5">5s</option>
-                  <option value="10">10s</option>
-                  <option value="0">Paused</option>
-                </select>
                 <span id="system-last-updated" class="module-last-updated">--</span>
                 <button id="refresh-system-btn" class="btn-module-refresh" type="button" aria-label="Refresh System Metrics" title="Refresh System Metrics">
                   <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">

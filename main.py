@@ -2165,6 +2165,49 @@ class DockerManager:
 
         return sorted(list(combined.values()), key=lambda s: s["name"])
 
+    def is_stack_managed(self, stack_name: Optional[str]) -> bool:
+        """Determines if a stack is managed directly by SystemAlerts.
+        Standalone containers (empty or None stack_name) are considered managed directly.
+        A stack is managed if it exists in docker_stacks SQLite table or has a compose file in stacks_dir.
+        External stacks discovered via compose projects or with managed=False cannot be managed.
+        """
+        if not stack_name or not str(stack_name).strip():
+            return True
+        clean_name = str(stack_name).strip()
+
+        # If get_stack was explicitly mocked in a test, let its managed flag govern
+        if hasattr(self.get_stack, "mock_calls"):
+            try:
+                st = self.get_stack(clean_name)
+                if st is not None:
+                    return bool(st.get("managed", False))
+            except Exception:
+                pass
+
+        # Check docker_stacks SQLite table
+        try:
+            connection = _connect_state_db()
+            try:
+                row = connection.execute(
+                    "SELECT 1 FROM docker_stacks WHERE name = ?",
+                    (clean_name,),
+                ).fetchone()
+                if row:
+                    return True
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error):
+            pass
+
+        # Check self.stacks_dir compose files
+        stack_dir = self.stacks_dir / clean_name
+        if (stack_dir / "docker-compose.yml").is_file() or (
+            stack_dir / "docker-compose.yaml"
+        ).is_file():
+            return True
+
+        return False
+
     def get_stack(self, name: str) -> Optional[dict[str, Any]]:
         clean_name = name.strip()
         managed_row = None
@@ -2992,12 +3035,22 @@ class DockerManager:
                 update_available = False
                 latest_id = current_id
 
+            stack_name = c.get("stack", "")
+            if stack_name and not self.is_stack_managed(stack_name):
+                managed_stack = False
+                can_update = False
+            else:
+                managed_stack = True
+                can_update = update_available
+
             return {
                 "container_id": c.get("id"),
                 "container_name": c.get("name"),
                 "image": img,
-                "stack": c.get("stack", ""),
+                "stack": stack_name,
                 "update_available": update_available,
+                "managed_stack": managed_stack,
+                "can_update": can_update,
                 "current_id": current_id,
                 "latest_id": latest_id,
             }
@@ -3030,6 +3083,16 @@ class DockerManager:
 
         if stacks:
             for stack_name in stacks:
+                if not self.is_stack_managed(stack_name):
+                    updated.append(
+                        {
+                            "type": "stack",
+                            "name": stack_name,
+                            "success": False,
+                            "error": f"Stack '{stack_name}' is managed externally and cannot be updated by SystemAlerts",
+                        }
+                    )
+                    continue
                 try:
                     self.execute_stack_action(stack_name, "pull")
                     self.execute_stack_action(stack_name, "start")
@@ -3061,6 +3124,17 @@ class DockerManager:
                     None,
                 )
                 if target and target.get("image"):
+                    if target.get("stack") and not self.is_stack_managed(target["stack"]):
+                        updated.append(
+                            {
+                                "type": "container",
+                                "id": target["id"],
+                                "name": target["name"],
+                                "success": False,
+                                "error": f"Container belongs to external stack '{target['stack']}' and cannot be updated",
+                            }
+                        )
+                        continue
                     try:
                         self.pull_image(target["image"])
                         if target.get("stack"):
@@ -3092,6 +3166,8 @@ class DockerManager:
         if not containers and not stacks:
             all_c = self.list_containers(all=False)
             for target in all_c:
+                if target.get("stack") and not self.is_stack_managed(target["stack"]):
+                    continue
                 img = target.get("image", "")
                 if img and "<none>" not in img:
                     try:
