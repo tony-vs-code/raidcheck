@@ -1,18 +1,16 @@
-# Release v0.9.0
+# Release v0.9.1
 
 ## Overview
-Direct Linux sysfs and Docker Unix socket streaming, interactive update modal, in-app changelog, and clean SVG icons.
+Accurate Docker container update detection, instant update schedule loading, and automated update frequency persistence.
 
 ## Highlights & Enhancements
-- Direct POSIX statvfs implementation replacing duf and df subprocess calls with microsecond-level disk capacity metrics.
-- Direct Linux Sysfs RAID inspection reading /sys/block/md* for zero-fork kernel status and real-time resync/rebuild progress.
-- Docker Engine Unix domain socket client (/var/run/docker.sock) in DockerManager for zero-subprocess container inspections, stats, volumes, and networks.
-- Real-time Docker container lifecycle event listener (/events) broadcasting instant WebSocket updates on container failure or status change.
-- Redesigned update experience featuring an unobtrusive header notice button and an interactive Software Update modal.
-- In-app Changelog viewer with an authenticated GET /api/changelog endpoint and automatic CHANGELOG.md maintenance on every release.
-- Professional typographic styling and crisp SVG vector stroke icons across all components, eliminating emojis entirely.
+- Remote Registry Digest Resolution: Multi-stage remote image manifest inspection via buildx imagetools inspect --raw and Docker manifest inspect matching host architecture.
+- Container Update Accuracy: Accurately compares remote manifest digest against local image RepoDigests, replacing the hardcoded false flag so container updates are reliably discovered and flagged.
+- Decoupled Update Schedule Loading: Decoupled update schedule and settings fetching from registry network scans, eliminating UI lag and enabling instantaneous tab switching.
+- Concurrent Update Checking & Caching: Added 120-second TTL caching and a 5-worker thread pool for concurrent remote registry checks with manual refresh bypass.
 
 ## Reliability & Fixes
-- Added comprehensive unit and integration tests covering sysfs RAID parsing, statvfs metrics, Docker socket requests, and changelog endpoints.
-- Self-testing workflow enforcement across all subagents.
-- Automated Pull Request creation and branch management via GitHub CLI.
+- Container Update Action Guard: The "Update" button now only appears on containers with pullable image updates, showing a clean "Current" badge on up-to-date containers.
+- "Update All" Toggle: The "Update All" button automatically disables when no container updates are available, preventing unnecessary pull jobs.
+- Auto-Check Persistence: Added immediate auto-save on select change for Docker image check frequency with persistent SQLite storage.
+- Comprehensive Test Coverage: All 80 unit and integration tests passing.
