@@ -3969,5 +3969,329 @@ class DirectSystemStreamsTests(unittest.TestCase):
         asyncio.run(run_listener_test())
 
 
+class DockerUpdatesDecouplingAndLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        main.docker_manager.invalidate_cache()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test_lifecycle.sqlite3"
+        self.stacks_path = Path(self.temp_dir.name) / "stacks"
+        self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
+        self.stacks_patcher = patch.object(main, "STACKS_DIR", self.stacks_path)
+        self.dm_stacks_patcher = patch.object(
+            main.docker_manager, "stacks_dir", self.stacks_path
+        )
+        self.db_patcher.start()
+        self.stacks_patcher.start()
+        self.dm_stacks_patcher.start()
+
+        main.create_user("admin", "adminpass", email="admin@example.com")
+        self.session_token = main.create_session("admin")
+        self.auth_cookies = {"session_token": self.session_token}
+
+    def tearDown(self):
+        main.docker_manager.invalidate_cache()
+        self.dm_stacks_patcher.stop()
+        self.stacks_patcher.stop()
+        self.db_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_updates_subtab_in_place_keyed_rendering_and_dom_retention(self):
+        """Verify that renderDockerUpdates performs in-place keyed rendering using data-container-id
+        and data-row-key without destroying or re-creating untouched DOM table rows."""
+        import subprocess
+
+        app_js = Path("static/app.js").read_text(encoding="utf-8")
+        self.assertIn("function renderDockerUpdates(", app_js)
+        self.assertIn("data-container-id", app_js)
+        self.assertIn("data-row-key", app_js)
+        self.assertIn("lastDockerUpdatesRenderKey", app_js)
+
+        # Node.js simulation validating DOM node retention and rowKey updating
+        node_script = """
+        const fs = require('fs');
+        const vm = require('vm');
+        const code = fs.readFileSync('static/app.js', 'utf8');
+
+        class MockElement {
+          constructor(tagName = 'div') {
+            this.tagName = tagName.toUpperCase();
+            this.children = [];
+            this.dataset = {};
+            this.attributes = {};
+            this.classList = new Set();
+            this._innerHTML = '';
+          }
+          setAttribute(name, val) {
+            this.attributes[name] = val;
+            if (name.startsWith('data-')) {
+              const camel = name.slice(5).replace(/-([a-z])/g, (_, l) => l.toUpperCase());
+              this.dataset[camel] = val;
+            }
+          }
+          get innerHTML() { return this._innerHTML; }
+          set innerHTML(val) {
+            this._innerHTML = val;
+            this.children = [];
+          }
+          appendChild(child) {
+            this.children.push(child);
+            child.parentNode = this;
+          }
+          insertBefore(newNode, refNode) {
+            if (!refNode) {
+              this.children.push(newNode);
+            } else {
+              const idx = this.children.indexOf(refNode);
+              if (idx !== -1) {
+                this.children.splice(idx, 0, newNode);
+              } else {
+                this.children.push(newNode);
+              }
+            }
+            newNode.parentNode = this;
+          }
+          remove() {
+            if (this.parentNode) {
+              const idx = this.parentNode.children.indexOf(this);
+              if (idx !== -1) this.parentNode.children.splice(idx, 1);
+            }
+          }
+          closest() { return this; }
+          querySelectorAll(sel) {
+            if (sel.includes('tr[data-container-id]')) {
+              return this.children.filter(c => c.tagName === 'TR' && c.dataset.containerId !== undefined);
+            }
+            if (sel.includes('.empty-state, .loading-state')) {
+              return this.children.filter(c => c.classList.has('empty-state') || c.classList.has('loading-state'));
+            }
+            return [];
+          }
+        }
+
+        const tbody = new MockElement('tbody');
+        tbody.id = 'docker-updates-tbody';
+
+        const context = vm.createContext({
+          document: {
+            getElementById: (id) => (id === 'docker-updates-tbody' ? tbody : null),
+            createElement: (tag) => new MockElement(tag)
+          },
+          window: {},
+          console: console,
+          escapeHtml: (s) => String(s || ''),
+          lastDockerUpdatesRenderKey: ''
+        });
+
+        const extractFn = (name) => {
+          const start = code.indexOf('function ' + name);
+          let depth = 0;
+          let end = start;
+          let foundBrace = false;
+          for (let i = start; i < code.length; i++) {
+            if (code[i] === '{') {
+              depth++;
+              foundBrace = true;
+            } else if (code[i] === '}') {
+              depth--;
+              if (foundBrace && depth === 0) {
+                end = i + 1;
+                break;
+              }
+            }
+          }
+          return code.slice(start, end);
+        };
+
+        vm.runInContext(extractFn('generateUpdateRowHtml'), context);
+        vm.runInContext(extractFn('renderDockerUpdates'), context);
+
+        // Initial render: 2 containers
+        const initialUpdates = [
+          { container_id: 'c1', container_name: 'app1', image: 'nginx:latest', update_available: false },
+          { container_id: 'c2', container_name: 'app2', image: 'redis:latest', update_available: true }
+        ];
+        context.renderDockerUpdates(initialUpdates);
+        if (tbody.children.length !== 2) throw new Error('Expected 2 rows');
+        const row1 = tbody.children[0];
+        const row2 = tbody.children[1];
+
+        // Second render: identical data short-circuit
+        context.renderDockerUpdates(initialUpdates);
+        if (tbody.children[0] !== row1 || tbody.children[1] !== row2) {
+          throw new Error('Identical payload should short-circuit and preserve row objects');
+        }
+
+        // Third render: update c2 status only
+        const updatedUpdates = [
+          { container_id: 'c1', container_name: 'app1', image: 'nginx:latest', update_available: false },
+          { container_id: 'c2', container_name: 'app2', image: 'redis:latest', update_available: false }
+        ];
+        context.renderDockerUpdates(updatedUpdates);
+        if (tbody.children[0] !== row1) {
+          throw new Error('Untouched row c1 was recreated instead of retained');
+        }
+        if (tbody.children[1] !== row2) {
+          throw new Error('Updated row c2 was recreated instead of in-place updated');
+        }
+        if (!row2.dataset.rowKey.includes('false')) {
+          throw new Error('Row 2 rowKey not updated');
+        }
+
+        console.log('SUCCESS');
+        """
+        proc = subprocess.run(["node", "-e", node_script], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"Node test failed: {proc.stderr}")
+        self.assertIn("SUCCESS", proc.stdout)
+
+    def test_docker_subtab_throttling_excludes_updates_from_live_ticks(self):
+        """Verify that throttledRefreshDockerSubtab decouples 'updates' and static subtabs
+        from high-frequency 5s interval ticks while preserving live ticks for 'containers'."""
+        import subprocess
+
+        app_js = Path("static/app.js").read_text(encoding="utf-8")
+        self.assertIn('if (subtabName !== "containers") return;', app_js)
+        self.assertIn('if (isDockerSubtabInFlight("containers")) return;', app_js)
+
+        node_script = """
+        const fs = require('fs');
+        const vm = require('vm');
+        const code = fs.readFileSync('static/app.js', 'utf8');
+
+        let refreshed = [];
+        const context = vm.createContext({
+          currentDockerSubtab: 'updates',
+          currentViewTab: 'containers',
+          isDockerSubtabInFlight: () => false,
+          refreshDockerSubtab: (s) => refreshed.push(s),
+          lastDockerSubtabFetchTime: 0,
+          DOCKER_SUBTAB_THROTTLE_MS: 800,
+          dockerSubtabThrottleTimer: null,
+          clearTimeout: () => {},
+          setTimeout: () => {}
+        });
+
+        const extractFn = (name) => {
+          const start = code.indexOf('function ' + name);
+          let depth = 0;
+          let end = start;
+          let foundBrace = false;
+          for (let i = start; i < code.length; i++) {
+            if (code[i] === '{') {
+              depth++;
+              foundBrace = true;
+            } else if (code[i] === '}') {
+              depth--;
+              if (foundBrace && depth === 0) {
+                end = i + 1;
+                break;
+              }
+            }
+          }
+          return code.slice(start, end);
+        };
+
+        vm.runInContext(extractFn('throttledRefreshDockerSubtab'), context);
+
+        // 1. Calling for updates subtab must be ignored
+        context.throttledRefreshDockerSubtab('updates');
+        if (refreshed.length !== 0) throw new Error('Updates subtab must not be refreshed on tick');
+
+        // 2. Default when current subtab is updates must be ignored
+        context.throttledRefreshDockerSubtab();
+        if (refreshed.length !== 0) throw new Error('Default subtab must not refresh updates');
+
+        // 3. Stacks, images, volumes subtabs must also be ignored
+        context.throttledRefreshDockerSubtab('stacks');
+        context.throttledRefreshDockerSubtab('images');
+        if (refreshed.length !== 0) throw new Error('Static subtabs must not refresh on tick');
+
+        // 4. Calling for containers must trigger refresh
+        context.throttledRefreshDockerSubtab('containers');
+        if (refreshed.length !== 1 || refreshed[0] !== 'containers') {
+          throw new Error('Containers subtab should refresh on live tick');
+        }
+
+        console.log('SUCCESS');
+        """
+        proc = subprocess.run(["node", "-e", node_script], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"Node test failed: {proc.stderr}")
+        self.assertIn("SUCCESS", proc.stdout)
+
+    def test_docker_updates_button_loading_state_and_styles(self):
+        """Verify button loading indicators and CSS spin animation rules during scans."""
+        css_text = Path("static/styles.css").read_text(encoding="utf-8")
+        index_html = Path("static/index.html").read_text(encoding="utf-8")
+        app_js = Path("static/app.js").read_text(encoding="utf-8")
+
+        # 1. HTML button existence
+        self.assertIn('id="btn-check-docker-updates"', index_html)
+
+        # 2. CSS spinner animation contract
+        self.assertIn("#btn-check-docker-updates.loading .refresh-icon", css_text)
+        self.assertIn("animation: spin", css_text)
+        self.assertIn("#btn-check-docker-updates.loading", css_text)
+        self.assertIn("cursor: wait", css_text)
+
+        # 3. app.js button state transitions
+        self.assertIn('btnCheckUpdates.classList.add("loading")', app_js)
+        self.assertIn("btnCheckUpdates.disabled = true", app_js)
+        self.assertIn("<span>Scanning...</span>", app_js)
+        self.assertIn('btnCheckUpdates.classList.remove("loading")', app_js)
+        self.assertIn("btnCheckUpdates.disabled = false", app_js)
+
+        # 4. Delegated event listener for row updates
+        self.assertIn('document.getElementById("docker-updates-tbody")', app_js)
+        self.assertIn('e.target.closest("button[data-update-cid]")', app_js)
+
+    def test_live_system_metrics_stream_independently_of_docker_updates(self):
+        """Verify that system (CPU, RAM, statvfs) and RAID (sysfs) metrics stream continuously
+        over WebSocket without invoking Docker updates scans or coupling to the Updates tab."""
+        # Mock docker_manager.check_updates to ensure it is NOT called during system/RAID live refreshes
+        with (
+            patch.object(main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)),
+            patch.object(main, "get_duf_output", return_value=SAMPLE_DUF_TABLE),
+            patch.object(main.docker_manager, "check_updates") as mock_check_updates,
+        ):
+            ws_res = asgi_ws(
+                api.app,
+                "/api/ws",
+                cookies=self.auth_cookies,
+                client_messages=[
+                    {"action": "refresh_module", "module": "system"},
+                    {"action": "refresh_module", "module": "raid"},
+                ],
+            )
+            self.assertTrue(ws_res.accepted)
+            self.assertEqual(len(ws_res.messages), 3)  # 1 snapshot + 2 module_updates
+
+            # Snapshot verification
+            snapshot = ws_res.messages[0]
+            self.assertEqual(snapshot["type"], "snapshot")
+            self.assertIn("system", snapshot)
+            self.assertIn("cpu_percent", snapshot["system"])
+            self.assertIn("memory", snapshot["system"])
+            self.assertIn("percent", snapshot["system"]["memory"])
+            self.assertIn("raid", snapshot)
+            self.assertEqual(snapshot["raid"]["status"], "clean")
+
+            # System module update
+            system_msg = ws_res.messages[1]
+            self.assertEqual(system_msg["type"], "module_update")
+            self.assertEqual(system_msg["module"], "system")
+            self.assertIn("cpu_percent", system_msg["system"])
+            self.assertIn("memory", system_msg["system"])
+            self.assertIn("total", system_msg["system"]["memory"])
+            self.assertIn("disk", system_msg["system"])
+
+            # RAID module update
+            raid_msg = ws_res.messages[2]
+            self.assertEqual(raid_msg["type"], "module_update")
+            self.assertEqual(raid_msg["module"], "raid")
+            self.assertEqual(raid_msg["raid"]["status"], "clean")
+
+            # Crucial assertion: check_updates was NOT invoked
+            mock_check_updates.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

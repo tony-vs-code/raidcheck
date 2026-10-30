@@ -412,8 +412,14 @@ body {
   transform: translateY(1px);
 }
 
-.btn-refresh.loading .refresh-icon {
+.btn-refresh.loading .refresh-icon,
+#btn-check-docker-updates.loading .refresh-icon {
   animation: spin 0.8s linear infinite;
+}
+
+#btn-check-docker-updates.loading {
+  opacity: 0.8;
+  cursor: wait;
 }
 
 @keyframes spin {
