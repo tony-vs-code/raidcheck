@@ -20,7 +20,39 @@ import discord
 import logging
 from logging.handlers import RotatingFileHandler
 import sqlite3
-from decouple import config
+from typing import Any, Optional, Tuple
+
+try:
+    from decouple import config as _decouple_config
+except ImportError:
+    _decouple_config = None
+
+
+def config(key: str, default: Any = "", cast: Optional[Any] = None) -> Any:
+    """Safe configuration lookup prioritizing os.environ, falling back to decouple or default value.
+    Ensures the application never requires a .env file and never raises if .env is missing.
+    """
+    val = os.environ.get(key)
+    if val is not None:
+        if cast is not None and callable(cast):
+            try:
+                return cast(val)
+            except Exception:
+                return default
+        return val
+
+    if _decouple_config is not None:
+        try:
+            return _decouple_config(key, default=default, cast=cast)
+        except Exception:
+            return default
+
+    if cast is not None and callable(cast) and default is not None:
+        try:
+            return cast(default)
+        except Exception:
+            return default
+    return default
 from discord.ext import tasks
 from subprocess import check_output, CalledProcessError, STDOUT
 from pathlib import Path
@@ -3273,7 +3305,6 @@ _clean_docker_error = DockerManager._clean_docker_error
 @client.event
 async def on_ready() -> None:
     logging.info(f"Logged in as {client.user}")
-    await run_raid_check(force=True)
     monitor_raid.start()
     monitor_docker_schedule.start()
 

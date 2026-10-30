@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
 from subprocess import CalledProcessError
@@ -836,6 +837,17 @@ class DiscordAndRaidCheckTests(unittest.TestCase):
             self.assertIn("embeds", call_kwargs["json"])
             self.assertEqual(call_kwargs["json"]["embeds"][0]["title"], "Embed Title")
 
+    def test_on_ready_starts_tasks_without_startup_notification(self):
+        with (
+            patch.object(main, "run_raid_check", new_callable=AsyncMock) as mock_raid_check,
+            patch.object(main.monitor_raid, "start") as mock_monitor_raid,
+            patch.object(main.monitor_docker_schedule, "start") as mock_monitor_docker,
+        ):
+            asyncio.run(main.on_ready())
+            mock_raid_check.assert_not_called()
+            mock_monitor_raid.assert_called_once()
+            mock_monitor_docker.assert_called_once()
+
 
 class CliAndMainTests(unittest.TestCase):
     def setUp(self):
@@ -1171,6 +1183,40 @@ class SqlitePersistenceTests(unittest.TestCase):
 
         main.update_app_settings({"discord_enabled": "false"})
         self.assertEqual(main.get_app_settings()["discord_enabled"], "false")
+
+    def test_app_settings_zero_env_sqlite_secrets(self):
+        # 1. Ensure sensible defaults when no env vars or .env exist
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(main, "_decouple_config", None),
+        ):
+            # Test safe config helper directly
+            self.assertEqual(main.config("NONEXISTENT_KEY", default="default_val"), "default_val")
+            self.assertEqual(main.config("INT_KEY", default=42, cast=int), 42)
+
+            defaults = main._default_app_settings_from_env()
+            self.assertEqual(defaults["discord_token"], "")
+            self.assertEqual(defaults["channel_id"], "")
+            self.assertEqual(defaults["discord_enabled"], "false")
+            self.assertEqual(defaults["raid_device"], "auto")
+            self.assertEqual(defaults["timezone"], "UTC")
+
+            # 2. Update and retrieve secrets directly via SQLite
+            main.update_app_settings(
+                {
+                    "discord_token": "sqlite_bot_token_999",
+                    "channel_id": "888777666",
+                    "google_client_id": "sqlite_client_id.apps.googleusercontent.com",
+                    "allowed_google_emails": "admin@local.host",
+                    "timezone": "America/New_York",
+                }
+            )
+            settings = main.get_app_settings()
+            self.assertEqual(settings["discord_token"], "sqlite_bot_token_999")
+            self.assertEqual(settings["channel_id"], "888777666")
+            self.assertEqual(settings["google_client_id"], "sqlite_client_id.apps.googleusercontent.com")
+            self.assertEqual(settings["allowed_google_emails"], "admin@local.host")
+            self.assertEqual(settings["timezone"], "America/New_York")
 
 
 class FastAPIEndpointTests(unittest.TestCase):
@@ -1900,24 +1946,28 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="raid-interval-select"', index_resp.text)
         self.assertIn('id="notifications-interval-select"', index_resp.text)
 
-        # Navigation tabs and view panels (verifying Containers is between Overview and Notifications)
+        # Navigation tabs and view panels (verifying System Level: Overview, RAID & Storage, then Containers, Notifications)
         self.assertIn('id="nav-tab-overview"', index_resp.text)
+        self.assertIn('id="nav-tab-raid"', index_resp.text)
         self.assertIn('id="nav-tab-containers"', index_resp.text)
         self.assertIn('id="nav-tab-notifications"', index_resp.text)
         self.assertIn(">Overview</span>", index_resp.text)
+        self.assertIn(">RAID &amp; Storage</span>", index_resp.text)
         self.assertIn(">Containers</span>", index_resp.text)
         self.assertIn(">Notifications</span>", index_resp.text)
         self.assertIn('id="view-overview"', index_resp.text)
+        self.assertIn('id="view-raid"', index_resp.text)
         self.assertIn('id="view-containers"', index_resp.text)
         self.assertIn('id="view-notifications"', index_resp.text)
 
-        # Verify nav order: Overview -> Containers -> Notifications
+        # Verify nav order: Overview -> RAID & Storage -> Containers -> Notifications
         idx_nav_overview = index_resp.text.find('id="nav-tab-overview"')
+        idx_nav_raid = index_resp.text.find('id="nav-tab-raid"')
         idx_nav_containers = index_resp.text.find('id="nav-tab-containers"')
         idx_nav_notifs = index_resp.text.find('id="nav-tab-notifications"')
         self.assertTrue(
-            -1 < idx_nav_overview < idx_nav_containers < idx_nav_notifs,
-            "Nav order must be Overview, Containers, Notifications",
+            -1 < idx_nav_overview < idx_nav_raid < idx_nav_containers < idx_nav_notifs,
+            "Nav order must be Overview, RAID & Storage, Containers, Notifications",
         )
 
         # Docker UI elements in Containers view
@@ -2065,16 +2115,127 @@ class FastAPIEndpointTests(unittest.TestCase):
                 has_id = f'id="{elem_id}"' in index_html or f"id='{elem_id}'" in index_html
                 self.assertTrue(has_id, f"Frontend accesses DOM id '{elem_id}' missing in index.html")
 
-    def test_ci_workflow_and_systemd_services_configured(self):
+    def test_dedicated_login_page_contract_and_behavior(self):
+        """Test full-page login view #view-login structure and authentication transitions."""
+        index_resp = asgi_get(api.app, "/")
+        self.assertEqual(index_resp.status_code, 200)
+        html = index_resp.text
+
+        # Verify dedicated login view exists with login-page-container class
+        self.assertIn('id="view-login"', html)
+        self.assertIn('class="login-page-container', html)
+        self.assertIn('id="auth-overlay"', html)
+        self.assertIn('class="auth-brand"', html)
+        self.assertIn('id="auth-modal-title"', html)
+        self.assertIn('id="auth-modal-subtitle"', html)
+        self.assertIn('id="auth-setup-form"', html)
+        self.assertIn('id="auth-login-form"', html)
+        self.assertIn('id="app-shell"', html)
+
+        # Verify JS visibility toggling logic between view-login and app-shell
+        app_js = Path("static/app.js").read_text(encoding="utf-8")
+        self.assertIn('viewLogin.classList.remove("hidden")', app_js)
+        self.assertIn('appShell.classList.add("hidden")', app_js)
+        self.assertIn('viewLogin.classList.add("hidden")', app_js)
+        self.assertIn('appShell.classList.remove("hidden")', app_js)
+
+        # Verify CSS rules for login-page-container
+        styles_css = Path("static/styles.css").read_text(encoding="utf-8")
+        self.assertIn(".login-page-container", styles_css)
+        self.assertIn("min-height: 100vh", styles_css)
+
+    def test_sidebar_navigation_hierarchy_and_view_switching(self):
+        """Test sidebar sections: System Level (Overview, RAID), Container Management, Alerts & Communication."""
+        index_resp = asgi_get(api.app, "/")
+        self.assertEqual(index_resp.status_code, 200)
+        html = index_resp.text
+
+        self.assertIn('id="app-sidebar"', html)
+        self.assertIn('class="app-sidebar"', html)
+        self.assertIn("System Level", html)
+        self.assertIn("Container Management", html)
+        self.assertIn("Alerts &amp; Communication", html)
+
+        # Verify mobile toggle and backdrop controls
+        self.assertIn('id="sidebar-toggle-btn"', html)
+        self.assertIn('class="btn-sidebar-toggle"', html)
+        self.assertIn('id="sidebar-backdrop"', html)
+
+        # Check view switching handlers in app.js
+        app_js = Path("static/app.js").read_text(encoding="utf-8")
+        self.assertIn("switchViewTab(", app_js)
+        self.assertIn('"nav-tab-overview"', app_js)
+        self.assertIn('"nav-tab-raid"', app_js)
+        self.assertIn('"nav-tab-containers"', app_js)
+        self.assertIn('"nav-tab-notifications"', app_js)
+        self.assertIn('"view-overview"', app_js)
+        self.assertIn('"view-raid"', app_js)
+        self.assertIn('"view-containers"', app_js)
+        self.assertIn('"view-notifications"', app_js)
+
+    def test_dedicated_raid_storage_view_and_overview_cockpit(self):
+        """Test #view-raid isolation and #view-overview cockpit status cards."""
+        index_resp = asgi_get(api.app, "/")
+        self.assertEqual(index_resp.status_code, 200)
+        html = index_resp.text
+
+        # Verify view-raid has dedicated role and contains full RAID details
+        raid_start = html.find('id="view-raid"')
+        self.assertGreater(raid_start, -1)
+        raid_end = html.find('id="view-containers"')
+        self.assertGreater(raid_end, raid_start)
+        raid_view_html = html[raid_start:raid_end]
+
+        self.assertIn('raid-details-card', raid_view_html)
+        self.assertIn('id="raid-card-badge"', raid_view_html)
+        self.assertIn('id="active-disks-table"', raid_view_html)
+        self.assertIn('id="raid-sync-container"', raid_view_html)
+        self.assertIn('id="raid-interval-select"', raid_view_html)
+        self.assertIn('id="refresh-raid-btn"', raid_view_html)
+
+        # Verify overview panel contains the cockpit summary cards and quick navigation buttons
+        overview_start = html.find('id="view-overview"')
+        self.assertGreater(overview_start, -1)
+        overview_end = html.find('id="view-raid"')
+        overview_view_html = html[overview_start:overview_end]
+
+        self.assertIn("overview-cockpit-grid", overview_view_html)
+        self.assertIn('id="overview-raid-status-badge"', overview_view_html)
+        self.assertIn('id="btn-goto-raid"', overview_view_html)
+        self.assertIn('id="overview-docker-badge"', overview_view_html)
+        self.assertIn('id="btn-goto-containers"', overview_view_html)
+        self.assertIn('id="overview-discord-badge"', overview_view_html)
+        self.assertIn('id="btn-goto-notifications"', overview_view_html)
+
+        # Ensure active-disks-table is NOT placed in the high-level overview
+        self.assertNotIn('id="active-disks-table"', overview_view_html)
+
+    def test_ci_workflow_packaging_and_systemd_services(self):
         repo_root = Path(__file__).resolve().parent
+        pyproject_file = repo_root / "pyproject.toml"
         workflow_file = repo_root / ".github" / "workflows" / "ci-release.yml"
         raidcheck_service = repo_root / "systemd" / "raidcheck.service"
         raidcheck_web_service = repo_root / "systemd" / "raidcheck-web.service"
 
+        # Check pyproject build-system packaging metadata
+        self.assertTrue(pyproject_file.is_file())
+        pyproject_content = pyproject_file.read_text(encoding="utf-8")
+        self.assertIn("[build-system]", pyproject_content)
+        self.assertIn('requires = ["setuptools>=61.0"]', pyproject_content)
+        self.assertIn('build-backend = "setuptools.build_meta"', pyproject_content)
+        self.assertIn("[tool.setuptools]", pyproject_content)
+        self.assertIn('py-modules = ["main", "api"]', pyproject_content)
+
+        # Check CI/CD release workflow
         self.assertTrue(workflow_file.is_file())
         workflow_content = workflow_file.read_text(encoding="utf-8")
         self.assertIn("uv run pytest -v", workflow_content)
+        self.assertIn("astral-sh/setup-uv", workflow_content)
+        self.assertIn("uv build", workflow_content)
+        self.assertIn("TAG_EXISTS", workflow_content)
+        self.assertIn("chore(release): bump version", workflow_content)
         self.assertIn("gh release create", workflow_content)
+        self.assertIn("dist/*", workflow_content)
 
         self.assertTrue(raidcheck_service.is_file())
         raidcheck_content = raidcheck_service.read_text(encoding="utf-8")

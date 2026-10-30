@@ -11,20 +11,27 @@
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
-  <!-- Full-App Authentication Gate (#auth-overlay) -->
-  <div id="auth-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
-    <div class="modal-card auth-card">
-      <div class="auth-header">
-        <div class="brand-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="26" height="26" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+  <!-- Dedicated Full-Page Login View (#view-login) -->
+  <div id="view-login" class="login-page-container hidden">
+    <div id="auth-overlay" class="login-card auth-card" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+      <div class="auth-brand">
+        <div class="brand-icon auth-brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="30" height="30" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+            <line x1="6" y1="6" x2="6.01" y2="6"></line>
+            <line x1="6" y1="18" x2="6.01" y2="18"></line>
           </svg>
         </div>
-        <div>
-          <h2 id="auth-modal-title" class="modal-title">Sign In</h2>
-          <p id="auth-modal-subtitle" class="modal-subtitle">Authenticate to access SystemAlerts Server Manager</p>
+        <div class="auth-brand-text">
+          <h1 class="auth-brand-title">SystemAlerts</h1>
+          <span class="auth-brand-badge">Server Manager</span>
         </div>
+      </div>
+
+      <div class="auth-header">
+        <h2 id="auth-modal-title" class="modal-title">Sign In</h2>
+        <p id="auth-modal-subtitle" class="modal-subtitle">Authenticate to access SystemAlerts Server Manager</p>
       </div>
 
       <div id="auth-error" class="auth-alert hidden" role="alert"></div>
@@ -68,6 +75,1175 @@
         </div>
       </form>
     </div>
+  </div>
+
+  <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+
+  <!-- Authenticated Application Shell -->
+  <div id="app-shell" class="app-layout">
+    <!-- Side Navigation Sidebar (#app-sidebar) -->
+    <aside id="app-sidebar" class="app-sidebar" aria-label="Main Sidebar Navigation">
+      <div class="sidebar-header">
+        <div class="brand-icon sidebar-brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+            <line x1="6" y1="6" x2="6.01" y2="6"></line>
+            <line x1="6" y1="18" x2="6.01" y2="18"></line>
+          </svg>
+        </div>
+        <div class="sidebar-brand-info">
+          <div class="sidebar-brand-title-row">
+            <span class="sidebar-brand-name">SystemAlerts</span>
+            <span id="version-badge" class="version-badge" title="Current installed release version">v0.1.0</span>
+          </div>
+          <span class="sidebar-brand-desc">Server Manager</span>
+        </div>
+        <span class="sidebar-status-dot" title="System operational"></span>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="Main Navigation">
+        <!-- Section: System Level -->
+        <div class="sidebar-nav-section">
+          <span class="sidebar-nav-heading">System Level</span>
+          <button
+            id="nav-tab-overview"
+            class="nav-tab sidebar-nav-item active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="view-overview"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7"></rect>
+              <rect x="14" y="3" width="7" height="7"></rect>
+              <rect x="14" y="14" width="7" height="7"></rect>
+              <rect x="3" y="14" width="7" height="7"></rect>
+            </svg>
+            <span>Overview</span>
+          </button>
+          <button
+            id="nav-tab-raid"
+            class="nav-tab sidebar-nav-item"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="view-raid"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="22" y1="12" x2="2" y2="12"></line>
+              <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>
+              <line x1="6" y1="16" x2="6.01" y2="16"></line>
+              <line x1="10" y1="16" x2="10.01" y2="16"></line>
+            </svg>
+            <span>RAID &amp; Storage</span>
+          </button>
+        </div>
+
+        <!-- Section: Container Management -->
+        <div class="sidebar-nav-section">
+          <span class="sidebar-nav-heading">Container Management</span>
+          <button
+            id="nav-tab-containers"
+            class="nav-tab sidebar-nav-item"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="view-containers"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+              <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+            </svg>
+            <span>Containers</span>
+            <span id="nav-tab-containers-badge" class="nav-tab-badge">0</span>
+          </button>
+        </div>
+
+        <!-- Section: Alerts & Communication -->
+        <div class="sidebar-nav-section">
+          <span class="sidebar-nav-heading">Alerts &amp; Communication</span>
+          <button
+            id="nav-tab-notifications"
+            class="nav-tab sidebar-nav-item"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="view-notifications"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+            </svg>
+            <span>Notifications</span>
+          </button>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button id="nav-update-notice-btn" class="nav-update-notice-btn sidebar-footer-btn hidden" type="button" aria-label="New version available">
+          <svg class="nav-update-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          <span class="update-pulse-dot"></span>
+          <span id="nav-update-version-label">v-- available</span>
+        </button>
+
+        <button id="check-update-btn" class="btn-sidebar-footer" type="button" title="Check GitHub tags for new releases">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+          <span>Check Updates</span>
+        </button>
+
+        <button id="nav-settings-btn" class="btn-sidebar-footer" type="button" aria-label="Open application settings">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          <span>Settings</span>
+        </button>
+        <button id="settings-btn" class="hidden" style="display:none" aria-hidden="true"></button>
+
+        <div id="user-session-box" class="user-session-box">
+          <div class="user-avatar" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+          </div>
+          <div class="user-info">
+            <span class="user-label">Signed In</span>
+            <span id="auth-username" class="auth-username-pill">admin</span>
+          </div>
+          <button id="btn-logout" class="btn-logout" type="button" title="Sign out of SystemAlerts">
+            <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+              <polyline points="16 17 21 12 16 7"></polyline>
+              <line x1="21" y1="12" x2="9" y2="12"></line>
+            </svg>
+          </button>
+          <button id="logout-btn" class="hidden" style="display:none" aria-hidden="true"></button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area (#app-main-content) -->
+    <main id="app-main-content" class="app-main-content">
+      <header class="main-topbar">
+        <div class="topbar-left">
+          <button id="sidebar-toggle-btn" class="btn-sidebar-toggle" type="button" aria-label="Toggle Navigation Sidebar">
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="3" y1="12" x2="21" y2="12"></line>
+              <line x1="3" y1="6" x2="21" y2="6"></line>
+              <line x1="3" y1="18" x2="21" y2="18"></line>
+            </svg>
+          </button>
+          <h2 id="page-title" class="topbar-page-title">System Overview</h2>
+        </div>
+
+        <div class="topbar-right">
+          <div class="raid-status-pill" id="header-raid-pill">
+            <span class="status-label">RAID</span>
+            <span id="raid-status-badge" class="status-badge status-unknown" data-state="unknown">
+              <span class="status-dot"></span>
+              <span id="raid-status-text">UNKNOWN</span>
+            </span>
+          </div>
+
+          <div class="stream-indicators-row">
+            <span id="auto-refresh-indicator" class="auto-refresh-pill" title="Real-time WebSocket stream with 10s HTTP fallback">
+              LIVE (WebSocket)
+            </span>
+            <span id="live-stream-indicator" class="live-stream-indicator stream-active" title="Direct system streaming (POSIX statvfs, sysfs RAID, Docker socket)">
+              <span class="stream-pulse-dot"></span>
+              <span id="live-stream-text">Stream: Active</span>
+            </span>
+          </div>
+
+          <span id="last-updated" class="last-updated">Never updated</span>
+
+          <button id="refresh-btn" class="btn-refresh" type="button" aria-label="Refresh dashboard data">
+            <svg class="refresh-icon" viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            <span>Refresh</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="main-content-scroll">
+        <!-- Release-Tag Update Banner (Deprecated in favor of #update-modal) -->
+        <div id="update-banner" class="update-banner hidden update-banner-deprecated" role="region" aria-label="Software update available" style="display: none !important;">
+          <div class="update-banner-info">
+            <div class="update-banner-title">
+              <span class="update-badge-new">NEW RELEASE</span>
+              <strong>Version <span id="update-latest-version">--</span> is available!</strong>
+            </div>
+            <pre id="update-changelog" class="update-changelog"></pre>
+          </div>
+          <div class="update-banner-actions">
+            <button id="apply-update-btn" class="btn-update-apply" type="button">
+              Update &amp; Restart Services
+            </button>
+          </div>
+        </div>
+
+        <!-- Error Banner -->
+        <div id="error-banner" class="error-banner hidden" role="alert">
+          <span id="error-message">Unable to fetch live status from server.</span>
+        </div>
+
+        <!-- View Panel: Overview (#view-overview) -->
+        <div id="view-overview" class="view-panel" role="tabpanel" aria-labelledby="nav-tab-overview">
+          <!-- System Metrics Cards -->
+          <section class="section-block" aria-labelledby="system-metrics-heading">
+            <div class="section-header">
+              <h2 id="system-metrics-heading" class="section-title">System Metrics</h2>
+              <div class="module-toolbar">
+                <span class="module-status-dot" title="Live stream active"></span>
+                <select id="system-interval-select" class="module-interval-select" aria-label="System Metrics refresh rate">
+                  <option value="1">1s (Live)</option>
+                  <option value="2">2s</option>
+                  <option value="5">5s</option>
+                  <option value="10">10s</option>
+                  <option value="0">Paused</option>
+                </select>
+                <span id="system-last-updated" class="module-last-updated">--</span>
+                <button id="refresh-system-btn" class="btn-module-refresh" type="button" aria-label="Refresh System Metrics" title="Refresh System Metrics">
+                  <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="metrics-grid">
+              <!-- CPU Card -->
+              <article class="card metric-card">
+                <div class="metric-header">
+                  <span class="metric-title">CPU Usage</span>
+                  <span id="cpu-percent-value" class="metric-value">--%</span>
+                </div>
+                <div class="progress-track" aria-label="CPU usage bar">
+                  <div id="cpu-progress-bar" class="progress-fill" style="width: 0%"></div>
+                </div>
+                <div class="metric-footer">
+                  <span id="cpu-subtitle" class="metric-subtext">Real-time processor load</span>
+                </div>
+              </article>
+
+              <!-- Memory Card -->
+              <article class="card metric-card">
+                <div class="metric-header">
+                  <span class="metric-title">Memory Usage</span>
+                  <span id="memory-percent-value" class="metric-value">--%</span>
+                </div>
+                <div class="progress-track" aria-label="Memory usage bar">
+                  <div id="memory-progress-bar" class="progress-fill" style="width: 0%"></div>
+                </div>
+                <div class="metric-footer">
+                  <span id="memory-detail" class="metric-subtext">-- / -- used (-- available)</span>
+                </div>
+              </article>
+
+              <!-- Disk Usage Card -->
+              <article class="card metric-card">
+                <div class="metric-header">
+                  <span class="metric-title">Disk Usage</span>
+                  <span id="disk-percent-value" class="metric-value">--%</span>
+                </div>
+                <div class="progress-track" aria-label="Disk usage bar">
+                  <div id="disk-progress-bar" class="progress-fill" style="width: 0%"></div>
+                </div>
+                <div class="metric-footer">
+                  <span id="disk-detail" class="metric-subtext">-- / -- used (-- free)</span>
+                </div>
+              </article>
+
+              <!-- System Uptime Card -->
+              <article class="card metric-card">
+                <div class="metric-header">
+                  <span class="metric-title">System Uptime</span>
+                  <span id="uptime-value" class="metric-value metric-value-uptime">--</span>
+                </div>
+                <div class="uptime-badge-row">
+                  <span class="uptime-indicator">ONLINE</span>
+                </div>
+                <div class="metric-footer">
+                  <span id="boot-time-detail" class="metric-subtext">Boot time: --</span>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <!-- Overview Summary Cockpit Cards -->
+          <section class="section-block" aria-labelledby="overview-summary-heading">
+            <div class="section-header">
+              <h2 id="overview-summary-heading" class="section-title">Status Summary</h2>
+            </div>
+            <div class="overview-cockpit-grid">
+              <!-- RAID & Storage Summary -->
+              <article class="card overview-summary-card">
+                <div class="cockpit-card-header">
+                  <div class="cockpit-title-group">
+                    <span class="cockpit-card-title">RAID &amp; Storage</span>
+                    <span id="overview-raid-status-badge" class="status-badge status-unknown">UNKNOWN</span>
+                  </div>
+                </div>
+                <p id="overview-raid-summary" class="cockpit-card-desc">Monitoring active array and storage pools</p>
+                <div class="cockpit-card-action">
+                  <button id="btn-goto-raid" type="button" class="btn-secondary btn-sm">
+                    <span>Manage Storage</span>
+                    <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                      <polyline points="12 5 19 12 12 19"></polyline>
+                    </svg>
+                  </button>
+                </div>
+              </article>
+
+              <!-- Containers Summary -->
+              <article class="card overview-summary-card">
+                <div class="cockpit-card-header">
+                  <div class="cockpit-title-group">
+                    <span class="cockpit-card-title">Container Management</span>
+                    <span id="overview-docker-badge" class="status-badge status-unknown">UNKNOWN</span>
+                  </div>
+                </div>
+                <p id="overview-docker-summary" class="cockpit-card-desc">0 containers running</p>
+                <div class="cockpit-card-action">
+                  <button id="btn-goto-containers" type="button" class="btn-secondary btn-sm">
+                    <span>Manage Containers</span>
+                    <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                      <polyline points="12 5 19 12 12 19"></polyline>
+                    </svg>
+                  </button>
+                </div>
+              </article>
+
+              <!-- Discord Notifications Summary -->
+              <article class="card overview-summary-card">
+                <div class="cockpit-card-header">
+                  <div class="cockpit-title-group">
+                    <span class="cockpit-card-title">Notifications &amp; Alerts</span>
+                    <span id="overview-discord-badge" class="status-badge status-unknown">UNKNOWN</span>
+                  </div>
+                </div>
+                <p id="overview-discord-summary" class="cockpit-card-desc">Discord webhook and weekly summaries</p>
+                <div class="cockpit-card-action">
+                  <button id="btn-goto-notifications" type="button" class="btn-secondary btn-sm">
+                    <span>View Alerts</span>
+                    <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                      <polyline points="12 5 19 12 12 19"></polyline>
+                    </svg>
+                  </button>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+
+        <!-- View Panel: RAID & Storage (#view-raid) -->
+        <div id="view-raid" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-raid">
+          <section class="section-block" aria-labelledby="raid-details-heading">
+            <div class="section-header">
+              <h2 id="raid-details-heading" class="section-title">RAID Array &amp; Storage</h2>
+              <div class="module-toolbar">
+                <span id="raid-adaptive-badge" class="adaptive-badge hidden">5s Rebuild Boost</span>
+                <select id="raid-interval-select" class="module-interval-select" aria-label="RAID refresh rate">
+                  <option value="5">5s</option>
+                  <option value="15">15s (Adaptive)</option>
+                  <option value="30">30s</option>
+                  <option value="60">60s</option>
+                  <option value="0">Paused</option>
+                </select>
+                <span id="raid-last-updated" class="module-last-updated">--</span>
+                <button id="refresh-raid-btn" class="btn-module-refresh" type="button" aria-label="Refresh RAID Array" title="Refresh RAID Array">
+                  <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="raid-grid">
+              <!-- RAID Array Details Card -->
+              <article class="card raid-details-card">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">RAID Array Details</h3>
+                    <p class="card-subtitle">mdadm array parameters &amp; consistency state</p>
+                  </div>
+                  <span id="raid-card-badge" class="status-badge status-unknown">UNKNOWN</span>
+                </div>
+
+                <!-- Live Sysfs RAID Rebuild & Sync Progress Bar -->
+                <div id="raid-sync-container" class="raid-sync-container hidden" role="region" aria-label="RAID Rebuild & Sync Progress">
+                  <div class="raid-sync-header">
+                    <span id="raid-sync-label" class="raid-sync-label mono-text">Resyncing: 0.0% [&gt;           ]</span>
+                    <span id="raid-sync-eta" class="raid-sync-eta"></span>
+                  </div>
+                  <div class="progress-track raid-sync-track">
+                    <div id="raid-sync-progress-fill" class="progress-fill raid-sync-fill" style="width: 0%"></div>
+                  </div>
+                </div>
+
+                <div class="device-counts-strip">
+                  <div class="count-box">
+                    <span class="count-label">Active</span>
+                    <span id="raid-active-devices" class="count-number count-ok">0</span>
+                  </div>
+                  <div class="count-box">
+                    <span class="count-label">Working</span>
+                    <span id="raid-working-devices" class="count-number count-ok">0</span>
+                  </div>
+                  <div class="count-box">
+                    <span class="count-label">Failed</span>
+                    <span id="raid-failed-devices" class="count-number">0</span>
+                  </div>
+                  <div class="count-box">
+                    <span class="count-label">Spare</span>
+                    <span id="raid-spare-devices" class="count-number">0</span>
+                  </div>
+                </div>
+
+                <dl class="details-list">
+                  <div class="detail-item">
+                    <dt>RAID Device</dt>
+                    <dd id="raid-device" class="mono-text">--</dd>
+                  </div>
+                  <div class="detail-item">
+                    <dt>RAID Level</dt>
+                    <dd id="raid-level">--</dd>
+                  </div>
+                  <div class="detail-item">
+                    <dt>Array Size</dt>
+                    <dd id="raid-array-size">--</dd>
+                  </div>
+                  <div class="detail-item">
+                    <dt>Devices Summary</dt>
+                    <dd id="raid-devices-summary">--</dd>
+                  </div>
+                  <div class="detail-item">
+                    <dt>Storage Info (duf)</dt>
+                    <dd id="raid-storage-info">--</dd>
+                  </div>
+                  <div class="detail-item">
+                    <dt>Check Status</dt>
+                    <dd id="raid-check-status">--</dd>
+                  </div>
+                  <div class="detail-item">
+                    <dt>Full State</dt>
+                    <dd id="raid-full-state">--</dd>
+                  </div>
+                  <div class="detail-item">
+                    <dt>Persistence</dt>
+                    <dd id="raid-persistence">--</dd>
+                  </div>
+                  <div class="detail-item">
+                    <dt>UUID</dt>
+                    <dd id="raid-uuid" class="mono-text">--</dd>
+                  </div>
+                  <div class="detail-item">
+                    <dt>Update Time</dt>
+                    <dd id="raid-update-time">--</dd>
+                  </div>
+                  <div class="detail-item">
+                    <dt>Layout / Chunk</dt>
+                    <dd id="raid-layout-chunk">--</dd>
+                  </div>
+                  <div class="detail-item">
+                    <dt>Consistency / Events</dt>
+                    <dd id="raid-consistency-events">--</dd>
+                  </div>
+                </dl>
+              </article>
+
+              <!-- Active Disks Card -->
+              <article class="card active-disks-card">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">Active Disks</h3>
+                    <p class="card-subtitle">Member block devices in the array</p>
+                  </div>
+                  <span id="disks-count-badge" class="pill-counter">0 disks</span>
+                </div>
+
+                <div class="table-container">
+                  <table class="data-table" id="active-disks-table">
+                    <thead>
+                      <tr>
+                        <th>Device</th>
+                        <th>Path</th>
+                        <th>State</th>
+                      </tr>
+                    </thead>
+                    <tbody id="active-disks-tbody">
+                      <tr>
+                        <td colspan="3" class="empty-state">Loading disk devices...</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+
+        <!-- View Panel: Containers & Stacks (#view-containers) -->
+        <div id="view-containers" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-containers">
+          <!-- Docker Not Installed Banner -->
+          <div id="docker-install-banner" class="docker-alert-banner hidden" role="region" aria-label="Docker installation required">
+            <div class="docker-banner-icon">
+              <svg viewBox="0 0 24 24" width="26" height="26" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+            </div>
+            <div class="docker-banner-content">
+              <h3 class="docker-banner-title">Docker is not installed on this host</h3>
+              <p class="docker-banner-text">Install Docker Engine &amp; Docker Compose with one click to enable Container and Stack management.</p>
+              <div id="docker-install-feedback" class="auth-alert hidden" role="status"></div>
+            </div>
+            <div class="docker-banner-actions">
+              <button id="btn-install-docker" type="button" class="btn-primary btn-install">
+                <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                <span>Install Docker</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Docker Stopped Banner -->
+          <div id="docker-stopped-banner" class="docker-alert-banner docker-warning hidden" role="region" aria-label="Docker daemon inactive">
+            <div class="docker-banner-icon">
+              <svg viewBox="0 0 24 24" width="26" height="26" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                <line x1="12" y1="9" x2="12" y2="13"></line>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+            </div>
+            <div class="docker-banner-content">
+              <h3 class="docker-banner-title">Docker Daemon is Stopped</h3>
+              <p class="docker-banner-text">The Docker daemon is installed but not running. Start the service (<code>systemctl start docker</code>) to view containers and deploy stacks.</p>
+            </div>
+          </div>
+
+          <!-- Docker Overview & Quick Stats Bar -->
+          <section class="section-block" aria-labelledby="docker-overview-heading">
+            <div class="section-header">
+              <div class="header-with-status">
+                <h2 id="docker-overview-heading" class="section-title">Container Management</h2>
+                <span id="docker-daemon-badge" class="status-badge status-unknown">UNKNOWN</span>
+              </div>
+              <div class="module-toolbar">
+                <span class="module-status-dot" id="docker-status-dot" title="Live stream active"></span>
+                <span class="docker-version-info" id="docker-version-info">Docker: -- | Compose: --</span>
+                <select id="docker-interval-select" class="module-interval-select" aria-label="Containers refresh rate" title="Containers refresh rate">
+                  <option value="1">1s (Live)</option>
+                  <option value="2">2s</option>
+                  <option value="5" selected>5s</option>
+                  <option value="10">10s</option>
+                  <option value="0">Paused</option>
+                </select>
+                <span id="docker-last-updated" class="module-last-updated">--</span>
+                <button id="refresh-docker-btn" class="btn-module-refresh" type="button" aria-label="Refresh Docker Resources" title="Refresh Docker Resources">
+                  <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- Quick Stats Cards -->
+            <div class="docker-stats-grid">
+              <article class="card docker-stat-card" data-subtab="stacks" role="button" tabindex="0" title="View Stacks">
+                <div class="docker-stat-header">
+                  <span class="docker-stat-title">Stacks</span>
+                  <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                    <polyline points="2 17 12 22 22 17"></polyline>
+                    <polyline points="2 12 12 17 22 12"></polyline>
+                  </svg>
+                </div>
+                <div class="docker-stat-value" id="docker-stat-stacks">0</div>
+                <div class="docker-stat-subtext">Compose projects</div>
+              </article>
+
+              <article class="card docker-stat-card" data-subtab="containers" role="button" tabindex="0" title="View Containers">
+                <div class="docker-stat-header">
+                  <span class="docker-stat-title">Containers</span>
+                  <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+                    <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+                  </svg>
+                </div>
+                <div class="docker-stat-value" id="docker-stat-containers">0</div>
+                <div class="docker-stat-subtext" id="docker-stat-containers-detail"><span id="docker-stat-running">0</span> running, <span id="docker-stat-stopped">0</span> stopped</div>
+              </article>
+
+              <article class="card docker-stat-card" data-subtab="images" role="button" tabindex="0" title="View Images">
+                <div class="docker-stat-header">
+                  <span class="docker-stat-title">Images</span>
+                  <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                    <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                    <polyline points="21 15 16 10 5 21"></polyline>
+                  </svg>
+                </div>
+                <div class="docker-stat-value" id="docker-stat-images">0</div>
+                <div class="docker-stat-subtext">Locally cached images</div>
+              </article>
+
+              <article class="card docker-stat-card" data-subtab="volumes" role="button" tabindex="0" title="View Volumes">
+                <div class="docker-stat-header">
+                  <span class="docker-stat-title">Volumes</span>
+                  <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M22 12H2"></path>
+                    <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>
+                    <line x1="6" y1="16" x2="6.01" y2="16"></line>
+                    <line x1="10" y1="16" x2="10.01" y2="16"></line>
+                  </svg>
+                </div>
+                <div class="docker-stat-value" id="docker-stat-volumes">0</div>
+                <div class="docker-stat-subtext">Named storage volumes</div>
+              </article>
+
+              <article class="card docker-stat-card" data-subtab="networks" role="button" tabindex="0" title="View Networks">
+                <div class="docker-stat-header">
+                  <span class="docker-stat-title">Networks</span>
+                  <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="2"></circle>
+                    <path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"></path>
+                  </svg>
+                </div>
+                <div class="docker-stat-value" id="docker-stat-networks">0</div>
+                <div class="docker-stat-subtext">Bridge &amp; custom networks</div>
+              </article>
+            </div>
+          </section>
+
+          <!-- Sub-tabs Navigation -->
+          <nav class="subnav-tabs" aria-label="Docker Resource Tabs">
+            <button id="subtab-docker-stacks" class="subnav-tab active" type="button" role="tab" aria-selected="true" aria-controls="subview-docker-stacks">
+              <span>Stacks</span>
+              <span class="subnav-badge subtab-badge" id="subtab-badge-stacks">0</span>
+            </button>
+            <button id="subtab-docker-containers" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-containers">
+              <span>Containers</span>
+              <span class="subnav-badge subtab-badge" id="subtab-badge-containers">0</span>
+            </button>
+            <button id="subtab-docker-images" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-images">
+              <span>Images</span>
+              <span class="subnav-badge subtab-badge" id="subtab-badge-images">0</span>
+            </button>
+            <button id="subtab-docker-volumes" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-volumes">
+              <span>Volumes</span>
+              <span class="subnav-badge subtab-badge" id="subtab-badge-volumes">0</span>
+            </button>
+            <button id="subtab-docker-networks" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-networks">
+              <span>Networks</span>
+              <span class="subnav-badge subtab-badge" id="subtab-badge-networks">0</span>
+            </button>
+            <button id="subtab-docker-updates" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-updates">
+              <span>Updates</span>
+              <span class="subnav-badge subtab-badge subnav-badge-warn hidden" id="subtab-badge-updates">0</span>
+            </button>
+          </nav>
+
+          <!-- Subview: Stacks -->
+          <div id="subview-docker-stacks" class="subview-panel" role="tabpanel" aria-labelledby="subtab-docker-stacks">
+            <div class="subview-toolbar">
+              <div class="subview-title-group">
+                <h3 class="subview-title">Docker Compose Stacks</h3>
+                <span class="subview-subtitle">Deploy and orchestrate multi-container services</span>
+              </div>
+              <div class="subview-actions">
+                <button id="btn-new-stack" type="button" class="btn-primary">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                  </svg>
+                  <span>Deploy New Stack</span>
+                </button>
+              </div>
+            </div>
+            <div class="table-container">
+              <table class="data-table" id="docker-stacks-table">
+                <thead>
+                  <tr>
+                    <th>Stack Name</th>
+                    <th>Status</th>
+                    <th>Containers</th>
+                    <th>Type</th>
+                    <th class="actions-col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="docker-stacks-tbody">
+                  <tr>
+                    <td colspan="5" class="empty-state">No Compose stacks configured yet. Click 'Deploy New Stack' to add one.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Subview: Containers -->
+          <div id="subview-docker-containers" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-containers">
+            <div class="subview-toolbar">
+              <div class="subview-title-group">
+                <h3 class="subview-title">Containers</h3>
+                <span class="subview-subtitle">Active and stopped container runtime instances</span>
+              </div>
+              <div class="subview-actions">
+                <input
+                  id="containers-search-input"
+                  type="text"
+                  class="search-input"
+                  placeholder="Search containers..."
+                />
+                <select id="containers-filter-stack" class="module-interval-select" aria-label="Filter containers by stack">
+                  <option value="all">All Stacks</option>
+                  <option value="standalone">Standalone (No Stack)</option>
+                </select>
+                <select id="containers-filter-status" class="module-interval-select" aria-label="Filter containers by status">
+                  <option value="all">All Containers</option>
+                  <option value="running">Running Only</option>
+                  <option value="stopped">Stopped Only</option>
+                </select>
+              </div>
+            </div>
+            <div class="table-container">
+              <table class="data-table" id="docker-containers-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>ID</th>
+                    <th>Image</th>
+                    <th>State</th>
+                    <th>Ports</th>
+                    <th>Stack</th>
+                    <th class="actions-col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="docker-containers-tbody">
+                  <tr>
+                    <td colspan="7" class="empty-state">No containers found.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Subview: Images -->
+          <div id="subview-docker-images" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-images">
+            <div class="subview-toolbar">
+              <div class="subview-title-group">
+                <h3 class="subview-title">Container Images</h3>
+                <span class="subview-subtitle">Cached registry images on this host</span>
+              </div>
+              <div class="subview-actions image-pull-actions">
+                <div class="pull-input-group">
+                  <input
+                    id="docker-image-pull-input"
+                    type="text"
+                    class="search-input"
+                    placeholder="Image (e.g. nginx:alpine)"
+                  />
+                  <button id="btn-pull-image" type="button" class="btn-primary">
+                    Pull Image
+                  </button>
+                </div>
+                <button id="btn-prune-images" type="button" class="btn-secondary" title="Remove all unused and dangling images">
+                  Prune Unused
+                </button>
+              </div>
+            </div>
+            <div id="docker-image-feedback" class="auth-alert hidden" role="status"></div>
+            <div class="table-container">
+              <table class="data-table" id="docker-images-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Repository</th>
+                    <th>Tag</th>
+                    <th>Size</th>
+                    <th>Created</th>
+                    <th class="actions-col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="docker-images-tbody">
+                  <tr>
+                    <td colspan="6" class="empty-state">No images found.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Subview: Volumes -->
+          <div id="subview-docker-volumes" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-volumes">
+            <div class="subview-toolbar">
+              <div class="subview-title-group">
+                <h3 class="subview-title">Persistent Volumes</h3>
+                <span class="subview-subtitle">Docker volume storage mounts</span>
+              </div>
+            </div>
+            <div id="docker-volume-feedback" class="auth-alert hidden" role="status"></div>
+            <div class="table-container">
+              <table class="data-table" id="docker-volumes-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Driver</th>
+                    <th>Scope</th>
+                    <th>Size</th>
+                    <th>Mountpoint / In-Use Containers</th>
+                    <th>Created</th>
+                    <th class="actions-col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="docker-volumes-tbody">
+                  <tr>
+                    <td colspan="7" class="empty-state">No volumes found.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Subview: Networks -->
+          <div id="subview-docker-networks" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-networks">
+            <div class="subview-toolbar">
+              <div class="subview-title-group">
+                <h3 class="subview-title">Networks</h3>
+                <span class="subview-subtitle">Bridge, host, and overlay container networks</span>
+              </div>
+            </div>
+            <div id="docker-network-feedback" class="auth-alert hidden" role="status"></div>
+            <div class="table-container">
+              <table class="data-table" id="docker-networks-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Driver</th>
+                    <th>Scope</th>
+                    <th>Internal</th>
+                    <th class="actions-col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="docker-networks-tbody">
+                  <tr>
+                    <td colspan="6" class="empty-state">No networks found.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Subview: Updates -->
+          <div id="subview-docker-updates" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-updates">
+            <div class="subview-toolbar">
+              <div class="subview-title-group">
+                <h3 class="subview-title">Image Updates &amp; Automation</h3>
+                <span class="subview-subtitle">Scan running containers for newer remote registry tags</span>
+              </div>
+              <div class="subview-actions">
+                <div class="config-freq-group">
+                  <label for="docker-auto-update-freq" class="logs-label">Auto-Check:</label>
+                  <select id="docker-auto-update-freq" class="module-interval-select">
+                    <option value="disabled">Disabled</option>
+                    <option value="hourly">Hourly</option>
+                    <option value="daily">Daily</option>
+                  </select>
+                  <button id="btn-save-update-freq" type="button" class="btn-secondary btn-sm">Save</button>
+                </div>
+                <button id="btn-check-docker-updates" type="button" class="btn-secondary">
+                  Check Now
+                </button>
+                <button id="btn-apply-all-updates" type="button" class="btn-primary" disabled title="No updates available to pull">
+                  Apply All Updates
+                </button>
+              </div>
+            </div>
+            <div id="docker-updates-feedback" class="auth-alert hidden" role="status"></div>
+
+            <!-- Automated Update Schedule Configuration Card -->
+            <article class="card update-schedule-card" style="margin-bottom: 20px;">
+              <div class="card-header">
+                <div>
+                  <h3 class="card-title">Automated Update Schedule</h3>
+                  <p class="card-subtitle">Configure automated image pull &amp; container redeployment routine</p>
+                </div>
+                <span id="update-schedule-badge" class="status-badge status-disabled">DISABLED</span>
+              </div>
+
+              <form id="update-schedule-form" class="schedule-form" onsubmit="return false;">
+                <div class="schedule-grid">
+                  <div class="form-group toggle-group">
+                    <div class="toggle-container">
+                      <label class="toggle-switch" for="schedule-enabled-toggle">
+                        <input
+                          type="checkbox"
+                          id="schedule-enabled-toggle"
+                          name="schedule_enabled"
+                          class="toggle-input"
+                        />
+                        <span class="toggle-slider"></span>
+                      </label>
+                      <div class="toggle-label-group">
+                        <label for="schedule-enabled-toggle" class="toggle-label">Enable Automated Updates</label>
+                        <small class="form-hint">Automatically scan, pull new images, and restart containers on schedule.</small>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="schedule-day-select">Day of Week</label>
+                    <select id="schedule-day-select" name="schedule_day" class="module-interval-select schedule-select">
+                      <option value="daily">Every Day / Daily</option>
+                      <option value="sunday">Sunday</option>
+                      <option value="monday">Monday</option>
+                      <option value="tuesday">Tuesday</option>
+                      <option value="wednesday">Wednesday</option>
+                      <option value="thursday">Thursday</option>
+                      <option value="friday">Friday</option>
+                      <option value="saturday">Saturday</option>
+                    </select>
+                    <small class="form-hint">When the scheduled update executes.</small>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="schedule-time-input">Execution Time (HH:MM)</label>
+                    <input
+                      type="time"
+                      id="schedule-time-input"
+                      name="schedule_time"
+                      class="search-input"
+                      value="03:00"
+                    />
+                    <small class="form-hint" id="schedule-time-hint">24-hour time in dashboard timezone.</small>
+                  </div>
+                </div>
+
+                <div class="schedule-actions-row">
+                  <button id="btn-save-schedule" type="button" class="btn-primary">
+                    Save Schedule
+                  </button>
+                  <span id="schedule-next-run" class="schedule-next-run">Next run: --</span>
+                </div>
+
+                <div id="schedule-feedback" class="auth-alert hidden" role="status"></div>
+              </form>
+            </article>
+            <div class="table-container">
+              <table class="data-table" id="docker-updates-table">
+                <thead>
+                  <tr>
+                    <th>Target Container</th>
+                    <th>Image</th>
+                    <th>Stack</th>
+                    <th>Current Digest/ID</th>
+                    <th>Latest Digest/ID</th>
+                    <th>Status</th>
+                    <th class="actions-col">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="docker-updates-tbody">
+                  <tr>
+                    <td colspan="7" class="empty-state">Click 'Check Now' to scan running containers for upstream updates.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- View Panel: Notifications (#view-notifications) -->
+        <div id="view-notifications" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-notifications">
+          <section class="section-block" aria-labelledby="notifications-heading">
+            <div class="section-header">
+              <h2 id="notifications-heading" class="section-title">Notifications</h2>
+              <div class="module-toolbar">
+                <select id="notifications-interval-select" class="module-interval-select" aria-label="Notifications refresh rate">
+                  <option value="15">15s</option>
+                  <option value="30">30s</option>
+                  <option value="60">60s</option>
+                  <option value="300">5m</option>
+                  <option value="0">Paused</option>
+                </select>
+                <span id="notifications-last-updated" class="module-last-updated">--</span>
+                <button id="refresh-notifications-btn" class="btn-module-refresh" type="button" aria-label="Refresh Notifications" title="Refresh Notifications">
+                  <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="notifications-grid">
+              <!-- Discord Configuration & Setup Card -->
+              <article class="card discord-setup-card">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">Discord Configuration &amp; Setup</h3>
+                    <p class="card-subtitle">Manage webhook / bot credentials and test notification delivery</p>
+                  </div>
+                  <span id="discord-status-badge" class="status-badge status-unknown">UNKNOWN</span>
+                </div>
+
+                <div class="card-body">
+                  <form id="discord-config-form" class="discord-config-form" onsubmit="return false;">
+                    <div class="form-group toggle-group">
+                      <div class="toggle-container">
+                        <label class="toggle-switch" for="discord-enabled-toggle">
+                          <input
+                            type="checkbox"
+                            id="discord-enabled-toggle"
+                            name="discord_enabled"
+                            class="toggle-input"
+                          />
+                          <span class="toggle-slider"></span>
+                        </label>
+                        <div class="toggle-label-group">
+                          <label for="discord-enabled-toggle" class="toggle-label">Enable Discord Notifications</label>
+                          <small class="form-hint">Master switch to enable or pause Discord alerting and weekly summaries.</small>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="discord-token-input">
+                        Discord Bot Token
+                        <span id="discord-token-status" class="token-status-badge">Not configured</span>
+                      </label>
+                      <input
+                        id="discord-token-input"
+                        name="discord_token"
+                        type="password"
+                        autocomplete="off"
+                        placeholder="Leave blank to keep existing token"
+                      />
+                      <small class="form-hint">Only overwritten if you enter a new token above.</small>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="discord-channel-input">Discord Channel ID</label>
+                      <input
+                        id="discord-channel-input"
+                        name="channel_id"
+                        type="text"
+                        placeholder="e.g. 123456789012345678"
+                      />
+                      <small class="form-hint">Target Discord text channel ID where alerts are delivered.</small>
+                    </div>
+
+                    <div class="discord-actions-row">
+                      <button id="save-discord-btn" class="btn-primary" type="button">
+                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                          <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                          <polyline points="7 3 7 8 15 8"></polyline>
+                        </svg>
+                        <span>Save Discord Settings</span>
+                      </button>
+                      <button id="send-test-notification-btn" class="btn-secondary" type="button">
+                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <line x1="22" y1="2" x2="11" y2="13"></line>
+                          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                        <span>Send Test Notification</span>
+                      </button>
+                    </div>
+
+                    <div id="discord-feedback" class="auth-alert hidden" role="status"></div>
+                  </form>
+                </div>
+              </article>
+
+              <!-- Weekly Notification State Card -->
+              <article class="card weekly-state-card">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">Weekly Notification State</h3>
+                    <p class="card-subtitle">Scheduled summary throttling status</p>
+                  </div>
+                  <span id="weekly-state-badge" class="status-badge status-unknown">--</span>
+                </div>
+
+                <div id="weekly-state-content" class="weekly-state-body">
+                  <dl class="details-list single-col">
+                    <div class="detail-item">
+                      <dt>Last Summary Sent</dt>
+                      <dd id="weekly-sent-at">--</dd>
+                    </div>
+                    <div class="detail-item">
+                      <dt>Next Summary Due</dt>
+                      <dd id="weekly-due-at">--</dd>
+                    </div>
+                    <div class="detail-item">
+                      <dt>Last Recorded Status</dt>
+                      <dd id="weekly-last-status">--</dd>
+                    </div>
+                    <div class="detail-item">
+                      <dt>Schedule Countdown</dt>
+                      <dd id="weekly-countdown">--</dd>
+                    </div>
+                  </dl>
+                </div>
+              </article>
+
+              <!-- Notification History Card -->
+              <article class="card history-card">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">Notification History</h3>
+                    <p class="card-subtitle">Recent alerts &amp; weekly summaries sent to Discord</p>
+                  </div>
+                  <span id="history-count-badge" class="pill-counter">0 records</span>
+                </div>
+
+                <div class="table-container">
+                  <table class="data-table" id="notification-history-table">
+                    <thead>
+                      <tr>
+                        <th>Timestamp</th>
+                        <th>Type</th>
+                        <th>RAID Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="notification-history-tbody">
+                      <tr>
+                        <td colspan="3" class="empty-state">Loading notification history...</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
   </div>
 
   <!-- SQLite Settings Modal (#settings-modal) -->
@@ -418,1030 +1594,6 @@
           </svg>
           <span id="modal-apply-btn-label">Update &amp; Restart Services</span>
         </button>
-      </div>
-    </div>
-  </div>
-
-  <div class="app-container">
-    <!-- 1. Header -->
-    <header class="app-header">
-      <div class="header-brand">
-        <div class="brand-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="28" height="28" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
-            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
-            <line x1="6" y1="6" x2="6.01" y2="6"></line>
-            <line x1="6" y1="18" x2="6.01" y2="18"></line>
-          </svg>
-        </div>
-        <div>
-          <div class="title-row">
-            <h1 class="app-title">SystemAlerts Server Manager</h1>
-            <span id="version-badge" class="version-badge" title="Current installed release version">v0.1.0</span>
-          </div>
-          <p class="app-subtitle">Infrastructure Telemetry, Storage &amp; Container Management</p>
-        </div>
-      </div>
-
-      <div class="header-controls">
-        <div class="raid-status-pill" id="header-raid-pill">
-          <span class="status-label">RAID STATE</span>
-          <span id="raid-status-badge" class="status-badge status-unknown" data-state="unknown">
-            <span class="status-dot"></span>
-            <span id="raid-status-text">UNKNOWN</span>
-          </span>
-        </div>
-
-        <div class="refresh-group">
-          <div class="refresh-meta">
-            <div class="stream-indicators-row">
-              <span id="auto-refresh-indicator" class="auto-refresh-pill" title="Real-time WebSocket stream with 10s HTTP fallback">
-                LIVE (WebSocket)
-              </span>
-              <span id="live-stream-indicator" class="live-stream-indicator stream-active" title="Direct system streaming (POSIX statvfs, sysfs RAID, Docker socket)">
-                <span class="stream-pulse-dot"></span>
-                <span id="live-stream-text">Stream: Active</span>
-              </span>
-            </div>
-            <span id="last-updated" class="last-updated">Never updated</span>
-          </div>
-
-          <button id="refresh-btn" class="btn-refresh" type="button" aria-label="Refresh dashboard data">
-            <svg class="refresh-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="23 4 23 10 17 10"></polyline>
-              <polyline points="1 20 1 14 7 14"></polyline>
-              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-            </svg>
-            <span>Refresh</span>
-          </button>
-
-          <button id="nav-update-notice-btn" class="nav-update-notice-btn hidden" type="button" aria-label="New version available">
-            <svg class="nav-update-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="7 10 12 15 17 10"></polyline>
-              <line x1="12" y1="15" x2="12" y2="3"></line>
-            </svg>
-            <span class="update-pulse-dot"></span>
-            <span id="nav-update-version-label">v-- available</span>
-          </button>
-
-          <button id="check-update-btn" class="btn-header-action" type="button" title="Check GitHub tags for new releases">
-            <span>Check Updates</span>
-          </button>
-
-          <button id="settings-btn" class="btn-header-action" type="button" aria-label="Open application settings">
-            <span>Settings</span>
-          </button>
-
-          <div id="user-session-box" class="user-session-box hidden">
-            <span id="auth-username" class="auth-username-pill">admin</span>
-            <button id="logout-btn" class="btn-logout" type="button">Logout</button>
-          </div>
-        </div>
-      </div>
-    </header>
-
-    <!-- Top Navigation Bar -->
-    <nav class="app-nav" aria-label="Main Navigation">
-      <button
-        id="nav-tab-overview"
-        class="nav-tab active"
-        type="button"
-        role="tab"
-        aria-selected="true"
-        aria-controls="view-overview"
-      >
-        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="3" y="3" width="7" height="7"></rect>
-          <rect x="14" y="3" width="7" height="7"></rect>
-          <rect x="14" y="14" width="7" height="7"></rect>
-          <rect x="3" y="14" width="7" height="7"></rect>
-        </svg>
-        <span>Overview</span>
-      </button>
-      <button
-        id="nav-tab-containers"
-        class="nav-tab"
-        type="button"
-        role="tab"
-        aria-selected="false"
-        aria-controls="view-containers"
-      >
-        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
-          <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
-        </svg>
-        <span>Containers</span>
-        <span id="nav-tab-containers-badge" class="nav-tab-badge">0</span>
-      </button>
-      <button
-        id="nav-tab-notifications"
-        class="nav-tab"
-        type="button"
-        role="tab"
-        aria-selected="false"
-        aria-controls="view-notifications"
-      >
-        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-          <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
-        </svg>
-        <span>Notifications</span>
-      </button>
-    </nav>
-
-    <!-- Release-Tag Update Banner (#update-banner) (Deprecated in favor of #update-modal) -->
-    <div id="update-banner" class="update-banner hidden update-banner-deprecated" role="region" aria-label="Software update available" style="display: none !important;">
-      <div class="update-banner-info">
-        <div class="update-banner-title">
-          <span class="update-badge-new">NEW RELEASE</span>
-          <strong>Version <span id="update-latest-version">--</span> is available!</strong>
-        </div>
-        <pre id="update-changelog" class="update-changelog"></pre>
-      </div>
-      <div class="update-banner-actions">
-        <button id="apply-update-btn" class="btn-update-apply" type="button">
-          Update &amp; Restart Services
-        </button>
-      </div>
-    </div>
-
-    <!-- Error Banner -->
-    <div id="error-banner" class="error-banner hidden" role="alert">
-      <span id="error-message">Unable to fetch live status from server.</span>
-    </div>
-
-    <!-- View Panel: Overview (#view-overview) -->
-    <div id="view-overview" class="view-panel" role="tabpanel" aria-labelledby="nav-tab-overview">
-      <!-- 2. System Metrics Cards -->
-    <section class="section-block" aria-labelledby="system-metrics-heading">
-      <div class="section-header">
-        <h2 id="system-metrics-heading" class="section-title">System Metrics</h2>
-        <div class="module-toolbar">
-          <span class="module-status-dot" title="Live stream active"></span>
-          <select id="system-interval-select" class="module-interval-select" aria-label="System Metrics refresh rate">
-            <option value="1">1s (Live)</option>
-            <option value="2">2s</option>
-            <option value="5">5s</option>
-            <option value="10">10s</option>
-            <option value="0">Paused</option>
-          </select>
-          <span id="system-last-updated" class="module-last-updated">--</span>
-          <button id="refresh-system-btn" class="btn-module-refresh" type="button" aria-label="Refresh System Metrics" title="Refresh System Metrics">
-            <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="23 4 23 10 17 10"></polyline>
-              <polyline points="1 20 1 14 7 14"></polyline>
-              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-            </svg>
-          </button>
-        </div>
-      </div>
-      <div class="metrics-grid">
-        <!-- CPU Card -->
-        <article class="card metric-card">
-          <div class="metric-header">
-            <span class="metric-title">CPU Usage</span>
-            <span id="cpu-percent-value" class="metric-value">--%</span>
-          </div>
-          <div class="progress-track" aria-label="CPU usage bar">
-            <div id="cpu-progress-bar" class="progress-fill" style="width: 0%"></div>
-          </div>
-          <div class="metric-footer">
-            <span id="cpu-subtitle" class="metric-subtext">Real-time processor load</span>
-          </div>
-        </article>
-
-        <!-- Memory Card -->
-        <article class="card metric-card">
-          <div class="metric-header">
-            <span class="metric-title">Memory Usage</span>
-            <span id="memory-percent-value" class="metric-value">--%</span>
-          </div>
-          <div class="progress-track" aria-label="Memory usage bar">
-            <div id="memory-progress-bar" class="progress-fill" style="width: 0%"></div>
-          </div>
-          <div class="metric-footer">
-            <span id="memory-detail" class="metric-subtext">-- / -- used (-- available)</span>
-          </div>
-        </article>
-
-        <!-- Disk Usage Card -->
-        <article class="card metric-card">
-          <div class="metric-header">
-            <span class="metric-title">Disk Usage</span>
-            <span id="disk-percent-value" class="metric-value">--%</span>
-          </div>
-          <div class="progress-track" aria-label="Disk usage bar">
-            <div id="disk-progress-bar" class="progress-fill" style="width: 0%"></div>
-          </div>
-          <div class="metric-footer">
-            <span id="disk-detail" class="metric-subtext">-- / -- used (-- free)</span>
-          </div>
-        </article>
-
-        <!-- System Uptime Card -->
-        <article class="card metric-card">
-          <div class="metric-header">
-            <span class="metric-title">System Uptime</span>
-            <span id="uptime-value" class="metric-value metric-value-uptime">--</span>
-          </div>
-          <div class="uptime-badge-row">
-            <span class="uptime-indicator">ONLINE</span>
-          </div>
-          <div class="metric-footer">
-            <span id="boot-time-detail" class="metric-subtext">Boot time: --</span>
-          </div>
-        </article>
-      </div>
-    </section>
-
-    <!-- 3. RAID Array Details & Active Disks -->
-    <section class="section-block" aria-labelledby="raid-details-heading">
-      <div class="section-header">
-        <h2 id="raid-details-heading" class="section-title">RAID Array &amp; Storage</h2>
-        <div class="module-toolbar">
-          <span id="raid-adaptive-badge" class="adaptive-badge hidden">5s Rebuild Boost</span>
-          <select id="raid-interval-select" class="module-interval-select" aria-label="RAID refresh rate">
-            <option value="5">5s</option>
-            <option value="15">15s (Adaptive)</option>
-            <option value="30">30s</option>
-            <option value="60">60s</option>
-            <option value="0">Paused</option>
-          </select>
-          <span id="raid-last-updated" class="module-last-updated">--</span>
-          <button id="refresh-raid-btn" class="btn-module-refresh" type="button" aria-label="Refresh RAID Array" title="Refresh RAID Array">
-            <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="23 4 23 10 17 10"></polyline>
-              <polyline points="1 20 1 14 7 14"></polyline>
-              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-            </svg>
-          </button>
-        </div>
-      </div>
-      <div class="raid-grid">
-        <!-- RAID Array Details Card -->
-        <article class="card raid-details-card">
-          <div class="card-header">
-            <div>
-              <h3 class="card-title">RAID Array Details</h3>
-              <p class="card-subtitle">mdadm array parameters &amp; consistency state</p>
-            </div>
-            <span id="raid-card-badge" class="status-badge status-unknown">UNKNOWN</span>
-          </div>
-
-          <!-- Live Sysfs RAID Rebuild & Sync Progress Bar -->
-          <div id="raid-sync-container" class="raid-sync-container hidden" role="region" aria-label="RAID Rebuild & Sync Progress">
-            <div class="raid-sync-header">
-              <span id="raid-sync-label" class="raid-sync-label mono-text">Resyncing: 0.0% [&gt;           ]</span>
-              <span id="raid-sync-eta" class="raid-sync-eta"></span>
-            </div>
-            <div class="progress-track raid-sync-track">
-              <div id="raid-sync-progress-fill" class="progress-fill raid-sync-fill" style="width: 0%"></div>
-            </div>
-          </div>
-
-          <div class="device-counts-strip">
-            <div class="count-box">
-              <span class="count-label">Active</span>
-              <span id="raid-active-devices" class="count-number count-ok">0</span>
-            </div>
-            <div class="count-box">
-              <span class="count-label">Working</span>
-              <span id="raid-working-devices" class="count-number count-ok">0</span>
-            </div>
-            <div class="count-box">
-              <span class="count-label">Failed</span>
-              <span id="raid-failed-devices" class="count-number">0</span>
-            </div>
-            <div class="count-box">
-              <span class="count-label">Spare</span>
-              <span id="raid-spare-devices" class="count-number">0</span>
-            </div>
-          </div>
-
-          <dl class="details-list">
-            <div class="detail-item">
-              <dt>RAID Device</dt>
-              <dd id="raid-device" class="mono-text">--</dd>
-            </div>
-            <div class="detail-item">
-              <dt>RAID Level</dt>
-              <dd id="raid-level">--</dd>
-            </div>
-            <div class="detail-item">
-              <dt>Array Size</dt>
-              <dd id="raid-array-size">--</dd>
-            </div>
-            <div class="detail-item">
-              <dt>Devices Summary</dt>
-              <dd id="raid-devices-summary">--</dd>
-            </div>
-            <div class="detail-item">
-              <dt>Storage Info (duf)</dt>
-              <dd id="raid-storage-info">--</dd>
-            </div>
-            <div class="detail-item">
-              <dt>Check Status</dt>
-              <dd id="raid-check-status">--</dd>
-            </div>
-            <div class="detail-item">
-              <dt>Full State</dt>
-              <dd id="raid-full-state">--</dd>
-            </div>
-            <div class="detail-item">
-              <dt>Persistence</dt>
-              <dd id="raid-persistence">--</dd>
-            </div>
-            <div class="detail-item">
-              <dt>UUID</dt>
-              <dd id="raid-uuid" class="mono-text">--</dd>
-            </div>
-            <div class="detail-item">
-              <dt>Update Time</dt>
-              <dd id="raid-update-time">--</dd>
-            </div>
-            <div class="detail-item">
-              <dt>Layout / Chunk</dt>
-              <dd id="raid-layout-chunk">--</dd>
-            </div>
-            <div class="detail-item">
-              <dt>Consistency / Events</dt>
-              <dd id="raid-consistency-events">--</dd>
-            </div>
-          </dl>
-        </article>
-
-        <!-- Active Disks Card -->
-        <article class="card active-disks-card">
-          <div class="card-header">
-            <div>
-              <h3 class="card-title">Active Disks</h3>
-              <p class="card-subtitle">Member block devices in the array</p>
-            </div>
-            <span id="disks-count-badge" class="pill-counter">0 disks</span>
-          </div>
-
-          <div class="table-container">
-            <table class="data-table" id="active-disks-table">
-              <thead>
-                <tr>
-                  <th>Device</th>
-                  <th>Path</th>
-                  <th>State</th>
-                </tr>
-              </thead>
-              <tbody id="active-disks-tbody">
-                <tr>
-                  <td colspan="3" class="empty-state">Loading disk devices...</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </article>
-      </div>
-    </section>
-    </div>
-
-    <!-- View Panel: Notifications (#view-notifications) -->
-    <div id="view-notifications" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-notifications">
-      <!-- 4. Notifications & History Section -->
-      <section class="section-block" aria-labelledby="notifications-heading">
-        <div class="section-header">
-          <h2 id="notifications-heading" class="section-title">Notifications</h2>
-          <div class="module-toolbar">
-            <select id="notifications-interval-select" class="module-interval-select" aria-label="Notifications refresh rate">
-              <option value="15">15s</option>
-              <option value="30">30s</option>
-              <option value="60">60s</option>
-              <option value="300">5m</option>
-              <option value="0">Paused</option>
-            </select>
-            <span id="notifications-last-updated" class="module-last-updated">--</span>
-            <button id="refresh-notifications-btn" class="btn-module-refresh" type="button" aria-label="Refresh Notifications" title="Refresh Notifications">
-              <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="23 4 23 10 17 10"></polyline>
-                <polyline points="1 20 1 14 7 14"></polyline>
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-              </svg>
-            </button>
-          </div>
-        </div>
-        <div class="notifications-grid">
-          <!-- Discord Configuration & Setup Card -->
-          <article class="card discord-setup-card">
-            <div class="card-header">
-              <div>
-                <h3 class="card-title">Discord Configuration &amp; Setup</h3>
-                <p class="card-subtitle">Manage webhook / bot credentials and test notification delivery</p>
-              </div>
-              <span id="discord-status-badge" class="status-badge status-unknown">UNKNOWN</span>
-            </div>
-
-            <div class="card-body">
-              <form id="discord-config-form" class="discord-config-form" onsubmit="return false;">
-                <div class="form-group toggle-group">
-                  <div class="toggle-container">
-                    <label class="toggle-switch" for="discord-enabled-toggle">
-                      <input
-                        type="checkbox"
-                        id="discord-enabled-toggle"
-                        name="discord_enabled"
-                        class="toggle-input"
-                      />
-                      <span class="toggle-slider"></span>
-                    </label>
-                    <div class="toggle-label-group">
-                      <label for="discord-enabled-toggle" class="toggle-label">Enable Discord Notifications</label>
-                      <small class="form-hint">Master switch to enable or pause Discord alerting and weekly summaries.</small>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="form-group">
-                  <label for="discord-token-input">
-                    Discord Bot Token
-                    <span id="discord-token-status" class="token-status-badge">Not configured</span>
-                  </label>
-                  <input
-                    id="discord-token-input"
-                    name="discord_token"
-                    type="password"
-                    autocomplete="off"
-                    placeholder="Leave blank to keep existing token"
-                  />
-                  <small class="form-hint">Only overwritten if you enter a new token above.</small>
-                </div>
-
-                <div class="form-group">
-                  <label for="discord-channel-input">Discord Channel ID</label>
-                  <input
-                    id="discord-channel-input"
-                    name="channel_id"
-                    type="text"
-                    placeholder="e.g. 123456789012345678"
-                  />
-                  <small class="form-hint">Target Discord text channel ID where alerts are delivered.</small>
-                </div>
-
-                <div class="discord-actions-row">
-                  <button id="save-discord-btn" class="btn-primary" type="button">
-                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
-                      <polyline points="17 21 17 13 7 13 7 21"></polyline>
-                      <polyline points="7 3 7 8 15 8"></polyline>
-                    </svg>
-                    <span>Save Discord Settings</span>
-                  </button>
-                  <button id="send-test-notification-btn" class="btn-secondary" type="button">
-                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <line x1="22" y1="2" x2="11" y2="13"></line>
-                      <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                    </svg>
-                    <span>Send Test Notification</span>
-                  </button>
-                </div>
-
-                <div id="discord-feedback" class="auth-alert hidden" role="status"></div>
-              </form>
-            </div>
-          </article>
-
-          <!-- Weekly Notification State Card -->
-          <article class="card weekly-state-card">
-            <div class="card-header">
-              <div>
-                <h3 class="card-title">Weekly Notification State</h3>
-                <p class="card-subtitle">Scheduled summary throttling status</p>
-              </div>
-              <span id="weekly-state-badge" class="status-badge status-unknown">--</span>
-            </div>
-
-            <div id="weekly-state-content" class="weekly-state-body">
-              <dl class="details-list single-col">
-                <div class="detail-item">
-                  <dt>Last Summary Sent</dt>
-                  <dd id="weekly-sent-at">--</dd>
-                </div>
-                <div class="detail-item">
-                  <dt>Next Summary Due</dt>
-                  <dd id="weekly-due-at">--</dd>
-                </div>
-                <div class="detail-item">
-                  <dt>Last Recorded Status</dt>
-                  <dd id="weekly-last-status">--</dd>
-                </div>
-                <div class="detail-item">
-                  <dt>Schedule Countdown</dt>
-                  <dd id="weekly-countdown">--</dd>
-                </div>
-              </dl>
-            </div>
-          </article>
-
-          <!-- Notification History Card -->
-          <article class="card history-card">
-            <div class="card-header">
-              <div>
-                <h3 class="card-title">Notification History</h3>
-                <p class="card-subtitle">Recent alerts &amp; weekly summaries sent to Discord</p>
-              </div>
-              <span id="history-count-badge" class="pill-counter">0 records</span>
-            </div>
-
-            <div class="table-container">
-              <table class="data-table" id="notification-history-table">
-                <thead>
-                  <tr>
-                    <th>Timestamp</th>
-                    <th>Type</th>
-                    <th>RAID Status</th>
-                  </tr>
-                </thead>
-                <tbody id="notification-history-tbody">
-                  <tr>
-                    <td colspan="3" class="empty-state">Loading notification history...</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </article>
-        </div>
-      </section>
-    </div>
-
-    <!-- View Panel: Containers & Stacks (#view-containers) -->
-    <div id="view-containers" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-containers">
-      <!-- Docker Not Installed Banner -->
-      <div id="docker-install-banner" class="docker-alert-banner hidden" role="region" aria-label="Docker installation required">
-        <div class="docker-banner-icon">
-          <svg viewBox="0 0 24 24" width="26" height="26" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="8" x2="12" y2="12"></line>
-            <line x1="12" y1="16" x2="12.01" y2="16"></line>
-          </svg>
-        </div>
-        <div class="docker-banner-content">
-          <h3 class="docker-banner-title">Docker is not installed on this host</h3>
-          <p class="docker-banner-text">Install Docker Engine &amp; Docker Compose with one click to enable Container and Stack management.</p>
-          <div id="docker-install-feedback" class="auth-alert hidden" role="status"></div>
-        </div>
-        <div class="docker-banner-actions">
-          <button id="btn-install-docker" type="button" class="btn-primary btn-install">
-            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="7 10 12 15 17 10"></polyline>
-              <line x1="12" y1="15" x2="12" y2="3"></line>
-            </svg>
-            <span>Install Docker</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Docker Stopped Banner -->
-      <div id="docker-stopped-banner" class="docker-alert-banner docker-warning hidden" role="region" aria-label="Docker daemon inactive">
-        <div class="docker-banner-icon">
-          <svg viewBox="0 0 24 24" width="26" height="26" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-            <line x1="12" y1="9" x2="12" y2="13"></line>
-            <line x1="12" y1="17" x2="12.01" y2="17"></line>
-          </svg>
-        </div>
-        <div class="docker-banner-content">
-          <h3 class="docker-banner-title">Docker Daemon is Stopped</h3>
-          <p class="docker-banner-text">The Docker daemon is installed but not running. Start the service (<code>systemctl start docker</code>) to view containers and deploy stacks.</p>
-        </div>
-      </div>
-
-      <!-- Docker Overview & Quick Stats Bar -->
-      <section class="section-block" aria-labelledby="docker-overview-heading">
-        <div class="section-header">
-          <div class="header-with-status">
-            <h2 id="docker-overview-heading" class="section-title">Container Management</h2>
-            <span id="docker-daemon-badge" class="status-badge status-unknown">UNKNOWN</span>
-          </div>
-          <div class="module-toolbar">
-            <span class="module-status-dot" id="docker-status-dot" title="Live stream active"></span>
-            <span class="docker-version-info" id="docker-version-info">Docker: -- | Compose: --</span>
-            <select id="docker-interval-select" class="module-interval-select" aria-label="Containers refresh rate" title="Containers refresh rate">
-              <option value="1">1s (Live)</option>
-              <option value="2">2s</option>
-              <option value="5" selected>5s</option>
-              <option value="10">10s</option>
-              <option value="0">Paused</option>
-            </select>
-            <span id="docker-last-updated" class="module-last-updated">--</span>
-            <button id="refresh-docker-btn" class="btn-module-refresh" type="button" aria-label="Refresh Docker Resources" title="Refresh Docker Resources">
-              <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="23 4 23 10 17 10"></polyline>
-                <polyline points="1 20 1 14 7 14"></polyline>
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <!-- Quick Stats Cards -->
-        <div class="docker-stats-grid">
-          <article class="card docker-stat-card" data-subtab="stacks" role="button" tabindex="0" title="View Stacks">
-            <div class="docker-stat-header">
-              <span class="docker-stat-title">Stacks</span>
-              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
-                <polyline points="2 17 12 22 22 17"></polyline>
-                <polyline points="2 12 12 17 22 12"></polyline>
-              </svg>
-            </div>
-            <div class="docker-stat-value" id="docker-stat-stacks">0</div>
-            <div class="docker-stat-subtext">Compose projects</div>
-          </article>
-
-          <article class="card docker-stat-card" data-subtab="containers" role="button" tabindex="0" title="View Containers">
-            <div class="docker-stat-header">
-              <span class="docker-stat-title">Containers</span>
-              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
-                <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
-              </svg>
-            </div>
-            <div class="docker-stat-value" id="docker-stat-containers">0</div>
-            <div class="docker-stat-subtext" id="docker-stat-containers-detail"><span id="docker-stat-running">0</span> running, <span id="docker-stat-stopped">0</span> stopped</div>
-          </article>
-
-          <article class="card docker-stat-card" data-subtab="images" role="button" tabindex="0" title="View Images">
-            <div class="docker-stat-header">
-              <span class="docker-stat-title">Images</span>
-              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                <polyline points="21 15 16 10 5 21"></polyline>
-              </svg>
-            </div>
-            <div class="docker-stat-value" id="docker-stat-images">0</div>
-            <div class="docker-stat-subtext">Locally cached images</div>
-          </article>
-
-          <article class="card docker-stat-card" data-subtab="volumes" role="button" tabindex="0" title="View Volumes">
-            <div class="docker-stat-header">
-              <span class="docker-stat-title">Volumes</span>
-              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M22 12H2"></path>
-                <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>
-                <line x1="6" y1="16" x2="6.01" y2="16"></line>
-                <line x1="10" y1="16" x2="10.01" y2="16"></line>
-              </svg>
-            </div>
-            <div class="docker-stat-value" id="docker-stat-volumes">0</div>
-            <div class="docker-stat-subtext">Named storage volumes</div>
-          </article>
-
-          <article class="card docker-stat-card" data-subtab="networks" role="button" tabindex="0" title="View Networks">
-            <div class="docker-stat-header">
-              <span class="docker-stat-title">Networks</span>
-              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="2"></circle>
-                <path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"></path>
-              </svg>
-            </div>
-            <div class="docker-stat-value" id="docker-stat-networks">0</div>
-            <div class="docker-stat-subtext">Bridge &amp; custom networks</div>
-          </article>
-        </div>
-      </section>
-
-      <!-- Sub-tabs Navigation -->
-      <nav class="subnav-tabs" aria-label="Docker Resource Tabs">
-        <button id="subtab-docker-stacks" class="subnav-tab active" type="button" role="tab" aria-selected="true" aria-controls="subview-docker-stacks">
-          <span>Stacks</span>
-          <span class="subnav-badge subtab-badge" id="subtab-badge-stacks">0</span>
-        </button>
-        <button id="subtab-docker-containers" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-containers">
-          <span>Containers</span>
-          <span class="subnav-badge subtab-badge" id="subtab-badge-containers">0</span>
-        </button>
-        <button id="subtab-docker-images" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-images">
-          <span>Images</span>
-          <span class="subnav-badge subtab-badge" id="subtab-badge-images">0</span>
-        </button>
-        <button id="subtab-docker-volumes" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-volumes">
-          <span>Volumes</span>
-          <span class="subnav-badge subtab-badge" id="subtab-badge-volumes">0</span>
-        </button>
-        <button id="subtab-docker-networks" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-networks">
-          <span>Networks</span>
-          <span class="subnav-badge subtab-badge" id="subtab-badge-networks">0</span>
-        </button>
-        <button id="subtab-docker-updates" class="subnav-tab" type="button" role="tab" aria-selected="false" aria-controls="subview-docker-updates">
-          <span>Updates</span>
-          <span class="subnav-badge subtab-badge subnav-badge-warn hidden" id="subtab-badge-updates">0</span>
-        </button>
-      </nav>
-
-      <!-- Subview: Stacks -->
-      <div id="subview-docker-stacks" class="subview-panel" role="tabpanel" aria-labelledby="subtab-docker-stacks">
-        <div class="subview-toolbar">
-          <div class="subview-title-group">
-            <h3 class="subview-title">Docker Compose Stacks</h3>
-            <span class="subview-subtitle">Deploy and orchestrate multi-container services</span>
-          </div>
-          <div class="subview-actions">
-            <button id="btn-new-stack" type="button" class="btn-primary">
-              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
-              <span>Deploy New Stack</span>
-            </button>
-          </div>
-        </div>
-        <div class="table-container">
-          <table class="data-table" id="docker-stacks-table">
-            <thead>
-              <tr>
-                <th>Stack Name</th>
-                <th>Status</th>
-                <th>Containers</th>
-                <th>Type</th>
-                <th class="actions-col">Actions</th>
-              </tr>
-            </thead>
-            <tbody id="docker-stacks-tbody">
-              <tr>
-                <td colspan="5" class="empty-state">No Compose stacks configured yet. Click 'Deploy New Stack' to add one.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Subview: Containers -->
-      <div id="subview-docker-containers" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-containers">
-        <div class="subview-toolbar">
-          <div class="subview-title-group">
-            <h3 class="subview-title">Containers</h3>
-            <span class="subview-subtitle">Active and stopped container runtime instances</span>
-          </div>
-          <div class="subview-actions">
-            <input
-              id="containers-search-input"
-              type="text"
-              class="search-input"
-              placeholder="Search containers..."
-            />
-            <select id="containers-filter-stack" class="module-interval-select" aria-label="Filter containers by stack">
-              <option value="all">All Stacks</option>
-              <option value="standalone">Standalone (No Stack)</option>
-            </select>
-            <select id="containers-filter-status" class="module-interval-select" aria-label="Filter containers by status">
-              <option value="all">All Containers</option>
-              <option value="running">Running Only</option>
-              <option value="stopped">Stopped Only</option>
-            </select>
-          </div>
-        </div>
-        <div class="table-container">
-          <table class="data-table" id="docker-containers-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>ID</th>
-                <th>Image</th>
-                <th>State</th>
-                <th>Ports</th>
-                <th>Stack</th>
-                <th class="actions-col">Actions</th>
-              </tr>
-            </thead>
-            <tbody id="docker-containers-tbody">
-              <tr>
-                <td colspan="7" class="empty-state">No containers found.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Subview: Images -->
-      <div id="subview-docker-images" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-images">
-        <div class="subview-toolbar">
-          <div class="subview-title-group">
-            <h3 class="subview-title">Container Images</h3>
-            <span class="subview-subtitle">Cached registry images on this host</span>
-          </div>
-          <div class="subview-actions image-pull-actions">
-            <div class="pull-input-group">
-              <input
-                id="docker-image-pull-input"
-                type="text"
-                class="search-input"
-                placeholder="Image (e.g. nginx:alpine)"
-              />
-              <button id="btn-pull-image" type="button" class="btn-primary">
-                Pull Image
-              </button>
-            </div>
-            <button id="btn-prune-images" type="button" class="btn-secondary" title="Remove all unused and dangling images">
-              Prune Unused
-            </button>
-          </div>
-        </div>
-        <div id="docker-image-feedback" class="auth-alert hidden" role="status"></div>
-        <div class="table-container">
-          <table class="data-table" id="docker-images-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Repository</th>
-                <th>Tag</th>
-                <th>Size</th>
-                <th>Created</th>
-                <th class="actions-col">Actions</th>
-              </tr>
-            </thead>
-            <tbody id="docker-images-tbody">
-              <tr>
-                <td colspan="6" class="empty-state">No images found.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Subview: Volumes -->
-      <div id="subview-docker-volumes" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-volumes">
-        <div class="subview-toolbar">
-          <div class="subview-title-group">
-            <h3 class="subview-title">Persistent Volumes</h3>
-            <span class="subview-subtitle">Docker volume storage mounts</span>
-          </div>
-        </div>
-        <div id="docker-volume-feedback" class="auth-alert hidden" role="status"></div>
-        <div class="table-container">
-          <table class="data-table" id="docker-volumes-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Driver</th>
-                <th>Scope</th>
-                <th>Size</th>
-                <th>Mountpoint / In-Use Containers</th>
-                <th>Created</th>
-                <th class="actions-col">Actions</th>
-              </tr>
-            </thead>
-            <tbody id="docker-volumes-tbody">
-              <tr>
-                <td colspan="7" class="empty-state">No volumes found.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Subview: Networks -->
-      <div id="subview-docker-networks" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-networks">
-        <div class="subview-toolbar">
-          <div class="subview-title-group">
-            <h3 class="subview-title">Networks</h3>
-            <span class="subview-subtitle">Bridge, host, and overlay container networks</span>
-          </div>
-        </div>
-        <div id="docker-network-feedback" class="auth-alert hidden" role="status"></div>
-        <div class="table-container">
-          <table class="data-table" id="docker-networks-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Name</th>
-                <th>Driver</th>
-                <th>Scope</th>
-                <th>Internal</th>
-                <th class="actions-col">Actions</th>
-              </tr>
-            </thead>
-            <tbody id="docker-networks-tbody">
-              <tr>
-                <td colspan="6" class="empty-state">No networks found.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Subview: Updates -->
-      <div id="subview-docker-updates" class="subview-panel hidden" role="tabpanel" aria-labelledby="subtab-docker-updates">
-        <div class="subview-toolbar">
-          <div class="subview-title-group">
-            <h3 class="subview-title">Image Updates &amp; Automation</h3>
-            <span class="subview-subtitle">Scan running containers for newer remote registry tags</span>
-          </div>
-          <div class="subview-actions">
-            <div class="config-freq-group">
-              <label for="docker-auto-update-freq" class="logs-label">Auto-Check:</label>
-              <select id="docker-auto-update-freq" class="module-interval-select">
-                <option value="disabled">Disabled</option>
-                <option value="hourly">Hourly</option>
-                <option value="daily">Daily</option>
-              </select>
-              <button id="btn-save-update-freq" type="button" class="btn-secondary btn-sm">Save</button>
-            </div>
-            <button id="btn-check-docker-updates" type="button" class="btn-secondary">
-              Check Now
-            </button>
-            <button id="btn-apply-all-updates" type="button" class="btn-primary" disabled title="No updates available to pull">
-              Apply All Updates
-            </button>
-          </div>
-        </div>
-        <div id="docker-updates-feedback" class="auth-alert hidden" role="status"></div>
-
-        <!-- Automated Update Schedule Configuration Card -->
-        <article class="card update-schedule-card" style="margin-bottom: 20px;">
-          <div class="card-header">
-            <div>
-              <h3 class="card-title">Automated Update Schedule</h3>
-              <p class="card-subtitle">Configure automated image pull &amp; container redeployment routine</p>
-            </div>
-            <span id="update-schedule-badge" class="status-badge status-disabled">DISABLED</span>
-          </div>
-
-          <form id="update-schedule-form" class="schedule-form" onsubmit="return false;">
-            <div class="schedule-grid">
-              <div class="form-group toggle-group">
-                <div class="toggle-container">
-                  <label class="toggle-switch" for="schedule-enabled-toggle">
-                    <input
-                      type="checkbox"
-                      id="schedule-enabled-toggle"
-                      name="schedule_enabled"
-                      class="toggle-input"
-                    />
-                    <span class="toggle-slider"></span>
-                  </label>
-                  <div class="toggle-label-group">
-                    <label for="schedule-enabled-toggle" class="toggle-label">Enable Automated Updates</label>
-                    <small class="form-hint">Automatically scan, pull new images, and restart containers on schedule.</small>
-                  </div>
-                </div>
-              </div>
-
-              <div class="form-group">
-                <label for="schedule-day-select">Day of Week</label>
-                <select id="schedule-day-select" name="schedule_day" class="module-interval-select schedule-select">
-                  <option value="daily">Every Day / Daily</option>
-                  <option value="sunday">Sunday</option>
-                  <option value="monday">Monday</option>
-                  <option value="tuesday">Tuesday</option>
-                  <option value="wednesday">Wednesday</option>
-                  <option value="thursday">Thursday</option>
-                  <option value="friday">Friday</option>
-                  <option value="saturday">Saturday</option>
-                </select>
-                <small class="form-hint">When the scheduled update executes.</small>
-              </div>
-
-              <div class="form-group">
-                <label for="schedule-time-input">Execution Time (HH:MM)</label>
-                <input
-                  type="time"
-                  id="schedule-time-input"
-                  name="schedule_time"
-                  class="search-input"
-                  value="03:00"
-                />
-                <small class="form-hint" id="schedule-time-hint">24-hour time in dashboard timezone.</small>
-              </div>
-            </div>
-
-            <div class="schedule-actions-row">
-              <button id="btn-save-schedule" type="button" class="btn-primary">
-                Save Schedule
-              </button>
-              <span id="schedule-next-run" class="schedule-next-run">Next run: --</span>
-            </div>
-
-            <div id="schedule-feedback" class="auth-alert hidden" role="status"></div>
-          </form>
-        </article>
-        <div class="table-container">
-          <table class="data-table" id="docker-updates-table">
-            <thead>
-              <tr>
-                <th>Target Container</th>
-                <th>Image</th>
-                <th>Stack</th>
-                <th>Current Digest/ID</th>
-                <th>Latest Digest/ID</th>
-                <th>Status</th>
-                <th class="actions-col">Action</th>
-              </tr>
-            </thead>
-            <tbody id="docker-updates-tbody">
-              <tr>
-                <td colspan="7" class="empty-state">Click 'Check Now' to scan running containers for upstream updates.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
       </div>
     </div>
   </div>
