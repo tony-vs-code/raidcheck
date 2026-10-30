@@ -1599,6 +1599,7 @@ function onAuthenticatedSuccess(username) {
   connectWebSocket();
   fetchDiscordSettings();
   checkForUpdates({ silent: true });
+  fetchDockerUpdatesConfig();
 }
 
 async function handleUnauthorized() {
@@ -2693,6 +2694,7 @@ function refreshDockerSubtab(subtabName) {
       fetchDockerNetworks();
       break;
     case "updates":
+      fetchDockerUpdatesConfig();
       fetchDockerUpdates();
       break;
   }
@@ -3926,6 +3928,22 @@ async function handleRemoveNetwork(networkId, networkName) {
 /**
  * Updates Tab: Fetch, Config, Apply.
  */
+async function fetchDockerUpdatesConfig() {
+  const freqSelect = document.getElementById("docker-auto-update-freq");
+  if (!freqSelect) return;
+
+  try {
+    const resp = await apiFetch("/api/docker/updates/config");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data && data.frequency) {
+      freqSelect.value = data.frequency;
+    }
+  } catch (err) {
+    console.debug("Failed to fetch Docker updates config:", err);
+  }
+}
+
 async function fetchDockerUpdates() {
   const tbody = document.getElementById("docker-updates-tbody");
   if (!tbody) return;
@@ -3956,6 +3974,17 @@ async function fetchDockerUpdates() {
       }
     }
 
+    const applyAllBtn = document.getElementById("btn-apply-all-updates");
+    if (applyAllBtn) {
+      if (updatesAvailableCount === 0) {
+        applyAllBtn.disabled = true;
+        applyAllBtn.title = "No updates available to pull";
+      } else {
+        applyAllBtn.disabled = false;
+        applyAllBtn.title = "Apply updates for all containers";
+      }
+    }
+
     if (updates.length === 0) {
       tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No running containers detected to scan for updates.</td></tr>`;
       return;
@@ -3972,6 +4001,10 @@ async function fetchDockerUpdates() {
         ? `<span class="status-badge status-degraded"><span class="status-dot"></span>Update Available</span>`
         : `<span class="status-badge status-clean"><span class="status-dot"></span>Up to date</span>`;
 
+      const actionHtml = u.update_available
+        ? `<button type="button" class="btn-action btn-action-success" data-update-cid="${escapeHtml(u.container_id)}" data-update-stack="${escapeHtml(u.stack || '')}">Update</button>`
+        : `<span style="color: var(--text-muted); font-size: 0.8rem;">Current</span>`;
+
       return `<tr>
         <td><strong>${safeName}</strong></td>
         <td><span class="mono-text" style="color: var(--accent-primary);">${safeImg}</span></td>
@@ -3980,7 +4013,7 @@ async function fetchDockerUpdates() {
         <td><span class="mono-text">${safeLat}</span></td>
         <td>${badgeHtml}</td>
         <td class="actions-col">
-          <button type="button" class="btn-action ${u.update_available ? 'btn-action-success' : ''}" data-update-cid="${escapeHtml(u.container_id)}" data-update-stack="${escapeHtml(u.stack || '')}">Update</button>
+          ${actionHtml}
         </td>
       </tr>`;
     }).join("");
@@ -4013,12 +4046,28 @@ async function handleSaveUpdateFrequency() {
     if (resp.ok) {
       if (feedback) {
         feedback.className = "auth-alert feedback-success";
-        feedback.textContent = `Auto-update policy updated to '${freq}'.`;
+        feedback.textContent = `Auto-check set to ${freq}.`;
+        feedback.classList.remove("hidden");
+        setTimeout(() => {
+          feedback.classList.add("hidden");
+        }, 3500);
+      }
+    } else {
+      const errData = await resp.json().catch(() => ({}));
+      if (feedback) {
+        feedback.className = "auth-alert feedback-error";
+        feedback.textContent = `Failed to save auto-check frequency: ${errData.detail || resp.statusText}`;
         feedback.classList.remove("hidden");
       }
     }
   } catch (err) {
-    alert(`Error: ${err.message}`);
+    if (feedback) {
+      feedback.className = "auth-alert feedback-error";
+      feedback.textContent = `Error: ${err.message}`;
+      feedback.classList.remove("hidden");
+    } else {
+      alert(`Error: ${err.message}`);
+    }
   }
 }
 
@@ -4312,6 +4361,10 @@ function initDashboard() {
     ?.addEventListener("click", handlePruneImages);
 
   // Updates & Schedule
+  document
+    .getElementById("docker-auto-update-freq")
+    ?.addEventListener("change", handleSaveUpdateFrequency);
+
   document
     .getElementById("btn-save-update-freq")
     ?.addEventListener("click", handleSaveUpdateFrequency);

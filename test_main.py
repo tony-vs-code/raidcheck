@@ -2281,6 +2281,7 @@ class TestDockerBackend(unittest.TestCase):
             ("DELETE", "/api/docker/networks/net123"),
             ("GET", "/api/docker/updates"),
             ("POST", "/api/docker/updates/apply"),
+            ("GET", "/api/docker/updates/config"),
             ("POST", "/api/docker/updates/config"),
             ("GET", "/api/docker/updates/schedule"),
             ("POST", "/api/docker/updates/schedule"),
@@ -2583,6 +2584,14 @@ class TestDockerBackend(unittest.TestCase):
             self.assertEqual(apply_resp.status_code, 200)
             self.assertTrue(apply_resp.json()["success"])
 
+            # Get auto updates config before setting
+            get_cfg_init = asgi_get(
+                api.app,
+                "/api/docker/updates/config",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(get_cfg_init.status_code, 200)
+
             # Configure auto updates
             cfg_resp = asgi_post(
                 api.app,
@@ -2595,6 +2604,67 @@ class TestDockerBackend(unittest.TestCase):
             self.assertEqual(
                 main.get_app_settings().get("docker_auto_update_frequency"), "hourly"
             )
+
+            # Verify GET returns the newly updated frequency
+            get_cfg_after = asgi_get(
+                api.app,
+                "/api/docker/updates/config",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(get_cfg_after.status_code, 200)
+            self.assertEqual(get_cfg_after.json()["frequency"], "hourly")
+
+    def test_docker_auto_update_config_persistence_and_api(self):
+        # 1. Ensure initial config returns a valid dict with frequency
+        resp = asgi_get(
+            api.app,
+            "/api/docker/updates/config",
+            cookies=self.auth_cookies,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("frequency", resp.json())
+
+        # 2. Update to "daily" and verify persistence in SQLite and GET endpoint
+        post_daily = asgi_post(
+            api.app,
+            "/api/docker/updates/config",
+            cookies=self.auth_cookies,
+            json_body={"frequency": "daily"},
+        )
+        self.assertEqual(post_daily.status_code, 200)
+        self.assertEqual(post_daily.json(), {"frequency": "daily"})
+        self.assertEqual(
+            main.get_app_settings().get("docker_auto_update_frequency"), "daily"
+        )
+
+        get_daily = asgi_get(
+            api.app,
+            "/api/docker/updates/config",
+            cookies=self.auth_cookies,
+        )
+        self.assertEqual(get_daily.status_code, 200)
+        self.assertEqual(get_daily.json(), {"frequency": "daily"})
+
+        # 3. Update to "disabled" and verify persistence
+        post_dis = asgi_post(
+            api.app,
+            "/api/docker/updates/config",
+            cookies=self.auth_cookies,
+            json_body={"frequency": "disabled"},
+        )
+        self.assertEqual(post_dis.status_code, 200)
+        self.assertEqual(post_dis.json(), {"frequency": "disabled"})
+        self.assertEqual(
+            main.get_app_settings().get("docker_auto_update_frequency"), "disabled"
+        )
+
+        get_dis = asgi_get(
+            api.app,
+            "/api/docker/updates/config",
+            cookies=self.auth_cookies,
+        )
+        self.assertEqual(get_dis.status_code, 200)
+        self.assertEqual(get_dis.json(), {"frequency": "disabled"})
 
     def test_docker_error_handling_and_validation(self):
         # 1. Invalid stack action

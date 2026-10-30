@@ -1153,6 +1153,13 @@ async def api_docker_updates_apply(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.get("/api/docker/updates/config")
+def api_docker_get_updates_config(
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    return main.docker_manager.get_auto_update_config()
+
+
 @app.post("/api/docker/updates/config")
 def api_docker_updates_config(
     payload: UpdatesConfigRequest,
