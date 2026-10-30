@@ -2236,6 +2236,19 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn("chore(release): bump version", workflow_content)
         self.assertIn("gh release create", workflow_content)
         self.assertIn("dist/*", workflow_content)
+        self.assertIn(".github/scripts/release_helper.py", workflow_content)
+
+        # Verify release_helper.py script functionality
+        release_helper_script = repo_root / ".github" / "scripts" / "release_helper.py"
+        self.assertTrue(release_helper_script.is_file())
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("release_helper", str(release_helper_script))
+        self.assertIsNotNone(spec)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertTrue(bool(mod.get_current_version()))
+        self.assertEqual(mod.calculate_next_patch("0.9.1"), "0.9.2")
+        self.assertEqual(mod.calculate_next_patch("v1.2.3"), "1.2.4")
 
         self.assertTrue(raidcheck_service.is_file())
         raidcheck_content = raidcheck_service.read_text(encoding="utf-8")

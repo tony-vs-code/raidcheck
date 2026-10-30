@@ -62,14 +62,7 @@ jobs:
 
           git fetch origin --tags --force
 
-          # Determine current version in pyproject.toml
-          CURRENT_VER=$(python3 -c '
-          import re, pathlib
-          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
-          m = re.search(r"^version\s*=\s*\"([^\"]+)\"", text, re.MULTILINE)
-          print(m.group(1) if m else "0.1.0")
-          ')
-
+          CURRENT_VER=$(python3 .github/scripts/release_helper.py get-version)
           TAG="v${CURRENT_VER}"
           echo "Detected version in pyproject.toml: ${CURRENT_VER} (tag: ${TAG})"
 
@@ -81,30 +74,9 @@ jobs:
           fi
 
           if [ "$TAG_EXISTS" -eq 1 ]; then
-            # Auto-calculate next patch version
-            NEW_VER=$(python3 -c '
-            import sys
-            cur = sys.argv[1].lstrip("v")
-            parts = cur.split(".")
-            if len(parts) == 3 and parts[2].isdigit():
-                parts[2] = str(int(parts[2]) + 1)
-                print(".".join(parts))
-            else:
-                print(f"{cur}.1")
-            ' "$CURRENT_VER")
-
+            NEW_VER=$(python3 .github/scripts/release_helper.py bump-patch "$CURRENT_VER")
             TAG="v${NEW_VER}"
             echo "Auto-bumped version to: ${NEW_VER} (tag: ${TAG})"
-
-            # Update pyproject.toml
-            python3 -c '
-            import re, pathlib, sys
-            new_v = sys.argv[1]
-            p = pathlib.Path("pyproject.toml")
-            content = p.read_text(encoding="utf-8")
-            updated = re.sub(r"^version\s*=\s*\"[^\"]+\"", f"version = \"{new_v}\"", content, count=1, flags=re.MULTILINE)
-            p.write_text(updated, encoding="utf-8")
-            ' "$NEW_VER"
 
             # Commit version bump to main with [skip ci]
             git config user.name "github-actions[bot]"
