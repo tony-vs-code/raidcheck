@@ -100,21 +100,105 @@ async function apiFetch(url, options = {}) {
 }
 
 /**
- * Format raw byte count into human-readable GiB/MiB/TiB string.
+ * Format raw byte count into human-readable GB/TB string.
+ * Supports numbers or pre-formatted strings gracefully.
  */
 function formatBytes(bytes) {
+  if (typeof bytes === "string" && isNaN(Number(bytes)) && bytes.trim().length > 0) {
+    return bytes.trim();
+  }
   const num = Number(bytes);
   if (!Number.isFinite(num) || num < 0) {
     return "--";
   }
   if (num === 0) return "0 B";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
   const i = Math.min(
     Math.floor(Math.log(num) / Math.log(1024)),
     units.length - 1
   );
   const value = num / Math.pow(1024, i);
   return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${units[i]}`;
+}
+
+/**
+ * Generate ASCII progress bar e.g. [======>     ] for RAID rebuild/sync.
+ */
+function generateAsciiProgressBar(percent, innerLength = 12) {
+  const p = Math.max(0, Math.min(100, Number(percent) || 0));
+  if (p >= 100) {
+    return `[${"=".repeat(innerLength)}]`;
+  }
+  const equalsCount = Math.min(
+    innerLength - 1,
+    Math.max(0, Math.round((p / 100) * (innerLength - 1)))
+  );
+  const equals = "=".repeat(equalsCount);
+  const spaces = " ".repeat(Math.max(0, innerLength - 1 - equalsCount));
+  return `[${equals}>${spaces}]`;
+}
+
+/**
+ * Extract active RAID sync/rebuild info from sysfs attributes or status.
+ */
+function getRaidSyncInfo(raid) {
+  if (!raid || typeof raid !== "object") return null;
+
+  const rawAction = String(raid.sync_action || "").trim().toLowerCase();
+  const statusStr = String(raid.status || "").trim().toLowerCase();
+  const checkStatus = String(raid.check_status || "").trim().toLowerCase();
+
+  const isSyncing =
+    ["resync", "recover", "recovering", "check", "checking", "repair", "syncing"].includes(rawAction) ||
+    ["recovering", "resyncing"].includes(statusStr) ||
+    checkStatus.includes("sync") ||
+    checkStatus.includes("recover") ||
+    checkStatus.includes("check");
+
+  let percent = null;
+  if (raid.sync_percent !== undefined && raid.sync_percent !== null && raid.sync_percent !== "") {
+    const p = parseFloat(String(raid.sync_percent).replace("%", ""));
+    if (Number.isFinite(p)) percent = Math.max(0, Math.min(100, p));
+  } else if (raid.sync_completed !== undefined && raid.sync_completed !== null) {
+    if (typeof raid.sync_completed === "string" && raid.sync_completed.includes("/")) {
+      const parts = raid.sync_completed.split("/").map((s) => parseFloat(s.trim()));
+      if (parts.length === 2 && parts[1] > 0) {
+        percent = Math.max(0, Math.min(100, (parts[0] / parts[1]) * 100));
+      }
+    } else if (Number.isFinite(Number(raid.sync_completed))) {
+      percent = parseFloat(raid.sync_completed);
+    }
+  }
+
+  if (percent === null) {
+    const combined = `${checkStatus} ${statusStr} ${String(raid.full_state || "")}`;
+    const match = combined.match(/(\d+(?:\.\d+)?)%/);
+    if (match) {
+      percent = parseFloat(match[1]);
+    }
+  }
+
+  if (!isSyncing && (percent === null || percent <= 0)) {
+    return null;
+  }
+
+  let actionName = "Resyncing";
+  if (rawAction.includes("recover") || statusStr.includes("recover") || checkStatus.includes("recover")) {
+    actionName = "Recovering";
+  } else if (rawAction.includes("check") || statusStr.includes("check") || checkStatus.includes("check")) {
+    actionName = "Checking";
+  } else if (rawAction.includes("repair") || checkStatus.includes("repair")) {
+    actionName = "Repairing";
+  } else if (rawAction.includes("sync") || statusStr.includes("sync") || checkStatus.includes("sync")) {
+    actionName = "Resyncing";
+  }
+
+  return {
+    action: actionName,
+    percent: percent !== null ? percent : 0,
+    speed: raid.sync_speed || null,
+    eta: raid.sync_eta || null,
+  };
 }
 
 /**
@@ -304,16 +388,21 @@ function renderSystemMetrics(system) {
     memDetailEl.textContent = `${formatBytes(mem.used)} / ${formatBytes(mem.total)} used (${formatBytes(mem.available)} avail)`;
   }
 
-  // Disk
-  const disk = system.disk || {};
-  const diskPercent = Number(disk.percent) || 0;
+  // Disk / Direct Storage (POSIX statvfs / psutil)
+  const disk = system.disk || system.storage || {};
+  const diskPercent = Number(disk.percent ?? disk.percentage) || 0;
   const diskValEl = document.getElementById("disk-percent-value");
   const diskBarEl = document.getElementById("disk-progress-bar");
   const diskDetailEl = document.getElementById("disk-detail");
   if (diskValEl) diskValEl.textContent = `${diskPercent.toFixed(1)}%`;
   updateProgressBar(diskBarEl, diskPercent);
   if (diskDetailEl) {
-    diskDetailEl.textContent = `${formatBytes(disk.used)} / ${formatBytes(disk.total)} used (${formatBytes(disk.free)} free)`;
+    const usedFormatted = formatBytes(disk.used ?? disk.used_bytes);
+    const totalFormatted = formatBytes(disk.total ?? disk.total_bytes);
+    const freeFormatted = formatBytes(disk.free ?? disk.free_bytes ?? disk.available);
+    const mountLabel = disk.mount || disk.mount_path || disk.path;
+    const prefix = mountLabel ? `[${mountLabel}] ` : "";
+    diskDetailEl.textContent = `${prefix}${usedFormatted} / ${totalFormatted} used (${freeFormatted} free)`;
   }
 
   // Uptime
@@ -337,6 +426,7 @@ function renderRaidDetails(raid) {
   if (!raid) return;
 
   const status = raid.status || "unknown";
+  const isNoRaid = normalizeRaidState(status) === "none";
 
   // Header & Card badges
   applyStatusBadge(
@@ -345,6 +435,34 @@ function renderRaidDetails(raid) {
     status
   );
   applyStatusBadge(document.getElementById("raid-card-badge"), null, status);
+
+  // Live Sysfs RAID Rebuild & Sync Progress Bar
+  const syncInfo = getRaidSyncInfo(raid);
+  const syncContainer = document.getElementById("raid-sync-container");
+  const syncLabel = document.getElementById("raid-sync-label");
+  const syncFill = document.getElementById("raid-sync-progress-fill");
+  const syncEta = document.getElementById("raid-sync-eta");
+
+  if (syncContainer) {
+    if (syncInfo && !isNoRaid) {
+      syncContainer.classList.remove("hidden");
+      const asciiBar = generateAsciiProgressBar(syncInfo.percent, 12);
+      if (syncLabel) {
+        syncLabel.textContent = `${syncInfo.action}: ${syncInfo.percent.toFixed(1)}% ${asciiBar}`;
+      }
+      if (syncFill) {
+        syncFill.style.width = `${syncInfo.percent.toFixed(1)}%`;
+      }
+      if (syncEta) {
+        let etaText = "";
+        if (syncInfo.speed) etaText += `${syncInfo.speed} `;
+        if (syncInfo.eta) etaText += `(ETA: ${syncInfo.eta})`;
+        syncEta.textContent = etaText.trim();
+      }
+    } else {
+      syncContainer.classList.add("hidden");
+    }
+  }
 
   // Device count boxes
   const activeCount = String(raid.active_devices ?? "0");
@@ -370,8 +488,6 @@ function renderRaidDetails(raid) {
     const el = document.getElementById(id);
     if (el) el.textContent = value || "--";
   };
-
-  const isNoRaid = normalizeRaidState(status) === "none";
 
   if (isNoRaid) {
     setField("raid-device", "No RAID array detected");
@@ -748,22 +864,41 @@ function startPolling({ immediate = true } = {}) {
 }
 
 /**
- * Update #auto-refresh-indicator to reflect WebSocket or fallback polling state.
+ * Update #auto-refresh-indicator and #live-stream-indicator to reflect WebSocket / stream state.
  */
 function updateConnectionIndicator(state) {
   const indicator = document.getElementById("auto-refresh-indicator");
-  if (!indicator) return;
+  const streamIndicator = document.getElementById("live-stream-indicator");
+  const streamText = document.getElementById("live-stream-text");
 
-  indicator.classList.remove("ws-live", "ws-reconnecting");
+  if (indicator) {
+    indicator.classList.remove("ws-live", "ws-reconnecting");
+    if (state === "live") {
+      indicator.textContent = "LIVE (WebSocket)";
+      indicator.classList.add("ws-live");
+    } else if (state === "reconnecting") {
+      indicator.textContent = "Reconnecting...";
+      indicator.classList.add("ws-reconnecting");
+    } else {
+      indicator.textContent = "Auto-refresh: 10s";
+    }
+  }
 
-  if (state === "live") {
-    indicator.textContent = "LIVE (WebSocket)";
-    indicator.classList.add("ws-live");
-  } else if (state === "reconnecting") {
-    indicator.textContent = "Reconnecting...";
-    indicator.classList.add("ws-reconnecting");
-  } else {
-    indicator.textContent = "Auto-refresh: 10s";
+  if (streamIndicator) {
+    streamIndicator.classList.remove("stream-active", "stream-reconnecting", "stream-paused");
+    if (state === "live") {
+      streamIndicator.classList.add("stream-active");
+      if (streamText) streamText.textContent = "Stream: Active";
+      streamIndicator.setAttribute("title", "Direct system event streaming active (POSIX statvfs, sysfs RAID, Docker socket)");
+    } else if (state === "reconnecting") {
+      streamIndicator.classList.add("stream-reconnecting");
+      if (streamText) streamText.textContent = "Stream: Reconnecting";
+      streamIndicator.setAttribute("title", "Reconnecting to direct system event stream...");
+    } else {
+      streamIndicator.classList.add("stream-paused");
+      if (streamText) streamText.textContent = "Stream: Polling";
+      streamIndicator.setAttribute("title", "HTTP fallback polling mode");
+    }
   }
 }
 
@@ -971,6 +1106,177 @@ function updateLiveTickers() {
 }
 
 /**
+ * Show a subtle, non-intrusive toast notification.
+ */
+function showToast({ title, message, type = "info", duration = 4500 }) {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+
+  while (container.children.length >= 4) {
+    const oldest = container.firstChild;
+    if (oldest) oldest.remove();
+  }
+
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  toast.setAttribute("role", "alert");
+
+  let iconSvg = "";
+  if (type === "success") {
+    iconSvg = `<svg viewBox="0 0 24 24" class="toast-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`;
+  } else if (type === "danger") {
+    iconSvg = `<svg viewBox="0 0 24 24" class="toast-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>`;
+  } else if (type === "warning") {
+    iconSvg = `<svg viewBox="0 0 24 24" class="toast-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`;
+  } else {
+    iconSvg = `<svg viewBox="0 0 24 24" class="toast-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`;
+  }
+
+  const safeTitle = escapeHtml(title || "Docker Event");
+  const safeMessage = escapeHtml(message || "");
+
+  toast.innerHTML = `
+    ${iconSvg}
+    <div class="toast-content">
+      <div class="toast-title">${safeTitle}</div>
+      <div class="toast-message">${safeMessage}</div>
+    </div>
+    <button type="button" class="toast-close" aria-label="Dismiss notification">&times;</button>
+  `;
+
+  const closeBtn = toast.querySelector(".toast-close");
+  const dismiss = () => {
+    toast.classList.remove("toast-visible");
+    toast.classList.add("toast-hiding");
+    window.setTimeout(() => {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 260);
+  };
+
+  if (closeBtn) closeBtn.addEventListener("click", dismiss);
+
+  container.appendChild(toast);
+
+  requestAnimationFrame(() => {
+    toast.classList.add("toast-visible");
+  });
+
+  if (duration > 0) {
+    window.setTimeout(dismiss, duration);
+  }
+}
+
+/**
+ * Trigger visual pulse on Docker container table and highlight specific container row.
+ */
+function pulseContainerTable(targetId) {
+  const table = document.getElementById("docker-containers-table");
+  if (table) {
+    table.classList.remove("table-pulse");
+    void table.offsetWidth; // force reflow
+    table.classList.add("table-pulse");
+    window.setTimeout(() => {
+      table.classList.remove("table-pulse");
+    }, 1000);
+  }
+
+  if (targetId) {
+    const tbody = document.getElementById("docker-containers-tbody");
+    if (tbody) {
+      const rows = tbody.querySelectorAll("tr");
+      rows.forEach((row) => {
+        if (row.textContent.includes(targetId)) {
+          row.classList.remove("row-highlight");
+          void row.offsetWidth;
+          row.classList.add("row-highlight");
+          window.setTimeout(() => {
+            row.classList.remove("row-highlight");
+          }, 2000);
+        }
+      });
+    }
+  }
+}
+
+/**
+ * Handle incoming real-time Docker events stream.
+ */
+function handleDockerEvent(msg) {
+  if (!msg || typeof msg !== "object") return;
+
+  const event = msg.event || msg;
+  const actionRaw = String(
+    event.action || event.Action || event.status || msg.action || msg.status || ""
+  ).trim();
+  const action = actionRaw.toLowerCase();
+
+  const actor = event.Actor || event.actor || msg.actor || {};
+  const attrs = actor.Attributes || actor.attributes || {};
+  const containerName =
+    attrs.name ||
+    event.container_name ||
+    event.container ||
+    event.name ||
+    msg.container_name ||
+    msg.name ||
+    "Container";
+  const containerId =
+    actor.ID ||
+    event.container_id ||
+    event.id ||
+    msg.container_id ||
+    msg.id ||
+    "";
+
+  let toastType = "info";
+  let title = `Container Event`;
+  let message = `${containerName}: ${actionRaw || "state updated"}`;
+
+  if (action === "die" || action === "kill" || action === "stop") {
+    toastType = "danger";
+    title = `Container Stopped`;
+    message = `${containerName} (${actionRaw})`;
+  } else if (action === "start") {
+    toastType = "success";
+    title = `Container Started`;
+    message = `${containerName} is now running`;
+  } else if (action === "restart") {
+    toastType = "warning";
+    title = `Container Restarted`;
+    message = `${containerName} was restarted`;
+  } else if (action.includes("unhealthy")) {
+    toastType = "danger";
+    title = `Container Unhealthy`;
+    message = `${containerName} became unhealthy!`;
+  } else if (action.includes("healthy")) {
+    toastType = "success";
+    title = `Container Healthy`;
+    message = `${containerName} reported healthy`;
+  } else if (action === "destroy" || action === "delete") {
+    toastType = "warning";
+    title = `Container Removed`;
+    message = `${containerName} was deleted`;
+  } else if (action === "create") {
+    toastType = "info";
+    title = `Container Created`;
+    message = `${containerName} was created`;
+  }
+
+  showToast({ title, message, type: toastType });
+
+  pulseContainerTable(containerId);
+
+  // Invalidate containers render cache & refresh containers table in real-time
+  lastContainersRenderKey = null;
+  if (typeof fetchDockerContainers === "function") {
+    fetchDockerContainers(containerId);
+  }
+  if (typeof fetchDockerStatus === "function") {
+    fetchDockerStatus();
+  }
+}
+
+/**
  * Process incoming JSON messages from /api/ws ('snapshot' or 'module_update').
  */
 function handleWebSocketMessage(rawData) {
@@ -988,6 +1294,19 @@ function handleWebSocketMessage(rawData) {
 
   if (msg.type === "intervals_updated" || msg.refresh_intervals) {
     syncIntervalSelects(msg.refresh_intervals);
+  }
+
+  // Real-time Docker Events Toast & Live Table Update
+  if (msg.type === "docker_event" || msg.docker_event) {
+    handleDockerEvent(msg.docker_event || msg);
+    return;
+  }
+  if (
+    (msg.module === "docker" || msg.module === "containers") &&
+    (msg.action || msg.event || msg.type === "event")
+  ) {
+    handleDockerEvent(msg);
+    return;
   }
 
   if (msg.type === "module_update") {
@@ -1023,6 +1342,9 @@ function handleWebSocketMessage(rawData) {
       updateVersionBadge(msg.version_info || msg.version);
     }
     if (msg.docker || msg.module === "docker" || msg.module === "containers") {
+      if (msg.event || msg.action) {
+        handleDockerEvent(msg);
+      }
       renderDockerStatus(msg.docker || msg);
       setModuleLastUpdated("docker");
       if (currentViewTab === "containers") {
@@ -1394,8 +1716,248 @@ async function handleLogout() {
 }
 
 /* =========================================================================
- * 2. Release-Tag Updater (#version-badge, #check-update-btn, #update-banner)
+ * 2. Release-Tag Updater & Modal (#nav-update-notice-btn, #update-modal)
  * ========================================================================= */
+
+let latestUpdateInfo = null;
+let isViewingFullChangelog = false;
+
+/**
+ * Format inline markdown: bold (**text**) and code (`code`).
+ */
+function formatInlineMarkdown(text) {
+  let escaped = escapeHtml(text);
+  escaped = escaped.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  escaped = escaped.replace(/`([^`]+)`/g, "<code>$1</code>");
+  return escaped;
+}
+
+/**
+ * Lightweight markdown parser that renders #, ##, ### headings,
+ * bullet lists (- or *), bold text, and inline code into clean semantic HTML.
+ */
+function parseMarkdown(mdText) {
+  if (!mdText || typeof mdText !== "string") {
+    return "<p>No release notes available.</p>";
+  }
+
+  const lines = mdText.split(/\r?\n/);
+  const htmlParts = [];
+  let inList = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    if (!trimmed) {
+      if (inList) {
+        htmlParts.push("</ul>");
+        inList = false;
+      }
+      continue;
+    }
+
+    // List item: - or * followed by whitespace
+    if (/^[-*]\s+/.test(trimmed)) {
+      if (!inList) {
+        htmlParts.push("<ul>");
+        inList = true;
+      }
+      const itemContent = trimmed.replace(/^[-*]\s+/, "");
+      htmlParts.push(`<li>${formatInlineMarkdown(itemContent)}</li>`);
+      continue;
+    }
+
+    if (inList) {
+      htmlParts.push("</ul>");
+      inList = false;
+    }
+
+    if (trimmed.startsWith("### ")) {
+      htmlParts.push(`<h3>${formatInlineMarkdown(trimmed.slice(4))}</h3>`);
+    } else if (trimmed.startsWith("## ")) {
+      htmlParts.push(`<h2>${formatInlineMarkdown(trimmed.slice(3))}</h2>`);
+    } else if (trimmed.startsWith("# ")) {
+      htmlParts.push(`<h1>${formatInlineMarkdown(trimmed.slice(2))}</h1>`);
+    } else {
+      htmlParts.push(`<p>${formatInlineMarkdown(trimmed)}</p>`);
+    }
+  }
+
+  if (inList) {
+    htmlParts.push("</ul>");
+  }
+
+  return htmlParts.join("\n");
+}
+
+/**
+ * Update the header notice button and populate update modal content.
+ */
+function renderUpdateNotice(data) {
+  latestUpdateInfo = data || null;
+
+  const noticeBtn = document.getElementById("nav-update-notice-btn");
+  const noticeLabel = document.getElementById("nav-update-version-label");
+
+  const banner = document.getElementById("update-banner");
+  const latestVerEl = document.getElementById("update-latest-version");
+  const changelogEl = document.getElementById("update-changelog");
+
+  if (data && data.update_available) {
+    const rawTarget = String(data.latest_version || "");
+    const formattedTarget = rawTarget.startsWith("v")
+      ? rawTarget
+      : `v${rawTarget || "--"}`;
+
+    if (noticeLabel) {
+      noticeLabel.textContent = `${formattedTarget} available`;
+    }
+    if (noticeBtn) {
+      noticeBtn.classList.remove("hidden");
+    }
+
+    if (latestVerEl) {
+      latestVerEl.textContent = data.latest_version || "latest";
+    }
+    if (changelogEl) {
+      changelogEl.textContent =
+        data.changelog || "New tagged release available on origin.";
+    }
+    if (banner) {
+      banner.classList.add("hidden");
+    }
+
+    populateUpdateModal(data);
+  } else {
+    if (noticeBtn) {
+      noticeBtn.classList.add("hidden");
+    }
+    if (banner) {
+      banner.classList.add("hidden");
+    }
+  }
+}
+
+/**
+ * Backward-compatible alias for renderUpdateBanner.
+ */
+function renderUpdateBanner(data) {
+  renderUpdateNotice(data);
+}
+
+/**
+ * Populate values inside #update-modal.
+ */
+function populateUpdateModal(data) {
+  if (!data) return;
+
+  const currentVerEl = document.getElementById("modal-current-version");
+  const latestVerEl = document.getElementById("modal-latest-version");
+  const notesEl = document.getElementById("modal-release-notes");
+
+  if (currentVerEl) {
+    const rawCur = String(data.current_version || "");
+    currentVerEl.textContent = rawCur.startsWith("v")
+      ? rawCur
+      : `v${rawCur || "--"}`;
+  }
+
+  if (latestVerEl) {
+    const rawTarget = String(data.latest_version || "");
+    latestVerEl.textContent = rawTarget.startsWith("v")
+      ? rawTarget
+      : `v${rawTarget || "--"}`;
+  }
+
+  if (notesEl && !isViewingFullChangelog) {
+    const rawNotes =
+      data.release_notes ||
+      data.changelog ||
+      "New release available on origin.";
+    notesEl.innerHTML = parseMarkdown(rawNotes);
+  }
+}
+
+function openUpdateModal() {
+  const modal = document.getElementById("update-modal");
+  if (!modal) return;
+
+  isViewingFullChangelog = false;
+  const toggleBtnText = document.getElementById("modal-toggle-changelog-text");
+  if (toggleBtnText) toggleBtnText.textContent = "View Full Changelog";
+  const notesHeading = document.getElementById("modal-notes-heading");
+  if (notesHeading) notesHeading.textContent = "Release Notes";
+
+  clearModalUpdateStatus();
+
+  if (latestUpdateInfo) {
+    populateUpdateModal(latestUpdateInfo);
+  }
+
+  modal.classList.remove("hidden");
+}
+
+function closeUpdateModal() {
+  const modal = document.getElementById("update-modal");
+  if (modal) {
+    modal.classList.add("hidden");
+  }
+}
+
+function showModalUpdateStatus(message, type = "info") {
+  const statusEl = document.getElementById("modal-update-status");
+  if (!statusEl) return;
+  statusEl.textContent = message;
+  statusEl.className = `modal-update-status status-${type}`;
+  statusEl.classList.remove("hidden");
+}
+
+function clearModalUpdateStatus() {
+  const statusEl = document.getElementById("modal-update-status");
+  if (!statusEl) return;
+  statusEl.textContent = "";
+  statusEl.className = "modal-update-status hidden";
+}
+
+async function toggleFullChangelog() {
+  const notesEl = document.getElementById("modal-release-notes");
+  const toggleBtnText = document.getElementById("modal-toggle-changelog-text");
+  const notesHeading = document.getElementById("modal-notes-heading");
+
+  if (!isViewingFullChangelog) {
+    if (notesEl) {
+      notesEl.innerHTML = "<p>Loading full changelog...</p>";
+    }
+    try {
+      const resp = await apiFetch("/api/changelog");
+      const data = await resp.json().catch(() => ({}));
+      const fullText =
+        data.changelog || "# Changelog\nNo full changelog available.";
+      if (notesEl) {
+        notesEl.innerHTML = parseMarkdown(fullText);
+      }
+      if (toggleBtnText) toggleBtnText.textContent = "View Release Notes";
+      if (notesHeading) notesHeading.textContent = "Full Changelog";
+      isViewingFullChangelog = true;
+    } catch (err) {
+      if (notesEl) {
+        notesEl.innerHTML = `<p>Failed to load full changelog: ${escapeHtml(err.message)}</p>`;
+      }
+    }
+  } else {
+    if (notesEl && latestUpdateInfo) {
+      const rawNotes =
+        latestUpdateInfo.release_notes ||
+        latestUpdateInfo.changelog ||
+        "New release available on origin.";
+      notesEl.innerHTML = parseMarkdown(rawNotes);
+    }
+    if (toggleBtnText) toggleBtnText.textContent = "View Full Changelog";
+    if (notesHeading) notesHeading.textContent = "Release Notes";
+    isViewingFullChangelog = false;
+  }
+}
 
 async function checkForUpdates({ silent = false } = {}) {
   const checkBtn = document.getElementById("check-update-btn");
@@ -1413,28 +1975,18 @@ async function checkForUpdates({ silent = false } = {}) {
     }
 
     updateVersionBadge(data);
-
-    const banner = document.getElementById("update-banner");
-    const latestVerEl = document.getElementById("update-latest-version");
-    const changelogEl = document.getElementById("update-changelog");
+    renderUpdateNotice(data);
 
     if (data.update_available) {
-      if (latestVerEl) {
-        latestVerEl.textContent = data.latest_version || "latest";
+      if (!silent) {
+        openUpdateModal();
       }
-      if (changelogEl) {
-        changelogEl.textContent =
-          data.changelog || "New tagged release available on origin.";
-      }
-      if (banner) banner.classList.remove("hidden");
     } else {
-      if (banner) banner.classList.add("hidden");
       if (checkBtn && !silent) {
         checkBtn.textContent = "Up to date";
         window.setTimeout(() => {
           if (checkBtn) checkBtn.textContent = "Check Updates";
         }, 2500);
-        return;
       }
     }
   } catch (err) {
@@ -1455,11 +2007,23 @@ async function checkForUpdates({ silent = false } = {}) {
 }
 
 async function applyReleaseUpdate() {
-  const applyBtn = document.getElementById("apply-update-btn");
-  if (applyBtn) {
-    applyBtn.disabled = true;
-    applyBtn.textContent = "Updating & Restarting Services...";
+  const modalApplyBtn = document.getElementById("modal-apply-update-btn");
+  const modalApplyLabel = document.getElementById("modal-apply-btn-label");
+  const modalDismissBtn = document.getElementById("modal-dismiss-btn");
+  const bannerApplyBtn = document.getElementById("apply-update-btn");
+
+  if (modalApplyBtn) modalApplyBtn.disabled = true;
+  if (modalApplyLabel) modalApplyLabel.textContent = "Updating...";
+  if (modalDismissBtn) modalDismissBtn.disabled = true;
+  if (bannerApplyBtn) {
+    bannerApplyBtn.disabled = true;
+    bannerApplyBtn.textContent = "Updating & Restarting Services...";
   }
+
+  showModalUpdateStatus(
+    "Applying update and restarting services. Please stand by...",
+    "info"
+  );
 
   try {
     const resp = await apiFetch("/api/update/apply", { method: "POST" });
@@ -1468,17 +2032,26 @@ async function applyReleaseUpdate() {
       throw new Error(data.detail || `Update failed (HTTP ${resp.status})`);
     }
 
+    showModalUpdateStatus(
+      "Update successfully applied. Restarting services and reconnecting...",
+      "success"
+    );
+
     closeWebSocket();
     stopPolling();
     pollUntilServerRestarts();
   } catch (err) {
     console.error("Failed to apply update:", err);
-    setErrorState(
-      `Failed to apply update: ${err instanceof Error ? err.message : String(err)}`
-    );
-    if (applyBtn) {
-      applyBtn.disabled = false;
-      applyBtn.textContent = "Update & Restart Services";
+    const msg = `Failed to apply update: ${err instanceof Error ? err.message : String(err)}`;
+    showModalUpdateStatus(msg, "error");
+    setErrorState(msg);
+
+    if (modalApplyBtn) modalApplyBtn.disabled = false;
+    if (modalApplyLabel) modalApplyLabel.textContent = "Update & Restart Services";
+    if (modalDismissBtn) modalDismissBtn.disabled = false;
+    if (bannerApplyBtn) {
+      bannerApplyBtn.disabled = false;
+      bannerApplyBtn.textContent = "Update & Restart Services";
     }
   }
 }
@@ -2578,7 +3151,7 @@ async function handleSaveStack() {
 /**
  * Fetch and render Docker Containers.
  */
-async function fetchDockerContainers() {
+async function fetchDockerContainers(highlightCid = null) {
   const tbody = document.getElementById("docker-containers-tbody");
   if (!tbody) return;
   if (isFetchingDockerContainers) return;
@@ -2617,7 +3190,7 @@ async function fetchDockerContainers() {
       }
     }
 
-    renderDockerContainers();
+    renderDockerContainers(highlightCid);
   } catch (err) {
     console.warn("Failed to fetch Docker containers:", err);
   } finally {
@@ -2625,7 +3198,7 @@ async function fetchDockerContainers() {
   }
 }
 
-function renderDockerContainers() {
+function renderDockerContainers(highlightCid = null) {
   const tbody = document.getElementById("docker-containers-tbody");
   if (!tbody) return;
 
@@ -2644,6 +3217,7 @@ function renderDockerContainers() {
     query,
     statusFilter,
     stackFilter,
+    highlightCid,
     containers: cachedDockerContainers,
   });
   if (lastContainersRenderKey === renderKey && tbody.children.length > 0) {
@@ -2693,9 +3267,20 @@ function renderDockerContainers() {
 
   tbody.innerHTML = filtered.map((c) => {
     const state = (c.state || "").toLowerCase();
-    const isRunning = state === "running";
+    const statusStr = (c.status || "").toLowerCase();
+    let statusClass = "status-none";
+    if (statusStr.includes("unhealthy")) {
+      statusClass = "status-unhealthy";
+    } else if (state === "running" || statusStr.includes("up")) {
+      statusClass = statusStr.includes("starting") ? "status-recovering" : "status-clean";
+    } else if (state === "paused" || state === "restarting") {
+      statusClass = "status-degraded";
+    } else if (state === "dead" || state === "failed" || state === "exited" || statusStr.includes("exit")) {
+      statusClass = (statusStr.includes("exit (0)") || statusStr.includes("exited (0)")) ? "status-none" : "status-failed";
+    }
+
+    const isRunning = state === "running" || (statusStr.includes("up") && !state);
     const isPaused = state === "paused";
-    const statusClass = isRunning ? "status-clean" : (isPaused ? "status-degraded" : "status-none");
 
     const safeId = escapeHtml(c.id);
     const safeName = escapeHtml(c.name);
@@ -2704,7 +3289,10 @@ function renderDockerContainers() {
     const safeStack = escapeHtml(c.stack || "-");
     const safeStatus = escapeHtml(c.status || c.state || "unknown");
 
-    return `<tr>
+    const isHighlighted = highlightCid && (c.id === highlightCid || (c.name && c.name === highlightCid) || (highlightCid.includes(c.id)));
+    const rowClass = isHighlighted ? ' class="row-highlight"' : "";
+
+    return `<tr${rowClass}>
       <td><strong>${safeName}</strong></td>
       <td><span class="mono-text">${safeId}</span></td>
       <td><span class="mono-text" style="color: var(--accent-primary);">${safeImage}</span></td>
@@ -3805,6 +4393,8 @@ function initDashboard() {
   // Global Escape Key to dismiss modals
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
+      closeUpdateModal();
+      closeSettingsModal();
       closeStackEditor();
       closeContainerLogs();
       closeVolumeDetails();
@@ -3886,6 +4476,33 @@ function initDashboard() {
   document
     .getElementById("logout-btn")
     ?.addEventListener("click", handleLogout);
+
+  document
+    .getElementById("nav-update-notice-btn")
+    ?.addEventListener("click", openUpdateModal);
+
+  document
+    .getElementById("close-update-modal-btn")
+    ?.addEventListener("click", closeUpdateModal);
+
+  document
+    .getElementById("modal-dismiss-btn")
+    ?.addEventListener("click", closeUpdateModal);
+
+  document
+    .getElementById("modal-apply-update-btn")
+    ?.addEventListener("click", applyReleaseUpdate);
+
+  document
+    .getElementById("modal-toggle-changelog-btn")
+    ?.addEventListener("click", toggleFullChangelog);
+
+  const updateModal = document.getElementById("update-modal");
+  updateModal?.addEventListener("click", (e) => {
+    if (e.target === updateModal) {
+      closeUpdateModal();
+    }
+  });
 
   document
     .getElementById("check-update-btn")

@@ -1,14 +1,18 @@
 import asyncio
+from contextlib import asynccontextmanager
 import json
+import logging
 from pathlib import Path
 import re
 import sqlite3
 from subprocess import CalledProcessError
+import time
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+import aiohttp
 from fastapi import (
     Depends,
     FastAPI,
@@ -26,10 +30,110 @@ import psutil
 
 import main
 
-app = FastAPI(title="SystemAlerts Server Manager")
-
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
+
+_docker_events_task: Optional[asyncio.Task] = None
+
+
+async def docker_events_listener(
+    socket_path: str = "/var/run/docker.sock",
+    max_backoff: float = 60.0,
+) -> None:
+    """Stream real-time Docker events over Unix domain socket and notify WebSockets."""
+    backoff = 2.0
+    while True:
+        try:
+            if not Path(socket_path).exists():
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
+                continue
+
+            connector = aiohttp.UnixConnector(path=socket_path)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.get("http://localhost/events") as resp:
+                    if resp.status != 200:
+                        await asyncio.sleep(backoff)
+                        backoff = min(backoff * 2, max_backoff)
+                        continue
+
+                    backoff = 2.0
+                    async for line in resp.content:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            event = json.loads(line.decode("utf-8"))
+                        except (ValueError, UnicodeDecodeError):
+                            continue
+
+                        event_type = event.get("Type", "")
+                        action = event.get("Action", "")
+
+                        lifecycle_actions = {
+                            "start",
+                            "stop",
+                            "die",
+                            "restart",
+                            "kill",
+                            "destroy",
+                            "pause",
+                            "unpause",
+                            "health_status",
+                            "create",
+                        }
+                        is_lifecycle = (
+                            event_type == "container"
+                            and (
+                                action in lifecycle_actions
+                                or action.startswith("health_status")
+                            )
+                        )
+
+                        if is_lifecycle:
+                            main.docker_manager.invalidate_cache()
+                            actor = event.get("Actor", {})
+                            attributes = actor.get("Attributes", {})
+                            notification_payload = {
+                                "type": "docker_event",
+                                "event": {
+                                    "action": action,
+                                    "type": event_type,
+                                    "id": str(actor.get("ID", ""))[:12],
+                                    "name": attributes.get("name", ""),
+                                    "time": event.get("time", time.time()),
+                                },
+                                "docker": main.docker_mgr.get_status(),
+                            }
+                            await ws_manager.broadcast(notification_payload)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logging.debug(f"Docker events listener error: {exc}")
+            try:
+                await asyncio.sleep(backoff)
+            except asyncio.CancelledError:
+                break
+            backoff = min(backoff * 2, max_backoff)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _docker_events_task
+    if _docker_events_task is None or _docker_events_task.done():
+        _docker_events_task = asyncio.create_task(docker_events_listener())
+    try:
+        yield
+    finally:
+        if _docker_events_task and not _docker_events_task.done():
+            _docker_events_task.cancel()
+            try:
+                await _docker_events_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
+app = FastAPI(title="SystemAlerts Server Manager", lifespan=lifespan)
 
 
 class ConnectionManager:
@@ -735,6 +839,11 @@ def api_update_check(_user: str = Depends(require_auth)) -> dict[str, Any]:
     return main.check_for_release_update()
 
 
+@app.get("/api/changelog")
+def api_changelog(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    return {"changelog": main.get_full_changelog()}
+
+
 @app.post("/api/update/apply")
 def api_update_apply(_user: str = Depends(require_auth)) -> dict[str, Any]:
     try:
@@ -893,6 +1002,20 @@ async def api_docker_container_logs(
         )
         return {"logs": logs}
     except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/docker/containers/{id}/stats")
+async def api_docker_container_stats(
+    id: str,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        stats = await asyncio.to_thread(main.docker_manager.get_container_stats, id)
+        return {"stats": stats}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

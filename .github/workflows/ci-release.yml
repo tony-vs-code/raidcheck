@@ -77,7 +77,11 @@ jobs:
 
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             echo "Creating GitHub Release ${TAG}..."
-            gh release create "$TAG" --generate-notes --title "Release ${TAG}"
+            if [ -f "RELEASE_NOTES.md" ]; then
+              gh release create "$TAG" --title "Release ${TAG}" --notes-file RELEASE_NOTES.md
+            else
+              gh release create "$TAG" --generate-notes --title "Release ${TAG}"
+            fi
           else
             echo "GitHub Release ${TAG} already exists."
           fi

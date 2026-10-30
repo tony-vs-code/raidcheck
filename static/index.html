@@ -348,6 +348,80 @@
     </div>
   </div>
 
+  <!-- Software Update Modal (#update-modal) -->
+  <div id="update-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="update-modal-title">
+    <div class="modal-card update-modal-card">
+      <div class="modal-header">
+        <div class="modal-title-with-icon">
+          <div class="modal-icon-badge update-icon-badge" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+          </div>
+          <div>
+            <h2 id="update-modal-title" class="modal-title">Software Update</h2>
+            <p class="modal-subtitle">SystemAlerts Server Manager Update</p>
+          </div>
+        </div>
+        <button id="close-update-modal-btn" type="button" class="btn-icon-close" aria-label="Close update modal">&times;</button>
+      </div>
+
+      <div class="modal-body update-modal-body">
+        <!-- Version transition row -->
+        <div class="version-transition-row">
+          <div class="version-chip-group">
+            <span class="version-chip-label">Current Version</span>
+            <span id="modal-current-version" class="version-chip current-version-chip">v--</span>
+          </div>
+          <div class="version-transition-arrow" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+              <polyline points="12 5 19 12 12 19"></polyline>
+            </svg>
+          </div>
+          <div class="version-chip-group">
+            <span class="version-chip-label">Latest Version</span>
+            <span id="modal-latest-version" class="version-chip latest-version-chip">v--</span>
+          </div>
+        </div>
+
+        <!-- Release Notes Section -->
+        <div class="modal-notes-section">
+          <div class="modal-notes-header">
+            <h3 id="modal-notes-heading" class="modal-section-title">Release Notes</h3>
+            <button id="modal-toggle-changelog-btn" type="button" class="btn-toggle-changelog" aria-label="Toggle full changelog">
+              <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+              </svg>
+              <span id="modal-toggle-changelog-text">View Full Changelog</span>
+            </button>
+          </div>
+          <div id="modal-release-notes" class="modal-release-notes" role="region" aria-label="Release details"></div>
+        </div>
+
+        <!-- Update status message container -->
+        <div id="modal-update-status" class="modal-update-status hidden" role="status"></div>
+      </div>
+
+      <div class="modal-actions update-modal-footer">
+        <button id="modal-dismiss-btn" type="button" class="btn-secondary">Dismiss</button>
+        <button id="modal-apply-update-btn" type="button" class="btn-primary btn-apply-update-modal">
+          <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          <span id="modal-apply-btn-label">Update &amp; Restart Services</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <div class="app-container">
     <!-- 1. Header -->
     <header class="app-header">
@@ -380,9 +454,15 @@
 
         <div class="refresh-group">
           <div class="refresh-meta">
-            <span id="auto-refresh-indicator" class="auto-refresh-pill" title="Real-time WebSocket stream with 10s HTTP fallback">
-              LIVE (WebSocket)
-            </span>
+            <div class="stream-indicators-row">
+              <span id="auto-refresh-indicator" class="auto-refresh-pill" title="Real-time WebSocket stream with 10s HTTP fallback">
+                LIVE (WebSocket)
+              </span>
+              <span id="live-stream-indicator" class="live-stream-indicator stream-active" title="Direct system streaming (POSIX statvfs, sysfs RAID, Docker socket)">
+                <span class="stream-pulse-dot"></span>
+                <span id="live-stream-text">Stream: Active</span>
+              </span>
+            </div>
             <span id="last-updated" class="last-updated">Never updated</span>
           </div>
 
@@ -393,6 +473,16 @@
               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
             </svg>
             <span>Refresh</span>
+          </button>
+
+          <button id="nav-update-notice-btn" class="nav-update-notice-btn hidden" type="button" aria-label="New version available">
+            <svg class="nav-update-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span class="update-pulse-dot"></span>
+            <span id="nav-update-version-label">v-- available</span>
           </button>
 
           <button id="check-update-btn" class="btn-header-action" type="button" title="Check GitHub tags for new releases">
@@ -460,8 +550,8 @@
       </button>
     </nav>
 
-    <!-- Release-Tag Update Banner (#update-banner) -->
-    <div id="update-banner" class="update-banner hidden" role="region" aria-label="Software update available">
+    <!-- Release-Tag Update Banner (#update-banner) (Deprecated in favor of #update-modal) -->
+    <div id="update-banner" class="update-banner hidden update-banner-deprecated" role="region" aria-label="Software update available" style="display: none !important;">
       <div class="update-banner-info">
         <div class="update-banner-title">
           <span class="update-badge-new">NEW RELEASE</span>
@@ -597,6 +687,17 @@
               <p class="card-subtitle">mdadm array parameters &amp; consistency state</p>
             </div>
             <span id="raid-card-badge" class="status-badge status-unknown">UNKNOWN</span>
+          </div>
+
+          <!-- Live Sysfs RAID Rebuild & Sync Progress Bar -->
+          <div id="raid-sync-container" class="raid-sync-container hidden" role="region" aria-label="RAID Rebuild & Sync Progress">
+            <div class="raid-sync-header">
+              <span id="raid-sync-label" class="raid-sync-label mono-text">Resyncing: 0.0% [&gt;           ]</span>
+              <span id="raid-sync-eta" class="raid-sync-eta"></span>
+            </div>
+            <div class="progress-track raid-sync-track">
+              <div id="raid-sync-progress-fill" class="progress-fill raid-sync-fill" style="width: 0%"></div>
+            </div>
           </div>
 
           <div class="device-counts-strip">
@@ -1344,6 +1445,9 @@
       </div>
     </div>
   </div>
+
+  <!-- Toast Notification Container (#toast-container) -->
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
   <script src="/static/app.js?v=0.5.0"></script>
 </body>
