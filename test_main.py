@@ -1937,12 +1937,13 @@ class FastAPIEndpointTests(unittest.TestCase):
     def test_static_assets_and_dashboard_elements_served(self):
         index_resp = asgi_get(api.app, "/")
         self.assertEqual(index_resp.status_code, 200)
-        self.assertIn('id="raid-status-badge"', index_resp.text)
+        self.assertNotIn('id="header-raid-pill"', index_resp.text)
+        self.assertIn('id="overview-raid-status-badge"', index_resp.text)
         self.assertIn('id="active-disks-table"', index_resp.text)
         self.assertIn('id="notification-history-table"', index_resp.text)
         self.assertIn('id="auth-overlay"', index_resp.text)
         self.assertIn('id="settings-modal"', index_resp.text)
-        self.assertIn('id="system-interval-select"', index_resp.text)
+        self.assertNotIn('id="system-interval-select"', index_resp.text)
         self.assertIn('id="raid-interval-select"', index_resp.text)
         self.assertIn('id="notifications-interval-select"', index_resp.text)
 
@@ -2045,7 +2046,7 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="raid-sync-container"', index_resp.text)
         self.assertIn('id="raid-sync-label"', index_resp.text)
         self.assertIn('id="raid-sync-progress-fill"', index_resp.text)
-        self.assertIn('id="live-stream-indicator"', index_resp.text)
+        self.assertNotIn('id="live-stream-indicator"', index_resp.text)
         self.assertIn('id="toast-container"', index_resp.text)
 
         # Software update header notice button and update modal
@@ -2109,6 +2110,13 @@ class FastAPIEndpointTests(unittest.TestCase):
             "setting-raid-device",
             "docker-containers-all-toggle",
             "test-notification-feedback",
+            "header-raid-pill",
+            "raid-status-badge",
+            "raid-status-text",
+            "live-stream-indicator",
+            "live-stream-text",
+            "auto-refresh-indicator",
+            "system-interval-select",
         }
         for elem_id in direct_ids:
             if elem_id not in permissible_fallbacks:
@@ -3276,6 +3284,9 @@ class TestDockerBackend(unittest.TestCase):
             self.assertEqual(resp.status_code, 404)
 
     def test_docker_apply_updates_with_stacks_and_containers(self):
+        main.docker_manager.save_stack(
+            "mystack", "services:\n  redis:\n    image: redis:alpine\n", deploy=False
+        )
         with (
             patch.object(main.docker_manager, "is_running", return_value=True),
             patch.object(main.docker_manager, "execute_stack_action", return_value={"success": True}),
@@ -3298,6 +3309,9 @@ class TestDockerBackend(unittest.TestCase):
             self.assertEqual(data["updated"][1]["type"], "container")
 
     def test_docker_apply_updates_handles_failures(self):
+        main.docker_manager.save_stack(
+            "failing_stack", "services:\n  f:\n    image: f:latest\n", deploy=False
+        )
         with (
             patch.object(main.docker_manager, "is_running", return_value=True),
             patch.object(
@@ -3419,6 +3433,142 @@ class TestDockerBackend(unittest.TestCase):
                 act_resp.json()["detail"],
                 "Stack is managed externally. Stack actions cannot be executed from SystemAlerts; manage constituent containers directly",
             )
+
+    def test_external_stack_update_protection(self):
+        dm = main.docker_manager
+        dm.invalidate_cache()
+
+        # 1. Test is_stack_managed
+        dm.save_stack("managed_stack", "services:\n  app:\n    image: app:v1\n", deploy=False)
+        self.assertTrue(dm.is_stack_managed("managed_stack"))
+        self.assertTrue(dm.is_stack_managed(""))
+        self.assertTrue(dm.is_stack_managed(None))
+
+        external_stack_info = {
+            "name": "ext_stack",
+            "compose_yaml": "services:\n  ext:\n    image: ext:latest\n",
+            "status": "running",
+            "managed": False,
+            "created_at": 0.0,
+            "updated_at": 0.0,
+            "containers": [],
+        }
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(
+                dm,
+                "get_stack",
+                side_effect=lambda name: external_stack_info if name == "ext_stack" else None,
+            ),
+        ):
+            self.assertFalse(dm.is_stack_managed("ext_stack"))
+
+            # 2. Test check_updates flags
+            sample_containers = [
+                {"id": "ext_c", "name": "ext_worker", "image": "redis:alpine", "stack": "ext_stack"},
+                {"id": "mng_c", "name": "mng_worker", "image": "nginx:alpine", "stack": "managed_stack"},
+                {"id": "std_c", "name": "standalone_worker", "image": "busybox:latest", "stack": ""},
+            ]
+
+            with (
+                patch.object(dm, "list_containers", return_value=sample_containers),
+                patch.object(dm, "_get_remote_image_digest", return_value="sha256:newdigest123456"),
+                patch.object(dm, "_run_docker", return_value='{"RepoDigests": ["olddigest"]}'),
+            ):
+                res = dm.check_updates(force=True)
+                updates = {u["container_id"]: u for u in res["updates"]}
+
+                # External stack container: update available but cannot update because external
+                ext = updates["ext_c"]
+                self.assertTrue(ext["update_available"])
+                self.assertFalse(ext["managed_stack"])
+                self.assertFalse(ext["can_update"])
+
+                # Managed stack container: update available and can update
+                mng = updates["mng_c"]
+                self.assertTrue(mng["update_available"])
+                self.assertTrue(mng["managed_stack"])
+                self.assertTrue(mng["can_update"])
+
+                # Standalone container: update available and can update
+                std = updates["std_c"]
+                self.assertTrue(std["update_available"])
+                self.assertTrue(std["managed_stack"])
+                self.assertTrue(std["can_update"])
+
+            # 3. Test apply_updates with explicit external stack
+            res_stack = dm.apply_updates(stacks=["ext_stack"])
+            self.assertTrue(res_stack["success"])
+            self.assertEqual(len(res_stack["updated"]), 1)
+            self.assertFalse(res_stack["updated"][0]["success"])
+            self.assertIn(
+                "Stack 'ext_stack' is managed externally and cannot be updated by SystemAlerts",
+                res_stack["updated"][0]["error"],
+            )
+
+            # 4. Test apply_updates with explicit external container
+            pull_mock = patch.object(dm, "pull_image", return_value={"success": True})
+            with (
+                pull_mock as mock_pull,
+                patch.object(dm, "list_containers", return_value=sample_containers),
+            ):
+                res_cont = dm.apply_updates(containers=["ext_c"])
+                self.assertTrue(res_cont["success"])
+                self.assertEqual(len(res_cont["updated"]), 1)
+                self.assertFalse(res_cont["updated"][0]["success"])
+                self.assertIn(
+                    "Container belongs to external stack 'ext_stack' and cannot be updated",
+                    res_cont["updated"][0]["error"],
+                )
+                mock_pull.assert_not_called()
+
+            # 5. Test apply_updates apply-all (neither containers nor stacks passed)
+            with (
+                patch.object(dm, "pull_image", return_value={"success": True}) as mock_pull,
+                patch.object(dm, "execute_stack_action", return_value={"success": True}),
+                patch.object(dm, "execute_container_action", return_value={"success": True}),
+                patch.object(dm, "list_containers", return_value=sample_containers),
+            ):
+                res_all = dm.apply_updates()
+                self.assertTrue(res_all["success"])
+                updated_names = [u["name"] for u in res_all["updated"]]
+                self.assertNotIn("ext_worker", updated_names)
+                self.assertIn("mng_worker", updated_names)
+                self.assertIn("standalone_worker", updated_names)
+                self.assertEqual(mock_pull.call_count, 2)
+
+            # 6. Test HTTP API endpoint POST /api/docker/updates/apply rejects external stack & container
+            with (
+                patch.object(dm, "list_containers", return_value=sample_containers),
+                patch.object(dm, "pull_image", return_value={"success": True}) as mock_pull,
+            ):
+                # Target external stack via HTTP
+                api_stack_resp = asgi_post(
+                    api.app,
+                    "/api/docker/updates/apply",
+                    cookies=self.auth_cookies,
+                    json_body={"stacks": ["ext_stack"]},
+                )
+                self.assertEqual(api_stack_resp.status_code, 200)
+                stack_data = api_stack_resp.json()
+                self.assertTrue(stack_data["success"])
+                self.assertFalse(stack_data["updated"][0]["success"])
+                self.assertIn("managed externally", stack_data["updated"][0]["error"])
+
+                # Target external container via HTTP
+                api_cont_resp = asgi_post(
+                    api.app,
+                    "/api/docker/updates/apply",
+                    cookies=self.auth_cookies,
+                    json_body={"containers": ["ext_c"]},
+                )
+                self.assertEqual(api_cont_resp.status_code, 200)
+                cont_data = api_cont_resp.json()
+                self.assertTrue(cont_data["success"])
+                self.assertFalse(cont_data["updated"][0]["success"])
+                self.assertIn("belongs to external stack", cont_data["updated"][0]["error"])
+                mock_pull.assert_not_called()
 
     def test_clean_docker_error_formatting(self):
         raw_error = (
@@ -4465,6 +4615,134 @@ class DockerUpdatesDecouplingAndLifecycleTests(unittest.TestCase):
 
             # Crucial assertion: check_updates was NOT invoked
             mock_check_updates.assert_not_called()
+
+    def test_external_stack_updates_ui_and_topbar_simplification(self):
+        """Verify external stack container update button suppression, badge display,
+        topbar pill removal, and sidebar version footer placement."""
+        import subprocess
+
+        index_html = Path("static/index.html").read_text(encoding="utf-8")
+        css_text = Path("static/styles.css").read_text(encoding="utf-8")
+        app_js = Path("static/app.js").read_text(encoding="utf-8")
+
+        # 1. HTML Topbar verification: No header raid pill or live stream indicators
+        topbar_start = index_html.find('<header class="main-topbar">')
+        self.assertGreater(topbar_start, -1)
+        topbar_end = index_html.find('</header>', topbar_start)
+        self.assertGreater(topbar_end, topbar_start)
+        topbar_html = index_html[topbar_start:topbar_end]
+
+        self.assertNotIn('id="header-raid-pill"', topbar_html)
+        self.assertNotIn('id="raid-status-badge"', topbar_html)
+        self.assertNotIn('id="live-stream-indicator"', topbar_html)
+        self.assertNotIn('id="auto-refresh-indicator"', topbar_html)
+
+        # 2. Overview System Metrics: No system-interval-select
+        overview_start = index_html.find('id="view-overview"')
+        self.assertGreater(overview_start, -1)
+        overview_end = index_html.find('id="view-raid"')
+        self.assertGreater(overview_end, overview_start)
+        overview_html = index_html[overview_start:overview_end]
+        self.assertNotIn('id="system-interval-select"', overview_html)
+
+        # 3. Sidebar Footer: Version display placed below user session box
+        sidebar_footer_idx = index_html.find('class="sidebar-footer"')
+        user_session_idx = index_html.find('id="user-session-box"')
+        version_display_idx = index_html.find('id="sidebar-version-display"')
+        version_badge_idx = index_html.find('id="version-badge"')
+
+        self.assertGreater(sidebar_footer_idx, -1)
+        self.assertGreater(user_session_idx, sidebar_footer_idx)
+        self.assertGreater(version_display_idx, user_session_idx)
+        self.assertGreater(version_badge_idx, version_display_idx)
+
+        # 4. CSS verification for sidebar version and external stack badge
+        self.assertIn("#sidebar-version-display", css_text)
+        self.assertIn("var(--font-mono)", css_text)
+        self.assertIn(".external-stack-badge", css_text)
+
+        # 5. Node.js VM test for generateUpdateRowHtml and button gating
+        node_script = """
+        const fs = require('fs');
+        const vm = require('vm');
+        const code = fs.readFileSync('static/app.js', 'utf8');
+
+        const context = vm.createContext({
+          escapeHtml: (s) => String(s || '')
+        });
+
+        const extractFn = (name) => {
+          const start = code.indexOf('function ' + name);
+          let depth = 0;
+          let end = start;
+          let foundBrace = false;
+          for (let i = start; i < code.length; i++) {
+            if (code[i] === '{') {
+              depth++;
+              foundBrace = true;
+            } else if (code[i] === '}') {
+              depth--;
+              if (foundBrace && depth === 0) {
+                end = i + 1;
+                break;
+              }
+            }
+          }
+          return code.slice(start, end);
+        };
+
+        vm.runInContext(extractFn('generateUpdateRowHtml'), context);
+
+        // A. Managed container with update available -> Update button rendered
+        const managedRow = context.generateUpdateRowHtml({
+          container_id: 'cid-managed',
+          container_name: 'managed-app',
+          image: 'app:latest',
+          stack: 'my-managed-stack',
+          update_available: true,
+          managed_stack: true,
+          can_update: true
+        });
+        if (!managedRow.includes('btn-action-success') || !managedRow.includes('Update</button>')) {
+          throw new Error('Managed container with update should render Update button');
+        }
+
+        // B. External stack container with update available -> NO Update button, renders External Stack badge
+        const externalRow = context.generateUpdateRowHtml({
+          container_id: 'cid-ext',
+          container_name: 'portainer-app',
+          image: 'portainer/agent:latest',
+          stack: 'external-swarm',
+          update_available: true,
+          managed_stack: false,
+          can_update: false
+        });
+        if (externalRow.includes('Update</button>')) {
+          throw new Error('External stack container must NOT render Update button');
+        }
+        if (!externalRow.includes('External Stack')) {
+          throw new Error('External stack container must render External Stack badge');
+        }
+
+        // C. Standalone container with update available -> Update button rendered
+        const standaloneRow = context.generateUpdateRowHtml({
+          container_id: 'cid-standalone',
+          container_name: 'standalone-app',
+          image: 'redis:alpine',
+          stack: '',
+          update_available: true,
+          managed_stack: true,
+          can_update: true
+        });
+        if (!standaloneRow.includes('Update</button>')) {
+          throw new Error('Standalone container with update should render Update button');
+        }
+
+        console.log('SUCCESS');
+        """
+        proc = subprocess.run(["node", "-e", node_script], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"Node test failed: {proc.stderr}")
+        self.assertIn("SUCCESS", proc.stdout)
 
 
 if __name__ == "__main__":

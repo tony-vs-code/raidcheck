@@ -1152,6 +1152,8 @@ async def api_docker_updates_apply(
             containers=containers,
             stacks=stacks,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
