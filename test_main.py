@@ -1194,6 +1194,7 @@ class FastAPIEndpointTests(unittest.TestCase):
             "/api/history",
             "/api/settings",
             "/api/update/check",
+            "/api/changelog",
         ]
         for path in protected_get_paths:
             resp = asgi_get(api.app, path)
@@ -1503,12 +1504,14 @@ class FastAPIEndpointTests(unittest.TestCase):
                 return b"abc1234\n"
             if cmd[:3] == ["git", "fetch", "origin"]:
                 return b""
-            if cmd[:3] == ["git", "tag", "-l"]:
+            if cmd[:3] == ["git", "tag", "-l"] and any("v*" in str(c) for c in cmd):
                 return b"v0.1.0\nv0.2.0\n"
             if cmd[:3] == ["git", "rev-parse", "--short"] and "v0.2.0" in cmd[3]:
                 return b"def5678\n"
             if cmd[:3] == ["git", "log", "--oneline"]:
                 return b"def5678 Add settings and update manager\n"
+            if cmd[:2] == ["git", "show"] and "v0.2.0:RELEASE_NOTES.md" in cmd[2]:
+                return b"# Release v0.2.0 \xf0\x9f\x9a\x80\n\n- Add settings and update manager\n"
             if cmd[:3] == ["git", "checkout", "-f"]:
                 return b"Previous HEAD position was abc1234\nHEAD is now at def5678\n"
             if len(cmd) == 2 and cmd[1] == "sync":
@@ -1532,6 +1535,7 @@ class FastAPIEndpointTests(unittest.TestCase):
             self.assertEqual(check_data["latest_commit"], "def5678")
             self.assertTrue(check_data["update_available"])
             self.assertIn("Add settings and update manager", check_data["changelog"])
+            self.assertEqual(check_data["release_notes"], "# Release v0.2.0\n\n- Add settings and update manager")
 
             with patch("main.subprocess.Popen") as mock_popen:
                 apply_resp = asgi_post(
@@ -1543,6 +1547,12 @@ class FastAPIEndpointTests(unittest.TestCase):
                 self.assertEqual(apply_data["target_version"], "0.2.0")
                 self.assertIn(["git", "checkout", "-f", "v0.2.0"], executed_cmds)
                 mock_popen.assert_called_once()
+
+            changelog_resp = asgi_get(api.app, "/api/changelog", cookies=self.auth_cookies)
+            self.assertEqual(changelog_resp.status_code, 200)
+            changelog_data = changelog_resp.json()
+            self.assertIn("changelog", changelog_data)
+            self.assertTrue(isinstance(changelog_data["changelog"], str))
 
         # Verify apply_release_update succeeds even when uv binary raises FileNotFoundError
         def fake_check_output_no_uv(cmd, *args, **kwargs):
@@ -1577,6 +1587,168 @@ class FastAPIEndpointTests(unittest.TestCase):
             )
             self.assertEqual(fail_resp.status_code, 500)
             self.assertIn("checkout conflict", fail_resp.json()["detail"])
+
+    def test_api_changelog_endpoint(self):
+        # Authenticated access when CHANGELOG.md exists
+        with patch.object(main, "get_full_changelog", return_value="# Changelog\n\n- v0.8.2 Initial"):
+            resp = asgi_get(api.app, "/api/changelog", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json(), {"changelog": "# Changelog\n\n- v0.8.2 Initial"})
+
+        # Fallback when CHANGELOG.md is missing or raises OSError
+        with patch.object(main, "get_full_changelog", return_value=""):
+            resp = asgi_get(api.app, "/api/changelog", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json(), {"changelog": ""})
+
+    def test_check_for_release_update_with_curated_notes(self):
+        def fake_git(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "fetch", "origin"]:
+                return b""
+            if cmd[:3] == ["git", "tag", "-l"] and any("v*" in str(c) for c in cmd):
+                return b"v0.1.0\nv0.9.0\n"
+            if cmd[:3] == ["git", "rev-parse", "--short"]:
+                return b"abc999\n"
+            if cmd[:3] == ["git", "log", "--oneline"]:
+                return b"abc999 Commit log\n"
+            if cmd[:2] == ["git", "show"] and "v0.9.0:RELEASE_NOTES.md" in cmd[2]:
+                return (
+                    b"# Release v0.9.0 \xf0\x9f\x9a\x80\n\n"
+                    b"## Highlights \xe2\x9c\xa8\n"
+                    b"- \xf0\x9f\x9a\x80 Fast streaming\n"
+                    b"- \xe2\x9a\xa1 Low overhead\n"
+                )
+            return b""
+
+        with (
+            patch.object(
+                main,
+                "get_current_version_info",
+                return_value={"version": "0.1.0", "commit": "old000"},
+            ),
+            patch.object(main, "check_output", side_effect=fake_git),
+        ):
+            res = main.check_for_release_update()
+            self.assertTrue(res["update_available"])
+            self.assertEqual(res["latest_version"], "0.9.0")
+            self.assertEqual(
+                res["release_notes"],
+                "# Release v0.9.0\n\n## Highlights\n- Fast streaming\n- Low overhead",
+            )
+            self.assertEqual(res["changelog"], "abc999 Commit log")
+
+    def test_check_for_release_update_fallback_to_tag_message(self):
+        def fake_git(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "fetch", "origin"]:
+                return b""
+            if cmd[:3] == ["git", "tag", "-l"] and any("v*" in str(c) for c in cmd):
+                return b"v0.1.0\nv0.9.0\n"
+            if cmd[:3] == ["git", "rev-parse", "--short"]:
+                return b"abc999\n"
+            if cmd[:3] == ["git", "log", "--oneline"]:
+                return b"abc999 Commit log\n"
+            if cmd[:2] == ["git", "show"]:
+                raise CalledProcessError(1, cmd, output=b"fatal: path not found")
+            if cmd[:3] == ["git", "tag", "-l"] and any("%(contents)" in str(c) for c in cmd):
+                return b"Release v0.9.0 \xf0\x9f\x8e\x89\nCurated tag message\n"
+            return b""
+
+        with (
+            patch.object(
+                main,
+                "get_current_version_info",
+                return_value={"version": "0.1.0", "commit": "old000"},
+            ),
+            patch.object(main, "check_output", side_effect=fake_git),
+        ):
+            res = main.check_for_release_update()
+            self.assertTrue(res["update_available"])
+            self.assertEqual(
+                res["release_notes"],
+                "Release v0.9.0\nCurated tag message",
+            )
+
+    def test_check_for_release_update_fallback_to_git_log(self):
+        def fake_git(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "fetch", "origin"]:
+                return b""
+            if cmd[:3] == ["git", "tag", "-l"] and any("v*" in str(c) for c in cmd):
+                return b"v0.1.0\nv0.9.0\n"
+            if cmd[:3] == ["git", "rev-parse", "--short"]:
+                return b"abc999\n"
+            if cmd[:3] == ["git", "log", "--oneline"]:
+                return b"abc999 Direct log fallback \xf0\x9f\x90\x9b\n"
+            if cmd[:2] == ["git", "show"]:
+                raise CalledProcessError(1, cmd, output=b"fatal: not found")
+            if cmd[:3] == ["git", "tag", "-l"] and any("%(contents)" in str(c) for c in cmd):
+                return b""
+            return b""
+
+        with (
+            patch.object(
+                main,
+                "get_current_version_info",
+                return_value={"version": "0.1.0", "commit": "old000"},
+            ),
+            patch.object(main, "check_output", side_effect=fake_git),
+        ):
+            res = main.check_for_release_update()
+            self.assertTrue(res["update_available"])
+            self.assertEqual(res["release_notes"], "abc999 Direct log fallback")
+            self.assertEqual(res["changelog"], "abc999 Direct log fallback \U0001f41b")
+
+    def test_check_for_release_update_no_update_and_no_tags(self):
+        # Case 1: No tags
+        with (
+            patch.object(
+                main,
+                "get_current_version_info",
+                return_value={"version": "1.0.0", "commit": "cur123"},
+            ),
+            patch.object(main, "check_output", return_value=b""),
+        ):
+            res = main.check_for_release_update()
+            self.assertFalse(res["update_available"])
+            self.assertEqual(res["release_notes"], "")
+            self.assertEqual(res["changelog"], "")
+
+        # Case 2: Latest version <= current version
+        def fake_git_uptodate(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "tag", "-l"] and any("v*" in str(c) for c in cmd):
+                return b"v1.0.0\nv0.9.0\n"
+            return b""
+
+        with (
+            patch.object(
+                main,
+                "get_current_version_info",
+                return_value={"version": "1.0.0", "commit": "cur123"},
+            ),
+            patch.object(main, "check_output", side_effect=fake_git_uptodate),
+        ):
+            res = main.check_for_release_update()
+            self.assertFalse(res["update_available"])
+            self.assertEqual(res["release_notes"], "")
+            self.assertEqual(res["changelog"], "")
+
+    def test_strip_emojis_utility(self):
+        self.assertEqual(main.strip_emojis(""), "")
+        self.assertEqual(main.strip_emojis(None), "")
+        raw = (
+            "# Release v1.0.0 \U0001f680\n\n"
+            "## Highlights \u2728\n"
+            "- \U0001f680 High-performance direct event streaming\n"
+            "    - \u26a1 Debian-native low-overhead monitoring\n"
+            "- \U0001f41b Fix concurrency issue\n"
+        )
+        expected = (
+            "# Release v1.0.0\n\n"
+            "## Highlights\n"
+            "- High-performance direct event streaming\n"
+            "    - Debian-native low-overhead monitoring\n"
+            "- Fix concurrency issue"
+        )
+        self.assertEqual(main.strip_emojis(raw), expected)
 
     def test_get_api_status_returns_raid_system_and_notification_state(self):
         ts = 1700001000.0
@@ -1818,6 +1990,27 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="discord-token-input"', index_resp.text)
         self.assertIn('id="discord-enabled-toggle"', index_resp.text)
         self.assertIn('name="discord_enabled"', index_resp.text)
+
+        # Sysfs RAID rebuild progress, direct stream indicator, and toast notifications
+        self.assertIn('id="raid-sync-container"', index_resp.text)
+        self.assertIn('id="raid-sync-label"', index_resp.text)
+        self.assertIn('id="raid-sync-progress-fill"', index_resp.text)
+        self.assertIn('id="live-stream-indicator"', index_resp.text)
+        self.assertIn('id="toast-container"', index_resp.text)
+
+        # Software update header notice button and update modal
+        self.assertIn('id="nav-update-notice-btn"', index_resp.text)
+        self.assertIn('class="update-pulse-dot"', index_resp.text)
+        self.assertIn('id="nav-update-version-label"', index_resp.text)
+        self.assertIn('id="update-modal"', index_resp.text)
+        self.assertIn('id="close-update-modal-btn"', index_resp.text)
+        self.assertIn('id="modal-current-version"', index_resp.text)
+        self.assertIn('id="modal-latest-version"', index_resp.text)
+        self.assertIn('id="modal-release-notes"', index_resp.text)
+        self.assertIn('id="modal-update-status"', index_resp.text)
+        self.assertIn('id="modal-dismiss-btn"', index_resp.text)
+        self.assertIn('id="modal-apply-update-btn"', index_resp.text)
+        self.assertIn('id="modal-toggle-changelog-btn"', index_resp.text)
 
         # Settings modal should NOT contain Discord fields
         modal_start = index_resp.text.find('id="settings-modal"')
@@ -3147,6 +3340,304 @@ class TestDockerBackend(unittest.TestCase):
                 },
             )
 
+
+class DirectSystemStreamsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test_streams.sqlite3"
+        self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
+        self.db_patcher.start()
+
+        # Seed test user and session
+        main.create_user("admin", "adminpass", email="admin@example.com")
+        self.session_token = main.create_session("admin")
+        self.auth_cookies = {"session_token": self.session_token}
+
+    def tearDown(self):
+        self.db_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_statvfs_disk_usage_calculation_and_formatting(self):
+        stat_mock = MagicMock()
+        stat_mock.f_frsize = 4096
+        stat_mock.f_blocks = 268435456  # 1 TiB
+        stat_mock.f_bfree = 134217728   # 512 GiB free
+        stat_mock.f_bavail = 134217728  # 512 GiB avail
+
+        with patch("os.statvfs", return_value=stat_mock):
+            res = main.get_disk_usage_statvfs("/mnt/test")
+            self.assertEqual(res["total"], 268435456 * 4096)
+            self.assertEqual(res["free"], 134217728 * 4096)
+            self.assertEqual(res["used"], (268435456 - 134217728) * 4096)
+            self.assertEqual(res["percent"], 50.0)
+            self.assertEqual(res["total_human"], "1.00T")
+            self.assertEqual(res["used_human"], "512.00G")
+            self.assertEqual(res["free_human"], "512.00G")
+            self.assertIn("512.00G/1.00T (50.0%)", res["storage_info"])
+
+        # Error branch
+        with patch("os.statvfs", side_effect=OSError("Drive offline")):
+            err_res = main.get_disk_usage_statvfs("/mnt/missing")
+            self.assertEqual(err_res["total"], 0)
+            self.assertEqual(err_res["percent"], 0.0)
+            self.assertEqual(err_res["storage_info"], "N/A")
+
+    def test_extract_raid_summary_data_with_statvfs_fallback(self):
+        with (
+            patch.object(main, "get_app_settings", return_value={"mount_path": "/mnt/test"}),
+            patch("os.path.exists", return_value=True),
+            patch.object(
+                main,
+                "get_disk_usage_statvfs",
+                return_value={"storage_info": "1.00T/2.00T (50.0%) | 1.00T free"},
+            ),
+        ):
+            data = main.extract_raid_summary_data("clean", SAMPLE_DETAILS, duf_output="")
+            self.assertEqual(data["storage_info"], "1.00T/2.00T (50.0%) | 1.00T free")
+
+    def test_read_sysfs_raid_state_branches(self):
+        sysfs_base = Path(self.temp_dir.name) / "sys_block"
+        md0_dir = sysfs_base / "md0" / "md"
+        md0_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Clean array
+        (md0_dir / "array_state").write_text("clean\n", encoding="utf-8")
+        (md0_dir / "degraded").write_text("0\n", encoding="utf-8")
+        (md0_dir / "level").write_text("raid1\n", encoding="utf-8")
+        (md0_dir / "raid_disks").write_text("2\n", encoding="utf-8")
+
+        sda1_dir = md0_dir / "dev-sda1"
+        sda1_dir.mkdir(parents=True, exist_ok=True)
+        (sda1_dir / "state").write_text("in_sync\n", encoding="utf-8")
+        (sda1_dir / "slot").write_text("0\n", encoding="utf-8")
+
+        with patch("main.Path", side_effect=lambda p: Path(str(p).replace("/sys/block", str(sysfs_base)))):
+            status, details = main.read_sysfs_raid_state("/dev/md0")
+            self.assertEqual(status, "clean")
+            self.assertIn("State : clean", details)
+            self.assertIn("Raid Level : raid1", details)
+            self.assertIn("/dev/sda1", details)
+
+            # 2. Degraded state
+            (md0_dir / "degraded").write_text("1\n", encoding="utf-8")
+            status, details = main.read_sysfs_raid_state("/dev/md0")
+            self.assertEqual(status, "degraded")
+
+            # 3. Resyncing state
+            (md0_dir / "degraded").write_text("0\n", encoding="utf-8")
+            (md0_dir / "sync_action").write_text("resync\n", encoding="utf-8")
+            (md0_dir / "sync_completed").write_text("12345 / 50000\n", encoding="utf-8")
+            status, details = main.read_sysfs_raid_state("/dev/md0")
+            self.assertEqual(status, "resyncing")
+            self.assertIn("Check Status : 12345 / 50000", details)
+
+            # 4. Recovering state
+            (md0_dir / "sync_action").write_text("recover\n", encoding="utf-8")
+            status, details = main.read_sysfs_raid_state("/dev/md0")
+            self.assertEqual(status, "recovering")
+
+        # Non-existent device returns None
+        self.assertIsNone(main.read_sysfs_raid_state("/dev/md_nonexistent"))
+
+    def test_check_raid_status_prioritizes_sysfs(self):
+        with (
+            patch.object(main, "resolve_raid_device", return_value="/dev/md0"),
+            patch.object(main, "read_sysfs_raid_state", return_value=("clean", "sysfs-details")),
+            patch("main.check_output") as mock_co,
+        ):
+            status, details = main.check_raid_status()
+            self.assertEqual(status, "clean")
+            self.assertEqual(details, "sysfs-details")
+            mock_co.assert_not_called()
+
+    def test_docker_socket_requests_and_fallback(self):
+        mgr = main.DockerManager(stacks_dir=Path(self.temp_dir.name) / "stacks", socket_path="/var/run/test_docker.sock")
+
+        # Mock socket request helper
+        mock_containers_json = json.dumps([
+            {
+                "Id": "c123456789012345",
+                "Names": ["/my_web"],
+                "Image": "nginx:alpine",
+                "State": "running",
+                "Status": "Up 5 minutes",
+                "Ports": [{"IP": "0.0.0.0", "PublicPort": 8080, "PrivatePort": 80, "Type": "tcp"}],
+                "Created": 1700000000,
+                "Labels": {"com.docker.compose.project": "web_stack"},
+            }
+        ]).encode("utf-8")
+
+        mock_images_json = json.dumps([
+            {
+                "Id": "sha256:abc123def456",
+                "RepoTags": ["redis:alpine"],
+                "Size": 35000000,
+                "Created": 1700000000,
+            }
+        ]).encode("utf-8")
+
+        mock_volumes_json = json.dumps({
+            "Volumes": [
+                {
+                    "Name": "test_vol",
+                    "Driver": "local",
+                    "Scope": "local",
+                    "Mountpoint": "/var/lib/docker/volumes/test_vol/_data",
+                    "CreatedAt": "2026-10-01",
+                }
+            ]
+        }).encode("utf-8")
+
+        mock_networks_json = json.dumps([
+            {
+                "Id": "net123456789",
+                "Name": "app_net",
+                "Driver": "bridge",
+                "Scope": "local",
+                "Internal": False,
+                "Created": "2026-10-01",
+            }
+        ]).encode("utf-8")
+
+        mock_stats_json = json.dumps({
+            "read": "2026-10-30T10:00:00Z",
+            "cpu_stats": {"cpu_usage": {"total_usage": 100000}},
+            "memory_stats": {"usage": 5000000},
+        }).encode("utf-8")
+
+        def fake_socket_request(method, path, body=None, timeout=5):
+            if path == "/_ping":
+                return 200, b"OK"
+            if "/containers/json" in path:
+                return 200, mock_containers_json
+            if path == "/images/json":
+                return 200, mock_images_json
+            if path == "/volumes":
+                return 200, mock_volumes_json
+            if path == "/networks":
+                return 200, mock_networks_json
+            if "/containers/c123/stats" in path:
+                return 200, mock_stats_json
+            raise FileNotFoundError(f"Unknown path {path}")
+
+        with patch.object(mgr, "_socket_request", side_effect=fake_socket_request):
+            # 1. is_daemon_running via socket
+            self.assertTrue(mgr.is_daemon_running())
+
+            # 2. get_containers
+            containers = mgr.get_containers(all=True)
+            self.assertEqual(len(containers), 1)
+            self.assertEqual(containers[0]["name"], "my_web")
+            self.assertEqual(containers[0]["stack"], "web_stack")
+            self.assertEqual(containers[0]["ports"], "0.0.0.0:8080->80/tcp")
+
+            # 3. get_images
+            images = mgr.get_images()
+            self.assertEqual(len(images), 1)
+            self.assertEqual(images[0]["repository"], "redis")
+            self.assertEqual(images[0]["tag"], "alpine")
+
+            # 4. get_volumes
+            volumes = mgr.get_volumes()
+            self.assertEqual(len(volumes), 1)
+            self.assertEqual(volumes[0]["name"], "test_vol")
+
+            # 5. get_networks
+            networks = mgr.get_networks()
+            self.assertEqual(len(networks), 1)
+            self.assertEqual(networks[0]["name"], "app_net")
+
+            # 6. get_container_stats
+            stats = mgr.get_container_stats("c123")
+            self.assertIn("cpu_stats", stats)
+
+        # Fallback when socket throws FileNotFoundError
+        with (
+            patch.object(mgr, "_socket_request", side_effect=FileNotFoundError("socket down")),
+            patch.object(mgr, "_run_docker", return_value='{"ID": "cli_c", "Names": "cli_app", "State": "running"}\n'),
+        ):
+            c_fallback = mgr.get_containers(all=True)
+            self.assertEqual(len(c_fallback), 1)
+            self.assertEqual(c_fallback[0]["name"], "cli_app")
+
+    def test_api_container_stats_endpoint(self):
+        # 1. Unauthenticated request rejected
+        resp_unauth = asgi_get(api.app, "/api/docker/containers/c123/stats")
+        self.assertEqual(resp_unauth.status_code, 401)
+
+        # 2. Authenticated request
+        with patch.object(
+            main.docker_manager,
+            "get_container_stats",
+            return_value={"cpu_percent": 12.5, "memory_usage": 1048576},
+        ):
+            resp = asgi_get(
+                api.app,
+                "/api/docker/containers/c123/stats",
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["stats"]["cpu_percent"], 12.5)
+
+    def test_docker_events_listener_lifecycle_broadcast(self):
+        event_line = json.dumps({
+            "Type": "container",
+            "Action": "start",
+            "Actor": {
+                "ID": "c1234567890123",
+                "Attributes": {"name": "monitored_app"},
+            },
+            "time": 1700000000,
+        }).encode("utf-8") + b"\n"
+
+        async def run_listener_test():
+            # Mock content stream
+            class FakeContent:
+                def __aiter__(self):
+                    self.yielded = False
+                    return self
+
+                async def __anext__(self):
+                    if not self.yielded:
+                        self.yielded = True
+                        return event_line
+                    # Cancel listener after delivering event
+                    raise asyncio.CancelledError()
+
+            fake_resp = MagicMock()
+            fake_resp.status = 200
+            fake_resp.content = FakeContent()
+
+            class FakeSessionContext:
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, exc_type, exc, tb):
+                    pass
+                def get(self, url):
+                    class FakeGetContext:
+                        async def __aenter__(self):
+                            return fake_resp
+                        async def __aexit__(self, exc_type, exc, tb):
+                            pass
+                    return FakeGetContext()
+
+            with (
+                patch("pathlib.Path.exists", return_value=True),
+                patch("aiohttp.UnixConnector", return_value=MagicMock()),
+                patch("aiohttp.ClientSession", return_value=FakeSessionContext()),
+                patch.object(main.docker_manager, "invalidate_cache") as mock_inval,
+                patch.object(api.ws_manager, "broadcast", new_callable=AsyncMock) as mock_broadcast,
+            ):
+                await api.docker_events_listener(socket_path="/var/run/fake.sock")
+                mock_inval.assert_called_once()
+                mock_broadcast.assert_called_once()
+                payload = mock_broadcast.call_args[0][0]
+                self.assertEqual(payload["type"], "docker_event")
+                self.assertEqual(payload["event"]["action"], "start")
+                self.assertEqual(payload["event"]["name"], "monitored_app")
+
+        asyncio.run(run_listener_test())
 
 
 if __name__ == "__main__":

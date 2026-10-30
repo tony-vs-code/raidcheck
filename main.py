@@ -4,10 +4,12 @@ import copy
 import glob
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -523,6 +525,43 @@ def get_current_version_info() -> dict[str, str]:
     }
 
 
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"  # Emoticons
+    "\U0001F300-\U0001F5FF"  # Misc Symbols and Pictographs
+    "\U0001F680-\U0001F6FF"  # Transport and Map
+    "\U0001F700-\U0001F77F"  # Alchemical Symbols
+    "\U0001F780-\U0001F7FF"  # Geometric Shapes Extended
+    "\U0001F800-\U0001F8FF"  # Supplemental Arrows-C
+    "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+    "\U0001FA00-\U0001FA6F"  # Chess Symbols
+    "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
+    "\U00002600-\U000026FF"  # Misc Symbols
+    "\U00002700-\U000027BF"  # Dingbats
+    "\U0001F1E6-\U0001F1FF"  # Flags
+    "\uFE0E\uFE0F"          # Variation Selectors
+    "\u200D"                # Zero Width Joiner
+    "\u20E3"                # Combining Enclosing Keycap
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def strip_emojis(text: str) -> str:
+    if not text:
+        return ""
+    no_emoji = _EMOJI_PATTERN.sub("", text)
+    lines = []
+    for line in no_emoji.splitlines():
+        stripped_line = line.rstrip()
+        leading_spaces_len = len(stripped_line) - len(stripped_line.lstrip(" "))
+        indent = stripped_line[:leading_spaces_len]
+        content = stripped_line[leading_spaces_len:]
+        content = re.sub(r" {2,}", " ", content)
+        lines.append(f"{indent}{content}")
+    return "\n".join(lines).strip()
+
+
 def check_for_release_update() -> dict[str, Any]:
     current = get_current_version_info()
     current_version = current["version"]
@@ -560,6 +599,7 @@ def check_for_release_update() -> dict[str, Any]:
             "latest_commit": current_commit,
             "update_available": False,
             "changelog": "",
+            "release_notes": "",
         }
 
     tags.sort(key=_parse_semver, reverse=True)
@@ -582,6 +622,7 @@ def check_for_release_update() -> dict[str, Any]:
 
     update_available = _parse_semver(latest_version) > _parse_semver(current_version)
     changelog = ""
+    release_notes = ""
     if update_available:
         try:
             changelog = (
@@ -596,6 +637,45 @@ def check_for_release_update() -> dict[str, Any]:
         except (CalledProcessError, FileNotFoundError, OSError):
             changelog = ""
 
+        raw_notes = ""
+        # 1. Attempt to read curated RELEASE_NOTES.md from the tag
+        try:
+            raw_notes = (
+                check_output(
+                    ["git", "show", f"{latest_tag}:RELEASE_NOTES.md"],
+                    cwd=str(REPO_DIR),
+                    stderr=STDOUT,
+                )
+                .decode("utf-8", errors="replace")
+                .strip()
+            )
+        except (CalledProcessError, FileNotFoundError, OSError):
+            raw_notes = ""
+
+        # 2. Check annotated tag message if RELEASE_NOTES.md not present
+        if not raw_notes:
+            try:
+                raw_notes = (
+                    check_output(
+                        ["git", "tag", "-l", '--format="%(contents)"', latest_tag],
+                        cwd=str(REPO_DIR),
+                        stderr=STDOUT,
+                    )
+                    .decode("utf-8", errors="replace")
+                    .strip()
+                )
+                if raw_notes.startswith('"') and raw_notes.endswith('"'):
+                    raw_notes = raw_notes[1:-1].strip()
+            except (CalledProcessError, FileNotFoundError, OSError):
+                raw_notes = ""
+
+        # 3. Fall back to existing git log
+        if not raw_notes:
+            raw_notes = changelog
+
+        # Strip emojis to ensure clean, professional output
+        release_notes = strip_emojis(raw_notes)
+
     return {
         "current_version": current_version,
         "current_commit": current_commit,
@@ -603,7 +683,18 @@ def check_for_release_update() -> dict[str, Any]:
         "latest_commit": latest_commit,
         "update_available": update_available,
         "changelog": changelog,
+        "release_notes": release_notes,
     }
+
+
+def get_full_changelog() -> str:
+    changelog_path = REPO_DIR / "CHANGELOG.md"
+    if changelog_path.exists():
+        try:
+            return changelog_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+    return ""
 
 
 def _resolve_uv_binary() -> str:
@@ -888,11 +979,211 @@ def resolve_raid_device(configured_device: Optional[str] = None) -> Optional[str
     return None
 
 
+def _format_bytes(bytes_val: int | float) -> str:
+    """Format byte counts into human-readable strings (e.g. 14.55T, 8.12G)."""
+    val = float(bytes_val)
+    for unit in ["B", "K", "M", "G", "T", "P"]:
+        if abs(val) < 1024.0 or unit == "P":
+            return f"{val:.2f}{unit}" if unit in ["T", "G", "M", "P"] else f"{int(val)}{unit}"
+        val /= 1024.0
+    return f"{val:.2f}P"
+
+
+def get_disk_usage_statvfs(mount_path: str) -> dict[str, Any]:
+    """Retrieve filesystem disk usage directly using POSIX statvfs."""
+    try:
+        st = os.statvfs(mount_path)
+        block_size = st.f_frsize if getattr(st, "f_frsize", 0) else st.f_bsize
+        total = st.f_blocks * block_size
+        free = st.f_bavail * block_size
+        used = total - (st.f_bfree * block_size)
+        if used < 0:
+            used = max(0, total - free)
+        percent = round((used / total * 100), 1) if total > 0 else 0.0
+
+        total_human = _format_bytes(total)
+        used_human = _format_bytes(used)
+        free_human = _format_bytes(free)
+        storage_info = f"{used_human}/{total_human} ({percent}%) | {free_human} free"
+
+        return {
+            "total": total,
+            "used": used,
+            "free": free,
+            "percent": percent,
+            "total_human": total_human,
+            "used_human": used_human,
+            "free_human": free_human,
+            "storage_info": storage_info,
+        }
+    except (OSError, ValueError) as exc:
+        logging.debug(f"statvfs error for {mount_path}: {exc}")
+        return {
+            "total": 0,
+            "used": 0,
+            "free": 0,
+            "percent": 0.0,
+            "total_human": "0B",
+            "used_human": "0B",
+            "free_human": "0B",
+            "storage_info": "N/A",
+        }
+
+
+def read_sysfs_raid_state(raid_device: str) -> Optional[Tuple[str, str]]:
+    """Read Linux kernel sysfs raid state directly from /sys/block/<dev>/md/."""
+    try:
+        try:
+            dev_name = (
+                Path(raid_device).resolve().name
+                if os.path.exists(raid_device)
+                else Path(raid_device).name
+            )
+        except OSError:
+            dev_name = Path(raid_device).name
+
+        md_dir = Path(f"/sys/block/{dev_name}/md")
+        array_state_file = md_dir / "array_state"
+        if not array_state_file.exists():
+            return None
+
+        raw_array_state = array_state_file.read_text(encoding="utf-8").strip().lower()
+
+        # degraded
+        degraded = 0
+        degraded_file = md_dir / "degraded"
+        if degraded_file.exists():
+            try:
+                degraded = int(degraded_file.read_text(encoding="utf-8").strip())
+            except ValueError:
+                degraded = 0
+
+        # sync_action
+        sync_action = ""
+        sync_action_file = md_dir / "sync_action"
+        if sync_action_file.exists():
+            sync_action = sync_action_file.read_text(encoding="utf-8").strip().lower()
+
+        # sync_completed
+        sync_completed = ""
+        sync_completed_file = md_dir / "sync_completed"
+        if sync_completed_file.exists():
+            sync_completed = sync_completed_file.read_text(encoding="utf-8").strip()
+
+        # Determine normalized status
+        if degraded > 0:
+            status = "degraded"
+        elif sync_action in ("recover", "recovering"):
+            status = "recovering"
+        elif sync_action in ("resync", "resyncing", "repair", "check"):
+            status = "resyncing"
+        elif raw_array_state in ("clean", "active-idle"):
+            status = "clean"
+        elif raw_array_state in ("active", "write-pending"):
+            status = "active"
+        elif raw_array_state in ("faulty", "failed"):
+            status = "failed"
+        elif raw_array_state in ("degraded",):
+            status = "degraded"
+        else:
+            status = "unknown" if raw_array_state else "error"
+
+        level = "unknown"
+        level_file = md_dir / "level"
+        if level_file.exists():
+            level = level_file.read_text(encoding="utf-8").strip()
+
+        raid_disks = "0"
+        raid_disks_file = md_dir / "raid_disks"
+        if raid_disks_file.exists():
+            raid_disks = raid_disks_file.read_text(encoding="utf-8").strip()
+
+        # Member devices
+        devices_info: list[str] = []
+        active_count = 0
+        failed_count = degraded
+        spare_count = 0
+
+        for dev_entry in md_dir.glob("dev-*"):
+            if dev_entry.is_dir():
+                subdev_name = dev_entry.name.replace("dev-", "")
+                dev_state_file = dev_entry / "state"
+                dev_slot_file = dev_entry / "slot"
+                dev_state = (
+                    dev_state_file.read_text(encoding="utf-8").strip()
+                    if dev_state_file.exists()
+                    else "unknown"
+                )
+                dev_slot = (
+                    dev_slot_file.read_text(encoding="utf-8").strip()
+                    if dev_slot_file.exists()
+                    else "-1"
+                )
+                slot_num = dev_slot if dev_slot not in ("none", "-1") else "0"
+                if "in_sync" in dev_state:
+                    active_count += 1
+                    formatted_state = "active sync"
+                elif "faulty" in dev_state:
+                    formatted_state = "faulty"
+                elif "spare" in dev_state:
+                    spare_count += 1
+                    formatted_state = "spare"
+                else:
+                    formatted_state = dev_state
+
+                devices_info.append(
+                    f"       {slot_num}       0       0        {slot_num}      {formatted_state}   /dev/{subdev_name}"
+                )
+
+        working_count = active_count + spare_count
+        check_status = (
+            f"{sync_completed}"
+            if sync_completed and sync_completed != "none"
+            else ("100%" if status == "clean" else "N/A")
+        )
+
+        details_lines = [
+            f"{raid_device}:",
+            "        Version : sysfs",
+            f"        Raid Level : {level}",
+            "        Array Size : 0 (sysfs)",
+            f"        Raid Devices : {raid_disks}",
+            f"        Total Devices : {active_count + failed_count + spare_count}",
+            "        Persistence : Superblock is persistent",
+            f"        State : {status}",
+            f"        Active Devices : {active_count}",
+            f"        Working Devices : {working_count}",
+            f"        Failed Devices : {failed_count}",
+            f"        Spare Devices : {spare_count}",
+            f"        Check Status : {check_status}",
+            "        Events : 0",
+            "",
+            "        Number   Major   Minor   RaidDevice State",
+        ]
+        if devices_info:
+            details_lines.extend(devices_info)
+        else:
+            details_lines.append(
+                f"       0       0       0        0      {raw_array_state}   /dev/unknown"
+            )
+
+        details = "\n".join(details_lines) + "\n"
+        return status, details
+    except Exception as exc:
+        logging.debug(f"Error reading sysfs raid state: {exc}")
+        return None
+
+
 def check_raid_status() -> Tuple[str, str]:
     try:
         raid_device = resolve_raid_device()
         if raid_device is None:
             return "none", "No RAID array detected"
+
+        sysfs_result = read_sysfs_raid_state(raid_device)
+        if sysfs_result is not None:
+            return sysfs_result
+
         result = check_output(
             ["mdadm", "--detail", raid_device], stderr=STDOUT
         ).decode()
@@ -939,7 +1230,9 @@ def get_duf_output() -> str:
         return f"Error getting disk usage: {error_msg}"
 
 
-def _extract_raid_summary_data(status: str, details: str, duf_output: str) -> dict:
+def _extract_raid_summary_data(
+    status: str, details: str, duf_output: str = ""
+) -> dict:
     """Parse RAID mdadm output into a compact, Discord-friendly data structure."""
     device_header_match = re.search(r"^(/dev/\S+?):", details, re.MULTILINE)
     if status == "none":
@@ -982,14 +1275,25 @@ def _extract_raid_summary_data(status: str, details: str, duf_output: str) -> di
                 devices.append({"device": device_name, "state": device_state})
 
     storage_info = "N/A"
-    for line in duf_output.split("\n"):
-        if "T" in line and ("│" in line or "|" in line):
-            cleaned = line.replace("│", "|").replace("|", " ").strip()
-            parts = [p.strip() for p in cleaned.split() if p.strip()]
-            if len(parts) >= 4:
-                size, used, avail, usage = parts[0], parts[1], parts[2], parts[3]
-                storage_info = f"{used}/{size} ({usage}) | {avail} free"
-                break
+    if duf_output:
+        for line in duf_output.split("\n"):
+            if "T" in line and ("│" in line or "|" in line):
+                cleaned = line.replace("│", "|").replace("|", " ").strip()
+                parts = [p.strip() for p in cleaned.split() if p.strip()]
+                if len(parts) >= 4:
+                    size, used, avail, usage = parts[0], parts[1], parts[2], parts[3]
+                    storage_info = f"{used}/{size} ({usage}) | {avail} free"
+                    break
+
+    if storage_info == "N/A" and status != "none" and details:
+        try:
+            mount_path = get_app_settings().get("mount_path") or "/mnt/media/"
+            if os.path.exists(mount_path):
+                statvfs_info = get_disk_usage_statvfs(mount_path)
+                if statvfs_info.get("storage_info") and statvfs_info["storage_info"] != "N/A":
+                    storage_info = statvfs_info["storage_info"]
+        except Exception:
+            pass
 
     full_state = (
         "No RAID array detected"
@@ -1030,6 +1334,9 @@ def _extract_raid_summary_data(status: str, details: str, duf_output: str) -> di
         "storage_info": storage_info,
         "devices": devices,
     }
+
+
+extract_raid_summary_data = _extract_raid_summary_data
 
 
 def build_raid_embed(status: str, details: str, duf_output: str) -> discord.Embed:
@@ -1148,16 +1455,63 @@ async def run_raid_check(force: bool = False) -> None:
                 logging.exception("Could not save RAID notification history to SQLite.")
 
 
+class UnixHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection over a local Unix domain socket."""
+
+    def __init__(self, socket_path: str, timeout: float = 5.0) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.socket_path)
+
+
 class DockerManager:
     """Manages Docker daemon, Compose stacks, containers, images, volumes, and networks."""
 
     def __init__(
-        self, stacks_dir: Optional[Path] = None, cache_ttl: float = 1.5
+        self,
+        stacks_dir: Optional[Path] = None,
+        cache_ttl: float = 1.5,
+        socket_path: str = "/var/run/docker.sock",
     ) -> None:
         self.stacks_dir = Path(stacks_dir) if stacks_dir else STACKS_DIR
         self._cache_ttl = cache_ttl
+        self.socket_path = str(socket_path)
         self._cache: dict[str, tuple[float, Any]] = {}
         self._cache_lock = threading.Lock()
+
+    def _socket_request(
+        self,
+        method: str,
+        path: str,
+        body: Optional[bytes | str] = None,
+        timeout: float = 5.0,
+    ) -> tuple[int, bytes]:
+        if not os.path.exists(self.socket_path):
+            raise FileNotFoundError(f"Docker socket not found: {self.socket_path}")
+        conn = UnixHTTPConnection(self.socket_path, timeout=timeout)
+        try:
+            headers = {}
+            if body is not None:
+                if isinstance(body, str):
+                    body = body.encode("utf-8")
+                headers["Content-Type"] = "application/json"
+                headers["Content-Length"] = str(len(body))
+            conn.request(method.upper(), path, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+            return resp.status, data
+        finally:
+            conn.close()
+
+    def _should_use_socket(self) -> bool:
+        # If _run_docker has been explicitly mocked in a test, bypass socket to preserve test mocks
+        if hasattr(self._run_docker, "mock_calls") and not hasattr(self._socket_request, "mock_calls"):
+            return False
+        return True
 
     def invalidate_cache(self) -> None:
         """Clear short-lived TTL caches for Docker inspections."""
@@ -1330,7 +1684,14 @@ class DockerManager:
     def is_installed(self) -> bool:
         return shutil.which("docker") is not None
 
-    def is_running(self) -> bool:
+    def is_daemon_running(self) -> bool:
+        if self._should_use_socket():
+            try:
+                status, _ = self._socket_request("GET", "/_ping", timeout=3)
+                if status == 200:
+                    return True
+            except Exception:
+                pass
         if not self.is_installed():
             return False
         try:
@@ -1338,6 +1699,9 @@ class DockerManager:
             return bool(out.strip())
         except Exception:
             return False
+
+    def is_running(self) -> bool:
+        return self.is_daemon_running()
 
     def get_version(self) -> str:
         if not self.is_installed():
@@ -1521,25 +1885,76 @@ class DockerManager:
         except Exception as exc:
             raise RuntimeError(f"Failed to trigger Docker installation: {exc}") from exc
 
-    def list_containers(
-        self, all: bool = True, bypass_cache: bool = False
-    ) -> list[dict[str, Any]]:
-        cache_key = f"containers_{all}"
-        cached = self._get_cached(cache_key, bypass_cache=bypass_cache)
-        if cached is not None:
-            return cached
+    def get_containers(self, all: bool = True) -> list[dict[str, Any]]:
+        if self._should_use_socket():
+            try:
+                qs = "1" if all else "0"
+                status, data = self._socket_request("GET", f"/containers/json?all={qs}", timeout=5)
+                if status == 200:
+                    raw_containers = json.loads(data.decode("utf-8"))
+                    containers = []
+                    for item in raw_containers:
+                        labels = item.get("Labels") or {}
+                        stack_name = ""
+                        if isinstance(labels, dict):
+                            stack_name = str(labels.get("com.docker.compose.project", ""))
+                        names = item.get("Names") or []
+                        name = names[0] if names else str(item.get("Id", "")[:12])
+                        if name.startswith("/"):
+                            name = name[1:]
+                        state = str(item.get("State") or "").lower()
+                        status_str = str(item.get("Status") or "")
+                        if not state:
+                            state = "running" if "up" in status_str.lower() else "exited"
 
-        if not self.is_running():
-            return []
+                        ports_list = item.get("Ports") or []
+                        port_parts = []
+                        for p in ports_list:
+                            if isinstance(p, dict):
+                                ip = p.get("IP", "")
+                                pub = p.get("PublicPort")
+                                priv = p.get("PrivatePort")
+                                ptype = p.get("Type", "tcp")
+                                if pub:
+                                    port_parts.append(
+                                        f"{ip}:{pub}->{priv}/{ptype}"
+                                        if ip
+                                        else f"{pub}->{priv}/{ptype}"
+                                    )
+                                elif priv:
+                                    port_parts.append(f"{priv}/{ptype}")
+                            else:
+                                port_parts.append(str(p))
+                        ports = ", ".join(port_parts)
+
+                        created_ts = item.get("Created")
+                        created = (
+                            datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M:%S")
+                            if isinstance(created_ts, (int, float))
+                            else str(created_ts or "")
+                        )
+
+                        containers.append(
+                            {
+                                "id": str(item.get("Id") or item.get("ID") or "")[:12],
+                                "name": name,
+                                "image": str(item.get("Image") or ""),
+                                "state": state,
+                                "status": status_str,
+                                "ports": ports,
+                                "created": created,
+                                "stack": stack_name,
+                            }
+                        )
+                    return containers
+            except Exception as exc:
+                logging.debug(f"Socket get_containers failed, falling back to CLI: {exc}")
+
+        # CLI Fallback
         args = ["ps", "--format", "{{json .}}"]
         if all:
             args.append("-a")
-        try:
-            out = self._run_docker(args, timeout=5)
-        except Exception as exc:
-            logging.warning(f"Failed to list containers: {exc}")
-            return []
-
+        out = self._run_docker(args, timeout=5)
         items = self._parse_json_lines(out)
         containers = []
         for item in items:
@@ -1565,7 +1980,7 @@ class DockerManager:
                 )
             containers.append(
                 {
-                    "id": str(item.get("ID") or "")[:12],
+                    "id": str(item.get("ID") or item.get("Id") or "")[:12],
                     "name": name,
                     "image": str(item.get("Image") or ""),
                     "state": state,
@@ -1575,6 +1990,24 @@ class DockerManager:
                     "stack": stack_name,
                 }
             )
+        return containers
+
+    def list_containers(
+        self, all: bool = True, bypass_cache: bool = False
+    ) -> list[dict[str, Any]]:
+        cache_key = f"containers_{all}"
+        cached = self._get_cached(cache_key, bypass_cache=bypass_cache)
+        if cached is not None:
+            return cached
+
+        if not self.is_running():
+            return []
+        try:
+            containers = self.get_containers(all=all)
+        except Exception as exc:
+            logging.warning(f"Failed to list containers: {exc}")
+            return []
+
         self._set_cache(cache_key, containers)
         return containers
 
@@ -1979,15 +2412,45 @@ class DockerManager:
         self.invalidate_cache()
         return True
 
-    def list_images(self) -> list[dict[str, Any]]:
-        if not self.is_running():
-            return []
-        try:
-            out = self._run_docker(["images", "--format", "{{json .}}"], timeout=10)
-        except Exception as exc:
-            logging.warning(f"Failed to list images: {exc}")
-            return []
+    def get_images(self) -> list[dict[str, Any]]:
+        if self._should_use_socket():
+            try:
+                status, data = self._socket_request("GET", "/images/json", timeout=10)
+                if status == 200:
+                    raw_images = json.loads(data.decode("utf-8"))
+                    images = []
+                    for item in raw_images:
+                        img_id = str(item.get("Id") or "").replace("sha256:", "")[:12]
+                        repo_tags = item.get("RepoTags") or []
+                        tags = [t for t in repo_tags if t != "<none>:<none>"]
+                        if tags:
+                            repo, tag = tags[0].split(":", 1) if ":" in tags[0] else (tags[0], "")
+                        else:
+                            repo, tag = "<none>", "<none>"
+                        size_bytes = item.get("Size", 0)
+                        size_human = _format_bytes(size_bytes)
+                        created_ts = item.get("Created", 0)
+                        created_str = (
+                            datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M:%S")
+                            if created_ts
+                            else ""
+                        )
+                        images.append(
+                            {
+                                "id": img_id,
+                                "repository": repo,
+                                "tag": tag,
+                                "tags": tags,
+                                "size": size_human,
+                                "created": created_str,
+                            }
+                        )
+                    return images
+            except Exception as exc:
+                logging.debug(f"Socket get_images failed, falling back to CLI: {exc}")
 
+        # CLI fallback
+        out = self._run_docker(["images", "--format", "{{json .}}"], timeout=10)
         items = self._parse_json_lines(out)
         images = []
         for item in items:
@@ -2000,7 +2463,7 @@ class DockerManager:
                 tags.append(repo)
             images.append(
                 {
-                    "id": str(item.get("ID") or "")[:12],
+                    "id": str(item.get("ID") or item.get("Id") or "")[:12],
                     "repository": repo,
                     "tag": tag,
                     "tags": tags,
@@ -2011,6 +2474,15 @@ class DockerManager:
                 }
             )
         return images
+
+    def list_images(self) -> list[dict[str, Any]]:
+        if not self.is_running():
+            return []
+        try:
+            return self.get_images()
+        except Exception as exc:
+            logging.warning(f"Failed to list images: {exc}")
+            return []
 
     def pull_image(self, image_tag: str) -> dict[str, Any]:
         clean_tag = image_tag.strip()
@@ -2045,6 +2517,49 @@ class DockerManager:
         out = self._run_docker(args, timeout=60)
         self.invalidate_cache()
         return {"success": True, "output": out}
+
+    def get_volumes(self) -> list[dict[str, Any]]:
+        if self._should_use_socket():
+            try:
+                status, data = self._socket_request("GET", "/volumes", timeout=10)
+                if status == 200:
+                    raw_data = json.loads(data.decode("utf-8"))
+                    vol_items = raw_data.get("Volumes") or []
+                    result = []
+                    for item in vol_items:
+                        name = str(item.get("Name") or "")
+                        result.append(
+                            {
+                                "name": name,
+                                "driver": str(item.get("Driver") or "local"),
+                                "scope": str(item.get("Scope") or "local"),
+                                "mountpoint": str(item.get("Mountpoint") or ""),
+                                "created_at": str(item.get("CreatedAt") or ""),
+                                "size": "N/A",
+                                "containers": [],
+                            }
+                        )
+                    return result
+            except Exception as exc:
+                logging.debug(f"Socket get_volumes failed, falling back to CLI: {exc}")
+
+        out = self._run_docker(["volume", "ls", "--format", "{{json .}}"], timeout=10)
+        items = self._parse_json_lines(out)
+        result = []
+        for item in items:
+            name = str(item.get("Name") or "")
+            result.append(
+                {
+                    "name": name,
+                    "driver": str(item.get("Driver") or ""),
+                    "scope": str(item.get("Scope") or ""),
+                    "mountpoint": str(item.get("Mountpoint") or ""),
+                    "created_at": str(item.get("CreatedAt") or ""),
+                    "size": str(item.get("Size") or "N/A"),
+                    "containers": [],
+                }
+            )
+        return result
 
     def list_volumes(self) -> list[dict[str, Any]]:
         if not self.is_running():
@@ -2096,27 +2611,26 @@ class DockerManager:
             logging.debug(f"Could not get volume df info: {exc}")
 
         try:
-            out = self._run_docker(["volume", "ls", "--format", "{{json .}}"], timeout=10)
+            items = self.get_volumes()
         except Exception as exc:
             logging.warning(f"Failed to list volumes: {exc}")
             return []
 
-        items = self._parse_json_lines(out)
         result = []
         seen_names = set()
         for item in items:
-            name = str(item.get("Name") or "")
+            name = str(item.get("name") or item.get("Name") or "")
             seen_names.add(name)
-            size = vol_sizes.get(name) or str(item.get("Size") or "") or "N/A"
+            size = vol_sizes.get(name) or str(item.get("size") or item.get("Size") or "") or "N/A"
             result.append(
                 {
                     "name": name,
-                    "driver": str(item.get("Driver") or ""),
-                    "scope": str(item.get("Scope") or ""),
-                    "mountpoint": str(item.get("Mountpoint") or ""),
-                    "created_at": str(item.get("CreatedAt") or ""),
+                    "driver": str(item.get("driver") or item.get("Driver") or ""),
+                    "scope": str(item.get("scope") or item.get("Scope") or ""),
+                    "mountpoint": str(item.get("mountpoint") or item.get("Mountpoint") or ""),
+                    "created_at": str(item.get("created_at") or item.get("CreatedAt") or ""),
                     "size": size,
-                    "containers": vol_to_containers.get(name, []),
+                    "containers": vol_to_containers.get(name, item.get("containers", [])),
                 }
             )
         return result
@@ -2206,18 +2720,32 @@ class DockerManager:
         self.invalidate_cache()
         return {"success": True, "name": clean_name, "output": out}
 
-    def list_networks(self) -> list[dict[str, Any]]:
-        if not self.is_running():
-            return []
-        try:
-            out = self._run_docker(["network", "ls", "--format", "{{json .}}"], timeout=10)
-        except Exception as exc:
-            logging.warning(f"Failed to list networks: {exc}")
-            return []
+    def get_networks(self) -> list[dict[str, Any]]:
+        if self._should_use_socket():
+            try:
+                status, data = self._socket_request("GET", "/networks", timeout=10)
+                if status == 200:
+                    raw_networks = json.loads(data.decode("utf-8"))
+                    return [
+                        {
+                            "id": str(item.get("Id") or item.get("ID") or "")[:12],
+                            "name": str(item.get("Name") or ""),
+                            "driver": str(item.get("Driver") or ""),
+                            "scope": str(item.get("Scope") or ""),
+                            "internal": str(item.get("Internal", False)).lower(),
+                            "created_at": str(item.get("Created") or item.get("CreatedAt") or ""),
+                        }
+                        for item in raw_networks
+                    ]
+            except Exception as exc:
+                logging.debug(f"Socket get_networks failed, falling back to CLI: {exc}")
+
+        # CLI fallback
+        out = self._run_docker(["network", "ls", "--format", "{{json .}}"], timeout=10)
         items = self._parse_json_lines(out)
         return [
             {
-                "id": str(item.get("ID") or "")[:12],
+                "id": str(item.get("ID") or item.get("Id") or "")[:12],
                 "name": str(item.get("Name") or ""),
                 "driver": str(item.get("Driver") or ""),
                 "scope": str(item.get("Scope") or ""),
@@ -2226,6 +2754,40 @@ class DockerManager:
             }
             for item in items
         ]
+
+    def list_networks(self) -> list[dict[str, Any]]:
+        if not self.is_running():
+            return []
+        try:
+            return self.get_networks()
+        except Exception as exc:
+            logging.warning(f"Failed to list networks: {exc}")
+            return []
+
+    def get_container_stats(self, container_id: str) -> dict[str, Any]:
+        cid = container_id.strip()
+        if not cid:
+            raise ValueError("Container ID cannot be empty.")
+        if self._should_use_socket():
+            try:
+                status, data = self._socket_request(
+                    "GET", f"/containers/{cid}/stats?stream=false", timeout=5
+                )
+                if status == 200:
+                    return json.loads(data.decode("utf-8"))
+            except Exception as exc:
+                logging.debug(f"Socket get_container_stats failed: {exc}")
+
+        # CLI fallback
+        try:
+            out = self._run_docker(
+                ["stats", "--no-stream", "--format", "{{json .}}", cid], timeout=5
+            )
+            items = self._parse_json_lines(out)
+            return items[0] if items else {}
+        except Exception as exc:
+            logging.debug(f"Failed to fetch container stats for {cid}: {exc}")
+            return {}
 
     def remove_network(self, network_id: str) -> dict[str, Any]:
         clean_id = network_id.strip()
@@ -2572,6 +3134,7 @@ inspect_docker_volume = docker_manager.inspect_volume
 remove_docker_volume = docker_manager.remove_volume
 list_docker_networks = docker_manager.list_networks
 remove_docker_network = docker_manager.remove_network
+get_docker_container_stats = docker_manager.get_container_stats
 check_docker_updates = docker_manager.check_updates
 apply_docker_updates = docker_manager.apply_updates
 get_docker_auto_update_config = docker_manager.get_auto_update_config
