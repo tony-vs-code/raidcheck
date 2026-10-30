@@ -1132,8 +1132,11 @@ async def api_docker_remove_network(
 
 
 @app.get("/api/docker/updates")
-async def api_docker_updates(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return await asyncio.to_thread(main.docker_manager.check_updates)
+async def api_docker_updates(
+    force: bool = False,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    return await asyncio.to_thread(main.docker_manager.check_updates, force=force)
 
 
 @app.post("/api/docker/updates/apply")

@@ -1476,11 +1476,14 @@ class DockerManager:
         stacks_dir: Optional[Path] = None,
         cache_ttl: float = 1.5,
         socket_path: str = "/var/run/docker.sock",
+        updates_cache_ttl: float = 120.0,
     ) -> None:
         self.stacks_dir = Path(stacks_dir) if stacks_dir else STACKS_DIR
         self._cache_ttl = cache_ttl
         self.socket_path = str(socket_path)
         self._cache: dict[str, tuple[float, Any]] = {}
+        self._updates_cache: Optional[tuple[float, dict[str, Any]]] = None
+        self._updates_cache_ttl = updates_cache_ttl
         self._cache_lock = threading.Lock()
 
     def _socket_request(
@@ -1517,6 +1520,7 @@ class DockerManager:
         """Clear short-lived TTL caches for Docker inspections."""
         with self._cache_lock:
             self._cache.clear()
+            self._updates_cache = None
 
     def _get_cached(self, key: str, bypass_cache: bool = False) -> Any:
         if bypass_cache:
@@ -2815,17 +2819,29 @@ class DockerManager:
         update_app_settings({"docker_auto_update_frequency": freq})
         return {"frequency": freq}
 
-    def check_updates(self) -> dict[str, Any]:
+    def check_updates(self, force: bool = False) -> dict[str, Any]:
         frequency = self.get_auto_update_config().get("frequency", "disabled")
         if not self.is_running():
             return {"updates": [], "config": {"frequency": frequency}}
 
+        if not force:
+            with self._cache_lock:
+                if self._updates_cache is not None:
+                    cached_ts, cached_res = self._updates_cache
+                    if (time.time() - cached_ts) < self._updates_cache_ttl:
+                        res = copy.deepcopy(cached_res)
+                        res["config"] = {"frequency": frequency}
+                        return res
+
         containers = self.list_containers(all=False)
-        results = []
-        for c in containers:
+        valid_containers = [
+            c
+            for c in containers
+            if c.get("image", "").strip() and "<none>" not in c.get("image", "")
+        ]
+
+        def _check_container(c: dict[str, Any]) -> dict[str, Any]:
             img = c.get("image", "").strip()
-            if not img or "<none>" in img:
-                continue
             current_id = ""
             try:
                 current_id = self._run_docker(
@@ -2841,24 +2857,32 @@ class DockerManager:
             except Exception:
                 pass
 
-            results.append(
-                {
-                    "container_id": c.get("id"),
-                    "container_name": c.get("name"),
-                    "image": img,
-                    "stack": c.get("stack", ""),
-                    "update_available": update_available,
-                    "current_id": current_id,
-                    "latest_id": latest_id,
-                }
-            )
+            return {
+                "container_id": c.get("id"),
+                "container_name": c.get("name"),
+                "image": img,
+                "stack": c.get("stack", ""),
+                "update_available": update_available,
+                "current_id": current_id,
+                "latest_id": latest_id,
+            }
 
-        return {
+        results = []
+        if valid_containers:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                results = list(executor.map(_check_container, valid_containers))
+
+        response = {
             "updates": results,
             "config": {
                 "frequency": frequency,
             },
         }
+
+        with self._cache_lock:
+            self._updates_cache = (time.time(), copy.deepcopy(response))
+
+        return response
 
     def apply_updates(
         self,

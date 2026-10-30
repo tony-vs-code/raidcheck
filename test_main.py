@@ -2666,6 +2666,65 @@ class TestDockerBackend(unittest.TestCase):
         self.assertEqual(get_dis.status_code, 200)
         self.assertEqual(get_dis.json(), {"frequency": "disabled"})
 
+    def test_docker_check_updates_caching_and_concurrency(self):
+        dm = main.DockerManager()
+        dm.invalidate_cache()
+
+        sample_containers = [
+            {"id": "c1", "name": "web", "image": "nginx:alpine", "stack": "frontend"},
+            {"id": "c2", "name": "db", "image": "postgres:15", "stack": "backend"},
+            {"id": "c3", "name": "cache", "image": "redis:7", "stack": "backend"},
+        ]
+
+        run_docker_calls = []
+
+        def fake_run_docker(cmd, *args, **kwargs):
+            run_docker_calls.append(cmd)
+            if cmd[:2] == ["inspect", "--format"]:
+                return "sha256:1234567890abcdef"
+            if cmd[:2] == ["manifest", "inspect"]:
+                return "{}"
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=sample_containers) as mock_list,
+            patch.object(dm, "_run_docker", side_effect=fake_run_docker),
+        ):
+            # 1. First call: cache miss, runs checks concurrently
+            res1 = dm.check_updates(force=False)
+            self.assertEqual(len(res1["updates"]), 3)
+            self.assertEqual(mock_list.call_count, 1)
+            initial_docker_calls = len(run_docker_calls)
+            self.assertGreaterEqual(initial_docker_calls, 3)
+
+            # 2. Second call without force: cache hit, 0ms, list_containers not called again
+            res2 = dm.check_updates(force=False)
+            self.assertEqual(res1["updates"], res2["updates"])
+            self.assertEqual(mock_list.call_count, 1)
+            self.assertEqual(len(run_docker_calls), initial_docker_calls)
+
+            # 3. Third call with force=True: bypasses cache
+            res3 = dm.check_updates(force=True)
+            self.assertEqual(len(res3["updates"]), 3)
+            self.assertEqual(mock_list.call_count, 2)
+            self.assertGreater(len(run_docker_calls), initial_docker_calls)
+
+            # 4. Invalidate cache: forces next call to re-run
+            dm.invalidate_cache()
+            res4 = dm.check_updates(force=False)
+            self.assertEqual(mock_list.call_count, 3)
+
+        # 5. Verify API endpoint accepts ?force=true and ?force=false
+        with patch.object(main.docker_manager, "check_updates", return_value={"updates": [], "config": {}}) as mock_chk:
+            resp_no_force = asgi_get(api.app, "/api/docker/updates", cookies=self.auth_cookies)
+            self.assertEqual(resp_no_force.status_code, 200)
+            mock_chk.assert_called_with(force=False)
+
+            resp_force = asgi_get(api.app, "/api/docker/updates?force=true", cookies=self.auth_cookies)
+            self.assertEqual(resp_force.status_code, 200)
+            mock_chk.assert_called_with(force=True)
+
     def test_docker_error_handling_and_validation(self):
         # 1. Invalid stack action
         bad_stack_act = asgi_post(

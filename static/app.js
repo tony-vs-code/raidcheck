@@ -2695,6 +2695,7 @@ function refreshDockerSubtab(subtabName) {
       break;
     case "updates":
       fetchDockerUpdatesConfig();
+      fetchUpdateSchedule();
       fetchDockerUpdates();
       break;
   }
@@ -3944,14 +3945,17 @@ async function fetchDockerUpdatesConfig() {
   }
 }
 
-async function fetchDockerUpdates() {
+async function fetchDockerUpdates({ force = false } = {}) {
   const tbody = document.getElementById("docker-updates-tbody");
   if (!tbody) return;
   if (isFetchingDockerUpdates) return;
   isFetchingDockerUpdates = true;
 
+  tbody.innerHTML = `<tr><td colspan="7" class="loading-state" style="text-align:center; padding: 24px; color: var(--text-muted);"><span class="spinner" style="display:inline-block; margin-right:8px;"></span> Checking container images for updates...</td></tr>`;
+
   try {
-    const resp = await apiFetch("/api/docker/updates");
+    const url = force ? "/api/docker/updates?force=true" : "/api/docker/updates";
+    const resp = await apiFetch(url);
     if (!resp.ok) return;
     const data = await resp.json();
 
@@ -3959,8 +3963,6 @@ async function fetchDockerUpdates() {
     if (freqSelect && data.config?.frequency) {
       freqSelect.value = data.config.frequency;
     }
-
-    fetchUpdateSchedule();
 
     const updates = data.updates || [];
     const updatesAvailableCount = updates.filter((u) => u.update_available).length;
@@ -4371,7 +4373,7 @@ function initDashboard() {
 
   document
     .getElementById("btn-check-docker-updates")
-    ?.addEventListener("click", fetchDockerUpdates);
+    ?.addEventListener("click", () => fetchDockerUpdates({ force: true }));
 
   document
     .getElementById("btn-apply-all-updates")
