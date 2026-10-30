@@ -2036,6 +2036,35 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertEqual(js_resp.headers.get("cache-control"), "no-cache, must-revalidate")
         self.assertTrue(len(js_resp.text) > 0)
 
+    def test_cross_tier_qa_contract_integrity(self):
+        """Verify frontend API route calls and DOM element references match backend and HTML."""
+        import re
+
+        app_js = Path("static/app.js").read_text(encoding="utf-8")
+        index_html = Path("static/index.html").read_text(encoding="utf-8")
+        api_py = Path("api.py").read_text(encoding="utf-8")
+
+        # 1. API routes called by frontend must exist in api.py
+        api_calls = set(re.findall(r'apiFetch\(\s*["\']([^"\'\?]+)', app_js))
+        self.assertGreater(len(api_calls), 10, "Expected frontend API calls to be detected")
+        for route in api_calls:
+            clean_route = route.rstrip("/")
+            found = clean_route in api_py or route.split("/")[-1] in api_py
+            self.assertTrue(found, f"Frontend calls route '{route}' but it was not found in api.py")
+
+        # 2. Key DOM IDs accessed by app.js must exist in index.html
+        direct_ids = set(re.findall(r'getElementById\(\s*["\']([^"\']+)["\']\s*\)', app_js))
+        permissible_fallbacks = {
+            "docker-container-search",
+            "setting-raid-device",
+            "docker-containers-all-toggle",
+            "test-notification-feedback",
+        }
+        for elem_id in direct_ids:
+            if elem_id not in permissible_fallbacks:
+                has_id = f'id="{elem_id}"' in index_html or f"id='{elem_id}'" in index_html
+                self.assertTrue(has_id, f"Frontend accesses DOM id '{elem_id}' missing in index.html")
+
     def test_ci_workflow_and_systemd_services_configured(self):
         repo_root = Path(__file__).resolve().parent
         workflow_file = repo_root / ".github" / "workflows" / "ci-release.yml"
