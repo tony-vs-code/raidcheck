@@ -2725,6 +2725,177 @@ class TestDockerBackend(unittest.TestCase):
             self.assertEqual(resp_force.status_code, 200)
             mock_chk.assert_called_with(force=True)
 
+    def test_docker_check_updates_remote_digest_detection(self):
+        dm = main.DockerManager()
+        dm.invalidate_cache()
+
+        sample_container = [
+            {"id": "c1", "name": "web", "image": "nginx:latest", "stack": "frontend"}
+        ]
+
+        local_inspect = json.dumps([
+            {
+                "Id": "sha256:111111111111222222222222",
+                "RepoDigests": ["nginx@sha256:aaaa1111aaaa1111aaaa1111"],
+            }
+        ])
+
+        # Case 1: Remote digest does NOT match local RepoDigests -> update_available is True
+        remote_multi_arch_new = json.dumps({
+            "manifests": [
+                {
+                    "digest": "sha256:bbbb2222bbbb2222bbbb2222",
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                }
+            ]
+        })
+
+        def fake_docker_update_avail(cmd, *args, **kwargs):
+            if cmd[:2] == ["image", "inspect"]:
+                return local_inspect
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                return remote_multi_arch_new
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=sample_container),
+            patch.object(dm, "_run_docker", side_effect=fake_docker_update_avail),
+            patch("platform.machine", return_value="x86_64"),
+        ):
+            dm.invalidate_cache()
+            res = dm.check_updates(force=True)
+            self.assertEqual(len(res["updates"]), 1)
+            upd = res["updates"][0]
+            self.assertTrue(upd["update_available"])
+            self.assertEqual(upd["current_id"], "111111111111")
+            self.assertEqual(upd["latest_id"], "bbbb2222bbbb")
+
+        # Case 2: Remote digest matches local RepoDigests -> update_available is False
+        remote_matching = json.dumps({
+            "manifests": [
+                {
+                    "digest": "sha256:aaaa1111aaaa1111aaaa1111",
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                }
+            ]
+        })
+
+        def fake_docker_up_to_date(cmd, *args, **kwargs):
+            if cmd[:2] == ["image", "inspect"]:
+                return local_inspect
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                return remote_matching
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=sample_container),
+            patch.object(dm, "_run_docker", side_effect=fake_docker_up_to_date),
+            patch("platform.machine", return_value="x86_64"),
+        ):
+            dm.invalidate_cache()
+            res = dm.check_updates(force=True)
+            self.assertEqual(len(res["updates"]), 1)
+            upd = res["updates"][0]
+            self.assertFalse(upd["update_available"])
+            self.assertEqual(upd["current_id"], "111111111111")
+            self.assertEqual(upd["latest_id"], "111111111111")
+
+        # Case 3: Remote inspect fails -> graceful handling, update_available is False
+        def fake_docker_remote_fails(cmd, *args, **kwargs):
+            if cmd[:2] == ["image", "inspect"]:
+                return local_inspect
+            raise RuntimeError("Network error reaching registry")
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=sample_container),
+            patch.object(dm, "_run_docker", side_effect=fake_docker_remote_fails),
+        ):
+            dm.invalidate_cache()
+            res = dm.check_updates(force=True)
+            self.assertEqual(len(res["updates"]), 1)
+            upd = res["updates"][0]
+            self.assertFalse(upd["update_available"])
+            self.assertEqual(upd["current_id"], "111111111111")
+            self.assertEqual(upd["latest_id"], "111111111111")
+
+    def test_docker_get_remote_image_digest_fallback_chain(self):
+        dm = main.DockerManager()
+
+        # 1. Empty image input
+        self.assertIsNone(dm._get_remote_image_digest(""))
+        self.assertIsNone(dm._get_remote_image_digest("   "))
+
+        # 2. Buildx single manifest format with config.digest
+        single_manifest = json.dumps({"config": {"digest": "sha256:singleconfig1234"}})
+        with patch.object(dm, "_run_docker", return_value=single_manifest):
+            self.assertEqual(dm._get_remote_image_digest("app:v1"), "sha256:singleconfig1234")
+
+        # 3. Fallback to manifest inspect -v with list of platform descriptors
+        def fake_manifest_v(cmd, *args, **kwargs):
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                raise RuntimeError("buildx not supported")
+            if cmd[:3] == ["manifest", "inspect", "-v"]:
+                return json.dumps([
+                    {
+                        "Descriptor": {
+                            "digest": "sha256:armdigest5678",
+                            "platform": {"architecture": "arm64", "os": "linux"},
+                        }
+                    }
+                ])
+            return ""
+
+        with (
+            patch.object(dm, "_run_docker", side_effect=fake_manifest_v),
+            patch("platform.machine", return_value="aarch64"),
+        ):
+            self.assertEqual(dm._get_remote_image_digest("app:v1"), "sha256:armdigest5678")
+
+        # 4. Fallback to manifest inspect -v with dict Descriptor
+        def fake_manifest_v_dict(cmd, *args, **kwargs):
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                raise RuntimeError("buildx not supported")
+            if cmd[:3] == ["manifest", "inspect", "-v"]:
+                return json.dumps({
+                    "Descriptor": {
+                        "digest": "sha256:dictdesc9999",
+                    }
+                })
+            return ""
+
+        with patch.object(dm, "_run_docker", side_effect=fake_manifest_v_dict):
+            self.assertEqual(dm._get_remote_image_digest("app:v1"), "sha256:dictdesc9999")
+
+        # 5. Fallback to manifest inspect standard
+        def fake_manifest_std(cmd, *args, **kwargs):
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                raise RuntimeError("buildx not supported")
+            if cmd[:3] == ["manifest", "inspect", "-v"]:
+                raise RuntimeError("-v not supported")
+            if cmd[:2] == ["manifest", "inspect"]:
+                return json.dumps({
+                    "manifests": [
+                        {
+                            "digest": "sha256:stddigest0000",
+                            "platform": {"architecture": "amd64", "os": "linux"},
+                        }
+                    ]
+                })
+            return ""
+
+        with (
+            patch.object(dm, "_run_docker", side_effect=fake_manifest_std),
+            patch("platform.machine", return_value="x86_64"),
+        ):
+            self.assertEqual(dm._get_remote_image_digest("app:v1"), "sha256:stddigest0000")
+
+        # 6. All fail returns None
+        with patch.object(dm, "_run_docker", side_effect=RuntimeError("all fail")):
+            self.assertIsNone(dm._get_remote_image_digest("app:v1"))
+
     def test_docker_error_handling_and_validation(self):
         # 1. Invalid stack action
         bad_stack_act = asgi_post(

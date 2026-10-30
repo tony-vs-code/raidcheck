@@ -7,6 +7,7 @@ import hmac
 import http.client
 import json
 import os
+import platform
 import secrets
 import shutil
 import socket
@@ -2819,6 +2820,88 @@ class DockerManager:
         update_app_settings({"docker_auto_update_frequency": freq})
         return {"frequency": freq}
 
+    def _get_remote_image_digest(self, img: str) -> Optional[str]:
+        clean_img = img.strip()
+        if not clean_img:
+            return None
+
+        arch = (
+            "amd64"
+            if platform.machine() in ("x86_64", "AMD64")
+            else ("arm64" if platform.machine() in ("aarch64", "arm64") else platform.machine())
+        )
+
+        # Attempt 1: buildx imagetools inspect --raw
+        try:
+            raw = self._run_docker(["buildx", "imagetools", "inspect", "--raw", clean_img], timeout=8)
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                manifests = data.get("manifests")
+                if isinstance(manifests, list) and manifests:
+                    for m in manifests:
+                        plat = m.get("platform", {})
+                        if plat.get("architecture") == arch and plat.get("os") == "linux":
+                            digest = m.get("digest")
+                            if digest:
+                                return digest
+                    first_digest = manifests[0].get("digest")
+                    if first_digest:
+                        return first_digest
+                elif "config" in data:
+                    cfg_digest = data.get("config", {}).get("digest")
+                    if cfg_digest:
+                        return cfg_digest
+        except Exception:
+            pass
+
+        # Fallback attempt 2: manifest inspect -v
+        try:
+            raw = self._run_docker(["manifest", "inspect", "-v", clean_img], timeout=8)
+            data = json.loads(raw)
+            if isinstance(data, list):
+                for entry in data:
+                    if isinstance(entry, dict):
+                        plat = entry.get("Descriptor", {}).get("platform", {})
+                        if plat.get("architecture") == arch and plat.get("os") == "linux":
+                            digest = entry.get("Descriptor", {}).get("digest")
+                            if digest:
+                                return digest
+                if data and isinstance(data[0], dict):
+                    first_digest = data[0].get("Descriptor", {}).get("digest")
+                    if first_digest:
+                        return first_digest
+            elif isinstance(data, dict):
+                digest = data.get("Descriptor", {}).get("digest")
+                if digest:
+                    return digest
+        except Exception:
+            pass
+
+        # Fallback attempt 3: manifest inspect
+        try:
+            raw = self._run_docker(["manifest", "inspect", clean_img], timeout=8)
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                manifests = data.get("manifests")
+                if isinstance(manifests, list) and manifests:
+                    for m in manifests:
+                        plat = m.get("platform", {})
+                        if plat.get("architecture") == arch and plat.get("os") == "linux":
+                            digest = m.get("digest")
+                            if digest:
+                                return digest
+                    first_digest = manifests[0].get("digest")
+                    if first_digest:
+                        return first_digest
+                elif "config" in data:
+                    cfg_digest = data.get("config", {}).get("digest")
+                    if cfg_digest:
+                        return cfg_digest
+        except Exception:
+            pass
+
+        return None
+
     def check_updates(self, force: bool = False) -> dict[str, Any]:
         frequency = self.get_auto_update_config().get("frequency", "disabled")
         if not self.is_running():
@@ -2842,20 +2925,40 @@ class DockerManager:
 
         def _check_container(c: dict[str, Any]) -> dict[str, Any]:
             img = c.get("image", "").strip()
-            current_id = ""
+            local_data: dict[str, Any] = {}
             try:
-                current_id = self._run_docker(
-                    ["inspect", "--format", "{{.Id}}", img], timeout=5
-                ).strip()[:12]
+                raw_local = self._run_docker(["image", "inspect", img], timeout=5)
+                parsed = json.loads(raw_local)
+                if isinstance(parsed, list) and parsed:
+                    local_data = parsed[0]
+                elif isinstance(parsed, dict):
+                    local_data = parsed
             except Exception:
                 pass
 
-            update_available = False
-            latest_id = current_id
-            try:
-                self._run_docker(["manifest", "inspect", img], timeout=8)
-            except Exception:
-                pass
+            repo_digests = local_data.get("RepoDigests") or []
+            local_id = str(local_data.get("Id", "") or "")
+            current_id = local_id.replace("sha256:", "")[:12] if local_id else ""
+            if not current_id:
+                try:
+                    current_id = self._run_docker(
+                        ["inspect", "--format", "{{.Id}}", img], timeout=5
+                    ).strip().replace("sha256:", "")[:12]
+                except Exception:
+                    pass
+
+            remote_digest = self._get_remote_image_digest(img)
+
+            if remote_digest:
+                if any(remote_digest in rd for rd in repo_digests):
+                    update_available = False
+                    latest_id = current_id
+                else:
+                    update_available = True
+                    latest_id = remote_digest.replace("sha256:", "")[:12]
+            else:
+                update_available = False
+                latest_id = current_id
 
             return {
                 "container_id": c.get("id"),
