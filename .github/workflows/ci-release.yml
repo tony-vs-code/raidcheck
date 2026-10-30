@@ -35,7 +35,7 @@ jobs:
         run: uv run pytest -v
 
   release:
-    name: Tag & Publish GitHub Release
+    name: Tag, Build & Publish GitHub Release
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -44,44 +44,97 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read version from pyproject.toml and publish GitHub Release if new
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Determine version, auto-bump if merged PR, build packages, and publish Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          VERSION=$(python3 -c '
-          import re, pathlib
-          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
-          m = re.search(r"^version\s*=\s*\"([^\"]+)\"", text, re.MULTILINE)
-          print(m.group(1) if m else "")
-          ')
-          if [ -z "$VERSION" ]; then
-            echo "Could not determine version from pyproject.toml" >&2
-            exit 1
-          fi
-          TAG="v${VERSION}"
-          echo "Detected version: ${VERSION} (tag: ${TAG})"
 
           git fetch origin --tags --force
 
+          # Determine current version in pyproject.toml
+          CURRENT_VER=$(python3 -c '
+          import re, pathlib
+          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          m = re.search(r"^version\s*=\s*\"([^\"]+)\"", text, re.MULTILINE)
+          print(m.group(1) if m else "0.1.0")
+          ')
+
+          TAG="v${CURRENT_VER}"
+          echo "Detected version in pyproject.toml: ${CURRENT_VER} (tag: ${TAG})"
+
+          # Check if tag already exists in repository or on GitHub Releases
+          TAG_EXISTS=0
+          if git rev-parse "$TAG" >/dev/null 2>&1 || gh release view "$TAG" >/dev/null 2>&1; then
+            TAG_EXISTS=1
+            echo "Tag ${TAG} already exists. Auto-bumping patch version for merged changes..."
+          fi
+
+          if [ "$TAG_EXISTS" -eq 1 ]; then
+            # Auto-calculate next patch version
+            NEW_VER=$(python3 -c '
+            import sys
+            cur = sys.argv[1].lstrip("v")
+            parts = cur.split(".")
+            if len(parts) == 3 and parts[2].isdigit():
+                parts[2] = str(int(parts[2]) + 1)
+                print(".".join(parts))
+            else:
+                print(f"{cur}.1")
+            ' "$CURRENT_VER")
+
+            TAG="v${NEW_VER}"
+            echo "Auto-bumped version to: ${NEW_VER} (tag: ${TAG})"
+
+            # Update pyproject.toml
+            python3 -c '
+            import re, pathlib, sys
+            new_v = sys.argv[1]
+            p = pathlib.Path("pyproject.toml")
+            content = p.read_text(encoding="utf-8")
+            updated = re.sub(r"^version\s*=\s*\"[^\"]+\"", f"version = \"{new_v}\"", content, count=1, flags=re.MULTILINE)
+            p.write_text(updated, encoding="utf-8")
+            ' "$NEW_VER"
+
+            # Commit version bump to main with [skip ci]
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add pyproject.toml
+            git commit -m "chore(release): bump version to ${NEW_VER} [skip ci]"
+            git push origin main
+          fi
+
+          # 1. Build distribution package archives (wheel and sdist)
+          echo "==> Building release distribution packages with uv build..."
+          uv build
+
+          # 2. Create and push annotated tag
           if ! git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Creating and pushing git tag ${TAG}..."
+            echo "==> Tagging release ${TAG}..."
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git tag -a "$TAG" -m "Release ${TAG}"
             git push origin "$TAG"
-          else
-            echo "Git tag ${TAG} already exists."
           fi
 
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Creating GitHub Release ${TAG}..."
-            if [ -f "RELEASE_NOTES.md" ]; then
-              gh release create "$TAG" --title "Release ${TAG}" --notes-file RELEASE_NOTES.md
-            else
-              gh release create "$TAG" --generate-notes --title "Release ${TAG}"
-            fi
-          else
-            echo "GitHub Release ${TAG} already exists."
+          # 3. Publish GitHub Release with built distribution assets
+          echo "==> Publishing GitHub Release ${TAG} with build assets..."
+          RELEASE_TITLE="Release ${TAG}"
+          NOTES_ARG=("--generate-notes")
+          if [ -f "RELEASE_NOTES.md" ]; then
+            NOTES_ARG=("--notes-file" "RELEASE_NOTES.md")
           fi
+
+          # Publish release with dist/* assets
+          gh release create "$TAG" dist/* "${NOTES_ARG[@]}" --title "$RELEASE_TITLE"
+          echo "==> Successfully built and published GitHub Release ${TAG}!"

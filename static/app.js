@@ -591,6 +591,24 @@ function renderRaidDetails(raid) {
     tr.appendChild(tdState);
     tbody.appendChild(tr);
   });
+
+  // Overview summary card
+  const overviewRaidBadge = document.getElementById("overview-raid-status-badge");
+  if (overviewRaidBadge) {
+    applyStatusBadge(overviewRaidBadge, null, status);
+  }
+  const overviewRaidSummary = document.getElementById("overview-raid-summary");
+  if (overviewRaidSummary) {
+    if (isNoRaid) {
+      overviewRaidSummary.textContent = "No RAID array configured or detected";
+    } else {
+      const level = (raid.raid_level || "RAID").toUpperCase();
+      const size = raid.array_size || "--";
+      const act = raid.active_devices ?? 0;
+      const tot = raid.working_devices ?? act;
+      overviewRaidSummary.textContent = `${level} • ${size} • ${act}/${tot} disks active`;
+    }
+  }
 }
 
 /**
@@ -1553,6 +1571,8 @@ function openAuthOverlay({ setupRequired = false, googleClientId = "" } = {}) {
   closeWebSocket();
   stopPolling();
 
+  const viewLogin = document.getElementById("view-login");
+  const appShell = document.getElementById("app-shell");
   const overlay = document.getElementById("auth-overlay");
   const titleEl = document.getElementById("auth-modal-title");
   const subtitleEl = document.getElementById("auth-modal-subtitle");
@@ -1560,6 +1580,9 @@ function openAuthOverlay({ setupRequired = false, googleClientId = "" } = {}) {
   const loginForm = document.getElementById("auth-login-form");
   const userBox = document.getElementById("user-session-box");
 
+  if (appShell) appShell.classList.add("hidden");
+  if (viewLogin) viewLogin.classList.remove("hidden");
+  if (overlay) overlay.classList.remove("hidden");
   if (userBox) userBox.classList.add("hidden");
   showAuthError(null);
 
@@ -1581,17 +1604,19 @@ function openAuthOverlay({ setupRequired = false, googleClientId = "" } = {}) {
     if (loginForm) loginForm.classList.remove("hidden");
     setupGoogleSignIn(googleClientId);
   }
-
-  if (overlay) overlay.classList.remove("hidden");
 }
 
 function onAuthenticatedSuccess(username) {
   isAuthenticated = true;
+  const viewLogin = document.getElementById("view-login");
+  const appShell = document.getElementById("app-shell");
   const overlay = document.getElementById("auth-overlay");
   const userBox = document.getElementById("user-session-box");
   const usernameEl = document.getElementById("auth-username");
 
+  if (viewLogin) viewLogin.classList.add("hidden");
   if (overlay) overlay.classList.add("hidden");
+  if (appShell) appShell.classList.remove("hidden");
   if (usernameEl) usernameEl.textContent = username || "admin";
   if (userBox) userBox.classList.remove("hidden");
 
@@ -2337,6 +2362,18 @@ function populateDiscordForm(settings) {
       statusBadge.setAttribute("data-state", "disabled");
     }
   }
+
+  const overviewDiscordBadge = document.getElementById("overview-discord-badge");
+  if (overviewDiscordBadge) {
+    overviewDiscordBadge.className = `status-badge ${settings.discord_enabled ? "status-clean" : "status-degraded"}`;
+    overviewDiscordBadge.textContent = settings.discord_enabled ? "ENABLED" : "DISABLED";
+  }
+  const overviewDiscordSummary = document.getElementById("overview-discord-summary");
+  if (overviewDiscordSummary) {
+    overviewDiscordSummary.textContent = settings.discord_enabled
+      ? `Active Discord alerts channel: ${settings.channel_id || "configured"}`
+      : "Discord notifications are currently disabled";
+  }
 }
 
 const renderDiscordStatusCard = populateDiscordForm;
@@ -2515,36 +2552,49 @@ function escapeHtml(str) {
 }
 
 /**
- * Switch view panel between 'overview', 'notifications', and 'containers'.
+ * Switch view panel between 'overview', 'raid', 'notifications', and 'containers'.
  */
 function switchViewTab(tabName, updateHash = true) {
   currentViewTab = tabName;
   const isNotifications = tabName === "notifications";
   const isContainers = tabName === "containers";
+  const isRaid = tabName === "raid";
 
   const overviewTab = document.getElementById("nav-tab-overview");
+  const raidTab = document.getElementById("nav-tab-raid");
   const notificationsTab = document.getElementById("nav-tab-notifications");
   const containersTab = document.getElementById("nav-tab-containers");
 
   const overviewView = document.getElementById("view-overview");
+  const raidView = document.getElementById("view-raid");
   const notificationsView = document.getElementById("view-notifications");
   const containersView = document.getElementById("view-containers");
 
+  const pageTitle = document.getElementById("page-title");
+
   overviewTab?.classList.remove("active");
   overviewTab?.setAttribute("aria-selected", "false");
+  raidTab?.classList.remove("active");
+  raidTab?.setAttribute("aria-selected", "false");
   notificationsTab?.classList.remove("active");
   notificationsTab?.setAttribute("aria-selected", "false");
   containersTab?.classList.remove("active");
   containersTab?.setAttribute("aria-selected", "false");
 
   overviewView?.classList.add("hidden");
+  raidView?.classList.add("hidden");
   notificationsView?.classList.add("hidden");
   containersView?.classList.add("hidden");
+
+  // Automatically close mobile sidebar if opened
+  document.getElementById("app-sidebar")?.classList.remove("open");
+  document.getElementById("sidebar-backdrop")?.classList.remove("active");
 
   if (isContainers) {
     containersTab?.classList.add("active");
     containersTab?.setAttribute("aria-selected", "true");
     containersView?.classList.remove("hidden");
+    if (pageTitle) pageTitle.textContent = "Container Management";
 
     if (updateHash && !window.location.hash.startsWith("#containers")) {
       history.replaceState(null, "", `#containers/${currentDockerSubtab}`);
@@ -2554,10 +2604,20 @@ function switchViewTab(tabName, updateHash = true) {
       fetchDockerStatus();
       refreshDockerSubtab(currentDockerSubtab);
     }
+  } else if (isRaid) {
+    raidTab?.classList.add("active");
+    raidTab?.setAttribute("aria-selected", "true");
+    raidView?.classList.remove("hidden");
+    if (pageTitle) pageTitle.textContent = "RAID & Storage";
+
+    if (updateHash && window.location.hash !== "#raid") {
+      history.replaceState(null, "", "#raid");
+    }
   } else if (isNotifications) {
     notificationsTab?.classList.add("active");
     notificationsTab?.setAttribute("aria-selected", "true");
     notificationsView?.classList.remove("hidden");
+    if (pageTitle) pageTitle.textContent = "Notifications";
 
     if (updateHash && window.location.hash !== "#notifications") {
       history.replaceState(null, "", "#notifications");
@@ -2570,6 +2630,7 @@ function switchViewTab(tabName, updateHash = true) {
     overviewTab?.classList.add("active");
     overviewTab?.setAttribute("aria-selected", "true");
     overviewView?.classList.remove("hidden");
+    if (pageTitle) pageTitle.textContent = "System Overview";
 
     if (updateHash && window.location.hash !== "" && window.location.hash !== "#overview") {
       history.replaceState(null, "", "#overview");
@@ -2587,6 +2648,8 @@ function syncTabFromHash() {
     const subtab = parts[1] || currentDockerSubtab || "stacks";
     switchViewTab("containers", false);
     switchDockerSubtab(subtab, false);
+  } else if (hash === "raid" || hash === "storage" || hash === "disks") {
+    switchViewTab("raid", false);
   } else if (hash === "notifications" || hash === "logs" || hash === "notifications-logs") {
     switchViewTab("notifications", false);
   } else {
@@ -2788,6 +2851,26 @@ function renderDockerStatus(data) {
   const navBadge = document.getElementById("nav-tab-containers-badge");
   if (navBadge) {
     navBadge.textContent = runningCount;
+  }
+
+  // Overview summary card
+  const overviewDockerBadge = document.getElementById("overview-docker-badge");
+  if (overviewDockerBadge) {
+    overviewDockerBadge.className = "status-badge";
+    if (!data.installed) {
+      overviewDockerBadge.classList.add("status-failed");
+      overviewDockerBadge.textContent = "NOT INSTALLED";
+    } else if (!data.running) {
+      overviewDockerBadge.classList.add("status-degraded");
+      overviewDockerBadge.textContent = "STOPPED";
+    } else {
+      overviewDockerBadge.classList.add("status-clean");
+      overviewDockerBadge.textContent = "RUNNING";
+    }
+  }
+  const overviewDockerSummary = document.getElementById("overview-docker-summary");
+  if (overviewDockerSummary) {
+    overviewDockerSummary.textContent = `${runningCount}/${containersCount} containers running • ${stacksCount} stacks`;
   }
 
   // Subtab badges
@@ -4273,12 +4356,44 @@ function initDashboard() {
     ?.addEventListener("click", () => switchViewTab("overview", true));
 
   document
+    .getElementById("nav-tab-raid")
+    ?.addEventListener("click", () => switchViewTab("raid", true));
+
+  document
     .getElementById("nav-tab-containers")
     ?.addEventListener("click", () => switchViewTab("containers", true));
 
   document
     .getElementById("nav-tab-notifications")
     ?.addEventListener("click", () => switchViewTab("notifications", true));
+
+  // Overview Quick Link Actions
+  document
+    .getElementById("btn-goto-raid")
+    ?.addEventListener("click", () => switchViewTab("raid", true));
+
+  document
+    .getElementById("btn-goto-containers")
+    ?.addEventListener("click", () => switchViewTab("containers", true));
+
+  document
+    .getElementById("btn-goto-notifications")
+    ?.addEventListener("click", () => switchViewTab("notifications", true));
+
+  // Mobile Sidebar Toggle & Backdrop
+  document
+    .getElementById("sidebar-toggle-btn")
+    ?.addEventListener("click", () => {
+      document.getElementById("app-sidebar")?.classList.toggle("open");
+      document.getElementById("sidebar-backdrop")?.classList.toggle("active");
+    });
+
+  document
+    .getElementById("sidebar-backdrop")
+    ?.addEventListener("click", () => {
+      document.getElementById("app-sidebar")?.classList.remove("open");
+      document.getElementById("sidebar-backdrop")?.classList.remove("active");
+    });
 
   // Docker Sub-Tabs
   const subtabs = ["stacks", "containers", "images", "volumes", "networks", "updates"];
@@ -4529,6 +4644,10 @@ function initDashboard() {
     ?.addEventListener("submit", handleLoginSubmit);
 
   document
+    .getElementById("btn-logout")
+    ?.addEventListener("click", handleLogout);
+
+  document
     .getElementById("logout-btn")
     ?.addEventListener("click", handleLogout);
 
@@ -4566,6 +4685,10 @@ function initDashboard() {
   document
     .getElementById("apply-update-btn")
     ?.addEventListener("click", applyReleaseUpdate);
+
+  document
+    .getElementById("nav-settings-btn")
+    ?.addEventListener("click", openSettingsModal);
 
   document
     .getElementById("settings-btn")
