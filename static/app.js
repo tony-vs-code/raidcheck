@@ -30,6 +30,7 @@ let activeLogContainerName = "";
 let logsTimerId = null;
 let cachedDockerContainers = [];
 let cachedDockerVolumes = [];
+let cachedDockerUpdates = null;
 
 let isFetchingDockerStatus = false;
 let isFetchingDockerStacks = false;
@@ -47,6 +48,7 @@ const DOCKER_SUBTAB_THROTTLE_MS = 800;
 
 let lastContainersRenderKey = "";
 let lastStacksRenderKey = "";
+let lastDockerUpdatesRenderKey = "";
 
 /**
  * Retrieve stored session token if present.
@@ -2714,9 +2716,13 @@ function isDockerSubtabInFlight(subtabName = currentDockerSubtab) {
 
 /**
  * Throttled subtab refresh to prevent rapid WebSocket ticks from spamming HTTP requests.
+ * Only the active "containers" subtab receives continuous live tick updates.
+ * Updates, stacks, images, volumes, and networks are decoupled and fetched on tab switch
+ * or after mutation actions, avoiding tab flickering and continuous heavy polling.
  */
 function throttledRefreshDockerSubtab(subtabName = currentDockerSubtab) {
-  if (isDockerSubtabInFlight(subtabName)) return;
+  if (subtabName !== "containers") return;
+  if (isDockerSubtabInFlight("containers")) return;
   const now = Date.now();
   const elapsed = now - lastDockerSubtabFetchTime;
   if (elapsed >= DOCKER_SUBTAB_THROTTLE_MS) {
@@ -2724,12 +2730,12 @@ function throttledRefreshDockerSubtab(subtabName = currentDockerSubtab) {
       clearTimeout(dockerSubtabThrottleTimer);
       dockerSubtabThrottleTimer = null;
     }
-    refreshDockerSubtab(subtabName);
+    refreshDockerSubtab("containers");
   } else if (!dockerSubtabThrottleTimer) {
     dockerSubtabThrottleTimer = setTimeout(() => {
       dockerSubtabThrottleTimer = null;
-      if (currentViewTab === "containers" && !isDockerSubtabInFlight(currentDockerSubtab)) {
-        refreshDockerSubtab(currentDockerSubtab);
+      if (currentViewTab === "containers" && currentDockerSubtab === "containers" && !isDockerSubtabInFlight("containers")) {
+        refreshDockerSubtab("containers");
       }
     }, DOCKER_SUBTAB_THROTTLE_MS - elapsed);
   }
@@ -2759,7 +2765,11 @@ function refreshDockerSubtab(subtabName) {
     case "updates":
       fetchDockerUpdatesConfig();
       fetchUpdateSchedule();
-      fetchDockerUpdates();
+      if (!cachedDockerUpdates || cachedDockerUpdates.length === 0) {
+        fetchDockerUpdates();
+      } else {
+        renderDockerUpdates(cachedDockerUpdates);
+      }
       break;
   }
 }
@@ -4028,13 +4038,127 @@ async function fetchDockerUpdatesConfig() {
   }
 }
 
+function generateUpdateRowHtml(u) {
+  const safeName = escapeHtml(u.container_name || u.container_id);
+  const safeImg = escapeHtml(u.image);
+  const safeStack = escapeHtml(u.stack || "-");
+  const safeCur = escapeHtml(u.current_id || "--");
+  const safeLat = escapeHtml(u.latest_id || "--");
+
+  const badgeHtml = u.update_available
+    ? `<span class="status-badge status-degraded"><span class="status-dot"></span>Update Available</span>`
+    : `<span class="status-badge status-clean"><span class="status-dot"></span>Up to date</span>`;
+
+  const actionHtml = u.update_available
+    ? `<button type="button" class="btn-action btn-action-success" data-update-cid="${escapeHtml(u.container_id)}" data-update-stack="${escapeHtml(u.stack || '')}">Update</button>`
+    : `<span style="color: var(--text-muted); font-size: 0.8rem;">Current</span>`;
+
+  return `
+    <td><strong>${safeName}</strong></td>
+    <td><span class="mono-text" style="color: var(--accent-primary);">${safeImg}</span></td>
+    <td>${safeStack !== "-" ? `<span class="kind-badge kind-weekly">${safeStack}</span>` : "-"}</td>
+    <td><span class="mono-text">${safeCur}</span></td>
+    <td><span class="mono-text">${safeLat}</span></td>
+    <td>${badgeHtml}</td>
+    <td class="actions-col">
+      ${actionHtml}
+    </td>
+  `;
+}
+
+function renderDockerUpdates(updates) {
+  const tbody = document.getElementById("docker-updates-tbody");
+  if (!tbody) return;
+
+  const renderKey = JSON.stringify(updates);
+  if (lastDockerUpdatesRenderKey === renderKey && tbody.querySelectorAll("tr[data-container-id]").length === updates.length) {
+    return;
+  }
+
+  if (!updates || updates.length === 0) {
+    lastDockerUpdatesRenderKey = renderKey;
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No running containers detected to scan for updates.</td></tr>`;
+    return;
+  }
+
+  // Remove placeholder rows (empty-state, loading-state)
+  tbody.querySelectorAll(".empty-state, .loading-state").forEach((el) => {
+    const tr = el.closest("tr");
+    if (tr) tr.remove();
+  });
+
+  const existingRowMap = new Map();
+  tbody.querySelectorAll("tr[data-container-id]").forEach((tr) => {
+    existingRowMap.set(tr.dataset.containerId, tr);
+  });
+
+  const activeCids = new Set();
+
+  updates.forEach((u, index) => {
+    const cid = String(u.container_id || index);
+    activeCids.add(cid);
+
+    const rowContent = generateUpdateRowHtml(u);
+    const rowKey = `${u.container_name}|${u.image}|${u.stack}|${u.current_id}|${u.latest_id}|${u.update_available}`;
+
+    let row = existingRowMap.get(cid);
+    if (row) {
+      if (row.dataset.rowKey !== rowKey) {
+        row.innerHTML = rowContent;
+        row.dataset.rowKey = rowKey;
+        row.setAttribute("data-row-key", rowKey);
+      }
+    } else {
+      row = document.createElement("tr");
+      row.dataset.containerId = cid;
+      row.setAttribute("data-container-id", cid);
+      row.dataset.rowKey = rowKey;
+      row.setAttribute("data-row-key", rowKey);
+      row.innerHTML = rowContent;
+      existingRowMap.set(cid, row);
+    }
+
+    if (tbody.children[index] !== row) {
+      tbody.insertBefore(row, tbody.children[index] || null);
+    }
+  });
+
+  existingRowMap.forEach((row, cid) => {
+    if (!activeCids.has(cid)) {
+      row.remove();
+    }
+  });
+
+  lastDockerUpdatesRenderKey = renderKey;
+}
+
 async function fetchDockerUpdates({ force = false } = {}) {
   const tbody = document.getElementById("docker-updates-tbody");
   if (!tbody) return;
   if (isFetchingDockerUpdates) return;
   isFetchingDockerUpdates = true;
 
-  tbody.innerHTML = `<tr><td colspan="7" class="loading-state" style="text-align:center; padding: 24px; color: var(--text-muted);"><span class="spinner" style="display:inline-block; margin-right:8px;"></span> Checking container images for updates...</td></tr>`;
+  const btnCheckUpdates = document.getElementById("btn-check-docker-updates");
+  let originalBtnHtml = "";
+  if (btnCheckUpdates) {
+    originalBtnHtml = btnCheckUpdates.innerHTML;
+    btnCheckUpdates.disabled = true;
+    btnCheckUpdates.classList.add("loading");
+    btnCheckUpdates.innerHTML = `
+      <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:inline-block; margin-right:6px; vertical-align:text-bottom;">
+        <polyline points="23 4 23 10 17 10"></polyline>
+        <polyline points="1 20 1 14 7 14"></polyline>
+        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+      </svg>
+      <span>Scanning...</span>
+    `;
+  }
+
+  // Only show an initial loading placeholder if tbody is completely empty on initial load
+  const hasExistingRows = tbody.querySelectorAll("tr[data-container-id]").length > 0;
+  if (!hasExistingRows && (tbody.children.length === 0 || (!cachedDockerUpdates && tbody.querySelector(".empty-state")))) {
+    tbody.innerHTML = `<tr><td colspan="7" class="loading-state" style="text-align:center; padding: 24px; color: var(--text-muted);"><span class="spinner" style="display:inline-block; margin-right:8px;"></span> Checking container images for updates...</td></tr>`;
+  }
 
   try {
     const url = force ? "/api/docker/updates?force=true" : "/api/docker/updates";
@@ -4047,7 +4171,9 @@ async function fetchDockerUpdates({ force = false } = {}) {
       freqSelect.value = data.config.frequency;
     }
 
-    const updates = data.updates || [];
+    const updates = Array.isArray(data.updates) ? data.updates : [];
+    cachedDockerUpdates = updates;
+
     const updatesAvailableCount = updates.filter((u) => u.update_available).length;
     const badge = document.getElementById("subtab-badge-updates");
     if (badge) {
@@ -4070,50 +4196,16 @@ async function fetchDockerUpdates({ force = false } = {}) {
       }
     }
 
-    if (updates.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No running containers detected to scan for updates.</td></tr>`;
-      return;
-    }
-
-    tbody.innerHTML = updates.map((u) => {
-      const safeName = escapeHtml(u.container_name || u.container_id);
-      const safeImg = escapeHtml(u.image);
-      const safeStack = escapeHtml(u.stack || "-");
-      const safeCur = escapeHtml(u.current_id || "--");
-      const safeLat = escapeHtml(u.latest_id || "--");
-
-      const badgeHtml = u.update_available
-        ? `<span class="status-badge status-degraded"><span class="status-dot"></span>Update Available</span>`
-        : `<span class="status-badge status-clean"><span class="status-dot"></span>Up to date</span>`;
-
-      const actionHtml = u.update_available
-        ? `<button type="button" class="btn-action btn-action-success" data-update-cid="${escapeHtml(u.container_id)}" data-update-stack="${escapeHtml(u.stack || '')}">Update</button>`
-        : `<span style="color: var(--text-muted); font-size: 0.8rem;">Current</span>`;
-
-      return `<tr>
-        <td><strong>${safeName}</strong></td>
-        <td><span class="mono-text" style="color: var(--accent-primary);">${safeImg}</span></td>
-        <td>${safeStack !== "-" ? `<span class="kind-badge kind-weekly">${safeStack}</span>` : "-"}</td>
-        <td><span class="mono-text">${safeCur}</span></td>
-        <td><span class="mono-text">${safeLat}</span></td>
-        <td>${badgeHtml}</td>
-        <td class="actions-col">
-          ${actionHtml}
-        </td>
-      </tr>`;
-    }).join("");
-
-    tbody.querySelectorAll("button[data-update-cid]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const cid = btn.getAttribute("data-update-cid");
-        const stack = btn.getAttribute("data-update-stack");
-        handleApplyUpdates(cid ? [cid] : null, stack ? [stack] : null);
-      });
-    });
+    renderDockerUpdates(updates);
   } catch (err) {
     console.warn("Failed to fetch Docker updates:", err);
   } finally {
     isFetchingDockerUpdates = false;
+    if (btnCheckUpdates) {
+      btnCheckUpdates.disabled = false;
+      btnCheckUpdates.classList.remove("loading");
+      btnCheckUpdates.innerHTML = originalBtnHtml || "Check Now";
+    }
   }
 }
 
@@ -4176,7 +4268,8 @@ async function handleApplyUpdates(containers = null, stacks = null) {
         feedback.className = "auth-alert feedback-success";
         feedback.textContent = "Updates applied successfully.";
       }
-      fetchDockerUpdates();
+      lastDockerUpdatesRenderKey = "";
+      fetchDockerUpdates({ force: true });
       fetchDockerContainers();
       fetchDockerStatus();
     } else {
@@ -4493,6 +4586,17 @@ function initDashboard() {
   document
     .getElementById("btn-apply-all-updates")
     ?.addEventListener("click", () => handleApplyUpdates());
+
+  document
+    .getElementById("docker-updates-tbody")
+    ?.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-update-cid]");
+      if (btn) {
+        const cid = btn.getAttribute("data-update-cid");
+        const stack = btn.getAttribute("data-update-stack");
+        handleApplyUpdates(cid ? [cid] : null, stack ? [stack] : null);
+      }
+    });
 
   document
     .getElementById("btn-save-schedule")
