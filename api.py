@@ -771,6 +771,7 @@ def api_status(_user: str = Depends(require_auth)) -> dict[str, Any]:
             "timezone": tz,
         },
         "services_summary": main.get_services_summary(),
+        "reboot_status": main.package_manager.get_reboot_status(),
     }
 
 
@@ -1499,6 +1500,81 @@ def api_vigil_logs(
 
 
 # ============================================================================
+# Package Management & System Updates Routes
+# ============================================================================
+
+
+@app.get("/api/packages/updates")
+def api_packages_updates(
+    force: bool = Query(default=False),
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        return main.package_manager.get_available_updates(force=force)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error checking package updates: {exc}")
+
+
+@app.post("/api/packages/refresh")
+@app.post("/api/packages/check")
+def api_packages_refresh(
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        refresh_res = main.package_manager.refresh_repositories()
+        updates_res = main.package_manager.get_available_updates(force=True)
+        return {
+            "success": bool(refresh_res.get("success", False)),
+            "refresh": refresh_res,
+            "updates": updates_res,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error refreshing repositories: {exc}")
+
+
+@app.get("/api/packages/installed")
+def api_packages_installed(
+    q: str = Query(default=""),
+    limit: int = Query(default=50, ge=0, le=500),
+    page: int = Query(default=1, ge=1),
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        return main.package_manager.get_installed_packages(query=q, limit=limit, page=page)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error retrieving installed packages: {exc}")
+
+
+@app.get("/api/packages/reboot")
+def api_packages_reboot(
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        return main.package_manager.get_reboot_status()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error checking reboot status: {exc}")
+
+
+class PackageUpgradeRequest(BaseModel):
+    packages: Optional[list[str]] = None
+    dry_run: bool = True
+
+
+@app.post("/api/packages/upgrade")
+def api_packages_upgrade(
+    req: PackageUpgradeRequest,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        res = main.package_manager.run_upgrade(packages=req.packages, dry_run=req.dry_run)
+        return res
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error executing package upgrade: {exc}")
+
+
+# ============================================================================
 # Process Explorer Routes
 # ============================================================================
 
@@ -1770,6 +1846,9 @@ class CacheControlStaticFiles(StaticFiles):
 @app.get("/containers/{subpath:path}")
 @app.get("/services")
 @app.get("/processes")
+@app.get("/packages")
+@app.get("/packages/{subpath:path}")
+@app.get("/updates")
 @app.get("/users")
 @app.get("/users/{subpath:path}")
 @app.get("/notifications")

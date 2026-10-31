@@ -11,7 +11,7 @@ from subprocess import CalledProcessError
 import tempfile
 import time
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, mock_open
 from urllib.error import URLError
 from urllib.parse import urlsplit
 
@@ -6524,6 +6524,203 @@ class TestAuditLoggingEndpoints(unittest.TestCase):
             resp = asgi_get(api.app, "/api/audit/logs", cookies=self.auth_cookies)
             self.assertEqual(resp.status_code, 500)
             self.assertIn("Error fetching audit logs", resp.json()["detail"])
+
+
+class TestPackageManagerBackendAndEndpoints(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "raid_state.db"
+        self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
+        self.db_patcher.start()
+
+        main.create_user("admin", "adminpass", email="admin@example.com")
+        self.session_token = main.create_session("admin")
+        self.auth_cookies = {"session_token": self.session_token}
+
+    def tearDown(self):
+        self.db_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_package_manager_support_detection(self):
+        pm = main.PackageManager()
+        with patch("shutil.which", return_value=None):
+            self.assertFalse(pm.is_supported())
+        with patch("shutil.which", return_value="/usr/bin/dpkg"):
+            self.assertTrue(pm.is_supported())
+
+    def test_reboot_status_detection(self):
+        pm = main.PackageManager()
+        with patch("os.path.exists", return_value=False):
+            status = pm.get_reboot_status()
+            self.assertFalse(status["reboot_required"])
+            self.assertEqual(status["packages"], [])
+
+        def fake_exists(path):
+            return str(path) in ("/run/reboot-required", "/run/reboot-required.pkgs")
+
+        mock_content = "linux-image-6.8.0-generic\nlibc6\n"
+        with patch("os.path.exists", side_effect=fake_exists), \
+             patch("builtins.open", mock_open(read_data=mock_content)):
+            status = pm.get_reboot_status()
+            self.assertTrue(status["reboot_required"])
+            self.assertIn("linux-image-6.8.0-generic", status["packages"])
+            self.assertIn("libc6", status["packages"])
+
+    def test_load_installed_packages(self):
+        pm = main.PackageManager()
+        dpkg_output = (
+            "curl\t7.81.0-1ubuntu1.15\tamd64\tinstall ok installed\tcommand line tool for transferring data\n"
+            "vim\t2:8.2.3995-1ubuntu2\tamd64\tinstall ok installed\tVi IMproved - enhanced vi editor\n"
+            "old-pkg\t1.0.0\tamd64\tdeinstall ok config-files\tremoved package\n"
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=dpkg_output)
+            packages = pm._load_installed_packages()
+            self.assertEqual(len(packages), 2)
+            self.assertEqual(packages[0]["name"], "curl")
+            self.assertEqual(packages[0]["version"], "7.81.0-1ubuntu1.15")
+            self.assertEqual(packages[0]["architecture"], "amd64")
+            self.assertEqual(packages[1]["name"], "vim")
+
+    def test_get_installed_packages_filtering_and_pagination(self):
+        pm = main.PackageManager()
+        sample_packages = [
+            {"name": f"pkg-{i:03d}", "version": f"1.{i}.0", "architecture": "amd64", "status": "installed", "summary": f"Sample summary {i}"}
+            for i in range(120)
+        ]
+        with patch.object(pm, "_load_installed_packages", return_value=sample_packages):
+            # Page 1 (limit 50)
+            res1 = pm.get_installed_packages(limit=50, page=1)
+            self.assertEqual(res1["total"], 120)
+            self.assertEqual(len(res1["packages"]), 50)
+            self.assertEqual(res1["page"], 1)
+            self.assertEqual(res1["packages"][0]["name"], "pkg-000")
+
+            # Page 3 (items 100-119)
+            res3 = pm.get_installed_packages(limit=50, page=3)
+            self.assertEqual(res3["total"], 120)
+            self.assertEqual(len(res3["packages"]), 20)
+            self.assertEqual(res3["page"], 3)
+            self.assertEqual(res3["packages"][0]["name"], "pkg-100")
+
+            # Search filter
+            res_filtered = pm.get_installed_packages(query="042", limit=50, page=1)
+            self.assertEqual(res_filtered["total"], 1)
+            self.assertEqual(res_filtered["packages"][0]["name"], "pkg-042")
+
+    def test_get_available_updates_parsing(self):
+        pm = main.PackageManager()
+        apt_dist_output = (
+            "Reading package lists... Done\n"
+            "Building dependency tree... Done\n"
+            "Inst curl [7.81.0-1ubuntu1.15] (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-updates [amd64])\n"
+            "Inst libssl3 [3.0.2-0ubuntu1.14] (3.0.2-0ubuntu1.15 Ubuntu:22.04/jammy-security [amd64])\n"
+            "Conf curl (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-updates [amd64])\n"
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=apt_dist_output)
+            res = pm.get_available_updates(force=True)
+            self.assertEqual(res["total_updates"], 2)
+            self.assertEqual(res["security_updates"], 1)
+            self.assertEqual(res["standard_updates"], 1)
+            self.assertEqual(len(res["updates"]), 2)
+
+            curl_up = next(u for u in res["updates"] if u["package"] == "curl")
+            self.assertFalse(curl_up["is_security"])
+            self.assertEqual(curl_up["current_version"], "7.81.0-1ubuntu1.15")
+            self.assertEqual(curl_up["candidate_version"], "7.81.0-1ubuntu1.16")
+
+            ssl_up = next(u for u in res["updates"] if u["package"] == "libssl3")
+            self.assertTrue(ssl_up["is_security"])
+
+    def test_run_upgrade_dry_run_and_sanitization(self):
+        pm = main.PackageManager()
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="Simulated upgrade OK\n", stderr="")
+            res = pm.run_upgrade(packages=["curl"], dry_run=True)
+            self.assertTrue(res["success"])
+            self.assertTrue(res["dry_run"])
+            self.assertIn("Simulated upgrade OK", res["output"])
+
+        # Test injection / invalid package name sanitization
+        with self.assertRaises(ValueError):
+            pm.run_upgrade(packages=["curl; rm -rf /"], dry_run=True)
+
+        # Test API endpoint returns 400 for invalid package name
+        api_bad = asgi_post(api.app, "/api/packages/upgrade", json_body={"packages": ["curl; rm -rf /"]}, cookies=self.auth_cookies)
+        self.assertEqual(api_bad.status_code, 400)
+        self.assertIn("Invalid package name", api_bad.json()["detail"])
+
+    def test_api_package_endpoints_and_status(self):
+        # 1. Status includes reboot_status
+        status_resp = asgi_get(api.app, "/api/status", cookies=self.auth_cookies)
+        self.assertEqual(status_resp.status_code, 200)
+        status_data = status_resp.json()
+        self.assertIn("reboot_status", status_data)
+
+        # 2. GET /api/packages/reboot
+        reboot_resp = asgi_get(api.app, "/api/packages/reboot", cookies=self.auth_cookies)
+        self.assertEqual(reboot_resp.status_code, 200)
+        self.assertIn("reboot_required", reboot_resp.json())
+
+        # 3. GET /api/packages/updates
+        with patch.object(main.package_manager, "get_available_updates", return_value={
+            "supported": True,
+            "total_updates": 1,
+            "security_updates": 0,
+            "standard_updates": 1,
+            "updates": [{"package": "curl", "current_version": "1.0", "candidate_version": "1.1", "is_security": False, "origin": "apt"}],
+            "reboot_status": {"reboot_required": False, "packages": []},
+            "checked_at": "2026-10-31T12:00:00Z"
+        }):
+            updates_resp = asgi_get(api.app, "/api/packages/updates", cookies=self.auth_cookies)
+            self.assertEqual(updates_resp.status_code, 200)
+            self.assertEqual(updates_resp.json()["total_updates"], 1)
+
+        # 4. GET /api/packages/installed
+        with patch.object(main.package_manager, "get_installed_packages", return_value={
+            "supported": True,
+            "total": 42,
+            "page": 1,
+            "limit": 50,
+            "packages": [{"name": "vim", "version": "9.0", "architecture": "amd64", "status": "installed", "summary": "editor"}]
+        }):
+            inst_resp = asgi_get(api.app, "/api/packages/installed?q=vim", cookies=self.auth_cookies)
+            self.assertEqual(inst_resp.status_code, 200)
+            self.assertEqual(inst_resp.json()["total"], 42)
+
+        # 5. POST /api/packages/refresh
+        with patch.object(main.package_manager, "refresh_repositories", return_value={"success": True, "output": "Fetched 10MB"}):
+            ref_resp = asgi_post(api.app, "/api/packages/refresh", cookies=self.auth_cookies)
+            self.assertEqual(ref_resp.status_code, 200)
+            self.assertTrue(ref_resp.json()["success"])
+
+        # 6. POST /api/packages/upgrade
+        with patch.object(main.package_manager, "run_upgrade", return_value={"success": True, "dry_run": True, "output": "Done", "returncode": 0}):
+            upg_resp = asgi_post(api.app, "/api/packages/upgrade", json_body={"packages": ["curl"], "dry_run": True}, cookies=self.auth_cookies)
+            self.assertEqual(upg_resp.status_code, 200)
+            self.assertTrue(upg_resp.json()["success"])
+
+    def test_dom_elements_present(self):
+        index_html = (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="nav-tab-packages"', index_html)
+        self.assertIn('id="view-packages"', index_html)
+        self.assertIn('id="pkg-reboot-banner"', index_html)
+        self.assertIn('id="subtab-pkg-updates-btn"', index_html)
+        self.assertIn('id="subtab-pkg-installed-btn"', index_html)
+        self.assertIn('id="pkg-updates-table"', index_html)
+        self.assertIn('id="pkg-installed-table"', index_html)
+        self.assertIn('id="pkg-upgrade-modal"', index_html)
+        self.assertIn('id="overview-packages-badge"', index_html)
+
+    def test_spa_packages_routes(self):
+        resp_pkg = asgi_get(api.app, "/packages")
+        self.assertEqual(resp_pkg.status_code, 200)
+        self.assertIn("text/html", resp_pkg.headers.get("content-type", ""))
+
+        resp_upd = asgi_get(api.app, "/updates")
+        self.assertEqual(resp_upd.status_code, 200)
+        self.assertIn("text/html", resp_upd.headers.get("content-type", ""))
 
 
 if __name__ == "__main__":

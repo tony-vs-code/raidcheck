@@ -5168,6 +5168,407 @@ def get_vigil_logs(lines: int = 100) -> list[str]:
     return ["-- No journald or file log entries found for vigil.service --"]
 
 
+class PackageManager:
+    """Debian and Ubuntu package management and system update checker."""
+
+    def __init__(self) -> None:
+        self._cache_lock = threading.Lock()
+        self._installed_cache: Optional[tuple[float, list[dict[str, Any]]]] = None
+        self._installed_cache_ttl: float = 60.0
+        self._updates_cache: Optional[tuple[float, dict[str, Any]]] = None
+        self._updates_cache_ttl: float = 120.0
+
+    def is_supported(self) -> bool:
+        """Check if Debian/Ubuntu packaging tools (dpkg/dpkg-query/apt) are present."""
+        return bool(shutil.which("dpkg") or shutil.which("dpkg-query") or shutil.which("apt-get"))
+
+    def invalidate_cache(self) -> None:
+        with self._cache_lock:
+            self._installed_cache = None
+            self._updates_cache = None
+
+    def get_reboot_status(self) -> dict[str, Any]:
+        """Detect whether a system reboot is required on Debian/Ubuntu systems."""
+        reboot_file_candidates = [
+            "/run/reboot-required",
+            "/var/run/reboot-required",
+        ]
+        pkgs_file_candidates = [
+            "/run/reboot-required.pkgs",
+            "/var/run/reboot-required.pkgs",
+        ]
+
+        reboot_required = False
+        message = ""
+        for p in reboot_file_candidates:
+            if os.path.exists(p):
+                reboot_required = True
+                try:
+                    with open(p, "r", encoding="utf-8", errors="replace") as f:
+                        txt = f.read().strip()
+                        if txt:
+                            message = txt
+                except Exception:
+                    pass
+                break
+
+        reboot_packages: list[str] = []
+        for p in pkgs_file_candidates:
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8", errors="replace") as f:
+                        lines = [
+                            l.strip()
+                            for l in f.read().splitlines()
+                            if l.strip()
+                        ]
+                        reboot_packages = lines
+                    break
+                except Exception:
+                    pass
+
+        return {
+            "reboot_required": reboot_required,
+            "message": message or ("System reboot required" if reboot_required else "No reboot required"),
+            "packages": reboot_packages,
+        }
+
+    def _load_installed_packages(self) -> list[dict[str, Any]]:
+        with self._cache_lock:
+            if self._installed_cache is not None:
+                cached_ts, cached_list = self._installed_cache
+                if (time.time() - cached_ts) < self._installed_cache_ttl:
+                    return list(cached_list)
+
+        packages: list[dict[str, Any]] = []
+
+        if shutil.which("dpkg-query"):
+            # Attempt 1: dpkg-query with binary:Summary
+            try:
+                res = subprocess.run(
+                    ["dpkg-query", "-W", "-f=${Package}\t${Version}\t${Architecture}\t${Status}\t${binary:Summary}\n"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if res.returncode == 0 and res.stdout:
+                    for line in res.stdout.splitlines():
+                        parts = line.split("\t")
+                        if len(parts) >= 4:
+                            pkg, ver, arch, status = parts[0], parts[1], parts[2], parts[3]
+                            summary = parts[4] if len(parts) > 4 else ""
+                            if "installed" in status.lower() and not status.startswith("deinstall"):
+                                packages.append({
+                                    "name": pkg,
+                                    "package": pkg,
+                                    "version": ver,
+                                    "architecture": arch,
+                                    "status": "installed",
+                                    "summary": summary,
+                                })
+            except Exception:
+                pass
+
+            # Fallback 2: dpkg-query basic format if binary:Summary failed
+            if not packages:
+                try:
+                    res = subprocess.run(
+                        ["dpkg-query", "-W", "-f=${Package}\t${Version}\t${Architecture}\t${Status}\n"],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    if res.returncode == 0 and res.stdout:
+                        for line in res.stdout.splitlines():
+                            parts = line.split("\t")
+                            if len(parts) >= 4:
+                                pkg, ver, arch, status = parts[0], parts[1], parts[2], parts[3]
+                                if "installed" in status.lower() and not status.startswith("deinstall"):
+                                    packages.append({
+                                        "name": pkg,
+                                        "package": pkg,
+                                        "version": ver,
+                                        "architecture": arch,
+                                        "status": "installed",
+                                        "summary": "",
+                                    })
+                except Exception:
+                    pass
+
+        # Fallback 3: dpkg -l
+        if not packages and shutil.which("dpkg"):
+            try:
+                res = subprocess.run(
+                    ["dpkg", "-l"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if res.returncode == 0 and res.stdout:
+                    for line in res.stdout.splitlines():
+                        if line.startswith("ii "):
+                            parts = line.split(None, 4)
+                            if len(parts) >= 4:
+                                pkg, ver, arch = parts[1], parts[2], parts[3]
+                                summary = parts[4] if len(parts) > 4 else ""
+                                packages.append({
+                                    "name": pkg,
+                                    "package": pkg,
+                                    "version": ver,
+                                    "architecture": arch,
+                                    "status": "installed",
+                                    "summary": summary,
+                                })
+            except Exception:
+                pass
+
+        with self._cache_lock:
+            self._installed_cache = (time.time(), list(packages))
+
+        return packages
+
+    def get_installed_packages(
+        self, query: str = "", limit: int = 50, page: int = 1
+    ) -> dict[str, Any]:
+        """Return paginated list of installed packages with optional search filter."""
+        all_pkgs = self._load_installed_packages()
+        q = query.strip().lower()
+        if q:
+            filtered = [
+                p
+                for p in all_pkgs
+                if q in p.get("package", p.get("name", "")).lower() or q in p.get("summary", "").lower()
+            ]
+        else:
+            filtered = all_pkgs
+
+        total = len(filtered)
+        limit_val = max(1, min(int(limit), 500)) if limit > 0 else total
+        page_val = max(1, int(page))
+        start = (page_val - 1) * limit_val
+        end = start + limit_val
+        paged = filtered[start:end]
+        pages = max(1, (total + limit_val - 1) // limit_val) if limit_val > 0 else 1
+
+        return {
+            "supported": self.is_supported(),
+            "packages": paged,
+            "total": total,
+            "page": page_val,
+            "limit": limit_val,
+            "pages": pages,
+        }
+
+    def get_available_updates(self, force: bool = False) -> dict[str, Any]:
+        """Detect pending package upgrades on Debian/Ubuntu systems."""
+        if not force:
+            with self._cache_lock:
+                if self._updates_cache is not None:
+                    cached_ts, cached_res = self._updates_cache
+                    if (time.time() - cached_ts) < self._updates_cache_ttl:
+                        res = copy.deepcopy(cached_res)
+                        res["reboot"] = self.get_reboot_status()
+                        return res
+
+        reboot_info = self.get_reboot_status()
+        updates: list[dict[str, Any]] = []
+
+        # Attempt 1: apt-get -s dist-upgrade (Standard simulation on all Debian/Ubuntu releases)
+        raw_output = ""
+        if shutil.which("apt-get"):
+            try:
+                res = subprocess.run(
+                    ["apt-get", "-s", "dist-upgrade"],
+                    capture_output=True,
+                    text=True,
+                    timeout=25,
+                )
+                if res.returncode == 0 and res.stdout:
+                    raw_output = res.stdout
+            except Exception:
+                pass
+
+        if raw_output:
+            inst_pattern = re.compile(
+                r"^Inst\s+(?P<pkg>[^\s:]+)(?::(?P<pkg_arch>[^\s]+))?"
+                r"(?:\s+\[(?P<cur>[^\]]+)\])?"
+                r"\s+\((?P<cand>[^\s\)]+)"
+                r"(?:\s+(?P<origins>[^\[]+?))?"
+                r"(?:\s+\[(?P<arch>[^\]]+)\])?\)",
+                re.MULTILINE,
+            )
+            for m in inst_pattern.finditer(raw_output):
+                d = m.groupdict()
+                orig = (d.get("origins") or "").strip()
+                is_sec = any(
+                    s in orig.lower()
+                    for s in ["security", "-security", "debian-security"]
+                )
+                updates.append({
+                    "package": d["pkg"],
+                    "current_version": d.get("cur") or "",
+                    "candidate_version": d.get("cand") or "",
+                    "architecture": d.get("arch") or d.get("pkg_arch") or "",
+                    "is_security": is_sec,
+                    "origin": orig,
+                })
+
+        # Fallback Attempt 2: apt list --upgradable
+        if not updates and shutil.which("apt"):
+            try:
+                res = subprocess.run(
+                    ["apt", "list", "--upgradable"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if res.returncode == 0 and res.stdout:
+                    apt_pattern = re.compile(
+                        r"^(?P<pkg>[^\/\s]+)\/(?P<origins>[^\s]+)\s+(?P<cand>[^\s]+)\s+(?P<arch>[^\s]+)(?:\s+\[upgradable from:\s+(?P<cur>[^\]]+)\])?",
+                        re.MULTILINE,
+                    )
+                    for m in apt_pattern.finditer(res.stdout):
+                        d = m.groupdict()
+                        orig = (d.get("origins") or "").strip()
+                        is_sec = any(
+                            s in orig.lower()
+                            for s in ["security", "-security", "debian-security"]
+                        )
+                        updates.append({
+                            "package": d["pkg"],
+                            "current_version": d.get("cur") or "",
+                            "candidate_version": d.get("cand") or "",
+                            "architecture": d.get("arch") or "",
+                            "is_security": is_sec,
+                            "origin": orig,
+                        })
+            except Exception:
+                pass
+
+        # Calculate last checked timestamp
+        last_checked = None
+        for p in [
+            Path("/var/cache/apt/pkgcache.bin"),
+            Path("/var/lib/apt/periodic/update-success-stamp"),
+            Path("/var/lib/apt/lists"),
+        ]:
+            if p.exists():
+                try:
+                    last_checked = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc).isoformat()
+                    break
+                except Exception:
+                    pass
+
+        security_count = sum(1 for u in updates if u.get("is_security"))
+        standard_count = len(updates) - security_count
+
+        stamp = last_checked or datetime.now(timezone.utc).isoformat()
+        result = {
+            "supported": self.is_supported(),
+            "reboot": reboot_info,
+            "reboot_status": reboot_info,
+            "updates": updates,
+            "total_updates": len(updates),
+            "security_updates": security_count,
+            "standard_updates": standard_count,
+            "summary": {
+                "total": len(updates),
+                "security": security_count,
+                "standard": standard_count,
+            },
+            "last_checked": stamp,
+            "checked_at": stamp,
+        }
+
+        with self._cache_lock:
+            self._updates_cache = (time.time(), copy.deepcopy(result))
+
+        return result
+
+    def refresh_repositories(self) -> dict[str, Any]:
+        """Execute apt-get update to fetch new index information."""
+        if not self.is_supported():
+            raise RuntimeError("Package manager (apt/apt-get) is not available on this host")
+
+        try:
+            res = subprocess.run(
+                ["apt-get", "update"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            with self._cache_lock:
+                self._updates_cache = None
+
+            return {
+                "success": res.returncode == 0,
+                "output": res.stdout,
+                "error": res.stderr if res.returncode != 0 else "",
+                "returncode": res.returncode,
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "output": "",
+                "error": str(exc),
+                "returncode": -1,
+            }
+
+    def run_upgrade(
+        self, packages: Optional[list[str]] = None, dry_run: bool = True
+    ) -> dict[str, Any]:
+        """Execute package upgrade or simulation."""
+        if not self.is_supported():
+            raise RuntimeError("Package manager (apt/apt-get) is not available on this host")
+
+        cmd = ["apt-get", "-y"]
+        if dry_run:
+            cmd.append("-s")
+
+        if packages:
+            clean_pkgs = []
+            for p in packages:
+                p_clean = str(p).strip()
+                if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9+\-\.:]*$", p_clean):
+                    raise ValueError(f"Invalid package name '{p}'")
+                clean_pkgs.append(p_clean)
+            cmd.extend(["install", "--only-upgrade"] + clean_pkgs)
+        else:
+            cmd.append("dist-upgrade")
+
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            with self._cache_lock:
+                self._updates_cache = None
+                self._installed_cache = None
+
+            return {
+                "success": res.returncode == 0,
+                "dry_run": dry_run,
+                "command": " ".join(cmd),
+                "output": res.stdout,
+                "error": res.stderr if res.returncode != 0 else "",
+                "returncode": res.returncode,
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "dry_run": dry_run,
+                "command": " ".join(cmd),
+                "output": "",
+                "error": str(exc),
+                "returncode": -1,
+            }
+
+
+package_manager = PackageManager()
+
+
 def get_process_list(
     sort: str = "cpu",
     limit: int = 50,

@@ -648,6 +648,11 @@ function renderSystemMetrics(system) {
   if (system.services_summary) {
     renderServicesSummary(system.services_summary);
   }
+
+  // Packages & Reboot Summary
+  if (system.reboot_status) {
+    renderPackagesOverviewRibbon(system.reboot_status, cachedPackageUpdates);
+  }
 }
 
 /**
@@ -3184,6 +3189,7 @@ function switchViewTab(tabName, updateHash = true) {
   const isProcesses = normTab === "processes";
   const isUsers = normTab === "users";
   const isAudit = normTab === "audit";
+  const isPackages = normTab === "packages" || normTab === "updates" || normTab === "dpkg" || normTab === "apt";
   currentViewTab = isRaid ? "raid" : (normTab || "overview");
 
   const overviewTab = document.getElementById("nav-tab-overview");
@@ -3194,6 +3200,7 @@ function switchViewTab(tabName, updateHash = true) {
   const processesTab = document.getElementById("nav-tab-processes");
   const usersTab = document.getElementById("nav-tab-users");
   const auditTab = document.getElementById("nav-tab-audit");
+  const packagesTab = document.getElementById("nav-tab-packages");
 
   const overviewView = document.getElementById("view-overview");
   const raidView = document.getElementById("view-raid");
@@ -3203,6 +3210,7 @@ function switchViewTab(tabName, updateHash = true) {
   const processesView = document.getElementById("view-processes");
   const usersView = document.getElementById("view-users");
   const auditView = document.getElementById("view-audit");
+  const packagesView = document.getElementById("view-packages");
 
   const pageTitle = document.getElementById("page-title");
 
@@ -3222,6 +3230,8 @@ function switchViewTab(tabName, updateHash = true) {
   usersTab?.setAttribute("aria-selected", "false");
   auditTab?.classList.remove("active");
   auditTab?.setAttribute("aria-selected", "false");
+  packagesTab?.classList.remove("active");
+  packagesTab?.setAttribute("aria-selected", "false");
 
   overviewView?.classList.add("hidden");
   raidView?.classList.add("hidden");
@@ -3231,6 +3241,7 @@ function switchViewTab(tabName, updateHash = true) {
   processesView?.classList.add("hidden");
   usersView?.classList.add("hidden");
   auditView?.classList.add("hidden");
+  packagesView?.classList.add("hidden");
 
   // Automatically close mobile sidebar if opened
   document.getElementById("app-sidebar")?.classList.remove("open");
@@ -3326,6 +3337,19 @@ function switchViewTab(tabName, updateHash = true) {
     if (isAuthenticated) {
       fetchAuditLogs();
     }
+  } else if (isPackages) {
+    packagesTab?.classList.add("active");
+    packagesTab?.setAttribute("aria-selected", "true");
+    packagesView?.classList.remove("hidden");
+    if (pageTitle) pageTitle.textContent = "Packages & System Updates";
+
+    if (updateHash && !window.location.hash.startsWith("#packages") && !window.location.hash.startsWith("#updates")) {
+      history.replaceState(null, "", "#packages");
+    }
+
+    if (isAuthenticated) {
+      refreshPackagesView();
+    }
   } else {
     overviewTab?.classList.add("active");
     overviewTab?.setAttribute("aria-selected", "true");
@@ -3366,6 +3390,8 @@ function syncTabFromHash() {
     }
   } else if (route === "audit" || route === "security" || route === "audit-log") {
     switchViewTab("audit", false);
+  } else if (route.startsWith("packages") || route.startsWith("updates") || route === "dpkg" || route === "apt") {
+    switchViewTab("packages", false);
   } else if (route === "logs" || route === "vigil-logs" || route === "system-logs") {
     openVigilLogsModal();
   } else if (route === "notifications" || route === "notifications-logs") {
@@ -6283,6 +6309,403 @@ async function handleSaveUpdateSchedule() {
   }
 }
 
+/* =========================================================================
+ * Packages & Updates Manager View (#view-packages)
+ * ========================================================================= */
+let currentPackagesSubtab = "updates";
+let cachedPackageUpdates = null;
+let cachedInstalledPackages = null;
+let currentPkgSearchQuery = "";
+let currentPkgPage = 1;
+let currentPkgTotalPages = 1;
+let pkgInstalledSearchDebounceTimer = null;
+
+function switchPackagesSubtab(subtab) {
+  currentPackagesSubtab = subtab || "updates";
+  const btnUpdates = document.getElementById("subtab-pkg-updates-btn");
+  const btnInstalled = document.getElementById("subtab-pkg-installed-btn");
+  const panelUpdates = document.getElementById("pkg-updates-subtab-panel");
+  const panelInstalled = document.getElementById("pkg-installed-subtab-panel");
+
+  if (currentPackagesSubtab === "installed") {
+    btnUpdates?.classList.remove("active");
+    btnUpdates?.setAttribute("aria-selected", "false");
+    btnInstalled?.classList.add("active");
+    btnInstalled?.setAttribute("aria-selected", "true");
+    panelUpdates?.classList.add("hidden");
+    panelInstalled?.classList.remove("hidden");
+    if (!cachedInstalledPackages) {
+      fetchInstalledPackages(currentPkgSearchQuery, currentPkgPage);
+    }
+  } else {
+    btnInstalled?.classList.remove("active");
+    btnInstalled?.setAttribute("aria-selected", "false");
+    btnUpdates?.classList.add("active");
+    btnUpdates?.setAttribute("aria-selected", "true");
+    panelInstalled?.classList.add("hidden");
+    panelUpdates?.classList.remove("hidden");
+    if (!cachedPackageUpdates) {
+      fetchPackageUpdates();
+    }
+  }
+}
+
+function renderPackagesOverviewRibbon(rebootStatus, updatesData) {
+  const badge = document.getElementById("overview-packages-badge");
+  const summary = document.getElementById("overview-packages-summary");
+  const navBadge = document.getElementById("nav-tab-packages-badge");
+
+  const rebootRequired = Boolean(rebootStatus && rebootStatus.reboot_required);
+  const totalUpdates = updatesData ? (Number(updatesData.total_updates) || 0) : 0;
+  const securityUpdates = updatesData ? (Number(updatesData.security_updates) || 0) : 0;
+  const standardUpdates = updatesData ? (Number(updatesData.standard_updates) || 0) : 0;
+
+  if (navBadge) {
+    if (totalUpdates > 0) {
+      navBadge.textContent = totalUpdates > 99 ? "99+" : String(totalUpdates);
+      navBadge.classList.remove("hidden");
+      if (securityUpdates > 0) {
+        navBadge.className = "nav-tab-badge badge-crit";
+      } else {
+        navBadge.className = "nav-tab-badge";
+      }
+    } else {
+      navBadge.classList.add("hidden");
+    }
+  }
+
+  if (badge && summary) {
+    if (rebootRequired) {
+      badge.textContent = "REBOOT REQ";
+      badge.className = "status-badge status-danger";
+      const pkgCount = rebootStatus.packages?.length || 0;
+      summary.textContent = pkgCount > 0 ? `${pkgCount} package(s) require reboot` : "System restart required";
+    } else if (totalUpdates > 0) {
+      if (securityUpdates > 0) {
+        badge.textContent = `${totalUpdates} UPDATES`;
+        badge.className = "status-badge status-danger";
+        summary.textContent = `${securityUpdates} security, ${standardUpdates} standard`;
+      } else {
+        badge.textContent = `${totalUpdates} UPDATES`;
+        badge.className = "status-badge status-warn";
+        summary.textContent = `${standardUpdates} update(s) available`;
+      }
+    } else {
+      badge.textContent = "CLEAN";
+      badge.className = "status-badge status-ok";
+      summary.textContent = "0 updates, system clean";
+    }
+  }
+}
+
+async function fetchPackageUpdates(force = false) {
+  const refreshBtn = document.getElementById("btn-refresh-packages");
+  if (refreshBtn) refreshBtn.classList.add("loading");
+  try {
+    const url = `/api/packages/updates${force ? "?force=true" : ""}`;
+    const resp = await apiFetch(url);
+    if (!resp.ok) {
+      if (resp.status === 404) {
+        throw new Error("Update manager endpoint not found (HTTP 404). Please ensure Vigil backend is up to date.");
+      }
+      throw new Error(`Failed to load updates (HTTP ${resp.status})`);
+    }
+    const data = await resp.json();
+    cachedPackageUpdates = data;
+
+    // Render metrics strip
+    const totalEl = document.getElementById("pkg-count-total");
+    const secEl = document.getElementById("pkg-count-security");
+    const stdEl = document.getElementById("pkg-count-standard");
+    const subtabBadge = document.getElementById("subtab-pkg-updates-badge");
+    const lastUpdatedEl = document.getElementById("packages-last-updated");
+
+    if (totalEl) totalEl.textContent = data.total_updates || 0;
+    if (secEl) secEl.textContent = data.security_updates || 0;
+    if (stdEl) stdEl.textContent = data.standard_updates || 0;
+    if (subtabBadge) subtabBadge.textContent = data.total_updates || 0;
+    if (lastUpdatedEl && data.checked_at) {
+      lastUpdatedEl.textContent = `Catalog checked ${formatRelativeTime(data.checked_at)}`;
+    }
+
+    // Render reboot banner
+    const rebootBanner = document.getElementById("pkg-reboot-banner");
+    const rebootStatusText = document.getElementById("pkg-reboot-status-text");
+    const rebootPkgsWrapper = document.getElementById("pkg-reboot-pkgs-wrapper");
+    const rebootPkgsList = document.getElementById("pkg-reboot-pkgs-list");
+
+    const reboot = data.reboot_status || {};
+    if (reboot.reboot_required) {
+      rebootBanner?.classList.remove("hidden");
+      if (rebootStatusText) {
+        rebootStatusText.textContent = "REQUIRED";
+        rebootStatusText.className = "status-badge status-danger";
+      }
+      if (reboot.packages && reboot.packages.length > 0) {
+        rebootPkgsWrapper?.classList.remove("hidden");
+        if (rebootPkgsList) {
+          rebootPkgsList.innerHTML = reboot.packages
+            .map((pkg) => `<span class="reboot-pkg-chip">${escapeHtml(pkg)}</span>`)
+            .join("");
+        }
+      } else {
+        rebootPkgsWrapper?.classList.add("hidden");
+      }
+    } else {
+      rebootBanner?.classList.add("hidden");
+      if (rebootStatusText) {
+        rebootStatusText.textContent = "CLEAN";
+        rebootStatusText.className = "status-badge status-ok";
+      }
+    }
+
+    renderPackagesOverviewRibbon(reboot, data);
+    renderPackageUpdatesTable(data.updates || []);
+  } catch (err) {
+    console.error("fetchPackageUpdates error:", err);
+    showToast({
+      title: "Package Updates Error",
+      message: err.message,
+      type: "error",
+    });
+  } finally {
+    if (refreshBtn) refreshBtn.classList.remove("loading");
+  }
+}
+
+function renderPackageUpdatesTable(updates) {
+  const tbody = document.getElementById("pkg-updates-tbody");
+  if (!tbody) return;
+
+  const filter = (document.getElementById("pkg-updates-search")?.value || "").toLowerCase().trim();
+  const filtered = filter
+    ? updates.filter((u) => (u.package && u.package.toLowerCase().includes(filter)) || (u.origin && u.origin.toLowerCase().includes(filter)))
+    : updates;
+
+  if (filtered.length === 0) {
+    if (updates.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty-state">All packages are up to date! System is clean.</td></tr>`;
+    } else {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No updates match filter "${escapeHtml(filter)}".</td></tr>`;
+    }
+    return;
+  }
+
+  tbody.innerHTML = filtered
+    .map((item) => {
+      const isSecurity = Boolean(item.is_security);
+      const badgeClass = isSecurity ? "pkg-type-security" : "pkg-type-standard";
+      const typeLabel = isSecurity ? "SECURITY" : "STANDARD";
+      return `
+        <tr>
+          <td>
+            <strong class="mono-text">${escapeHtml(item.package)}</strong>
+            ${item.architecture ? `<span class="text-muted text-xs"> (${escapeHtml(item.architecture)})</span>` : ""}
+          </td>
+          <td><span class="${badgeClass}">${typeLabel}</span></td>
+          <td class="mono-text">${escapeHtml(item.current_version || "--")}</td>
+          <td class="mono-text font-bold text-ok">${escapeHtml(item.candidate_version || "--")}</td>
+          <td class="text-sm text-muted">${escapeHtml(item.origin || "apt")}</td>
+          <td style="text-align: right;">
+            <button
+              type="button"
+              class="btn-sm btn-secondary btn-upgrade-single"
+              data-pkg="${escapeHtml(item.package)}"
+              title="Simulate upgrade for ${escapeHtml(item.package)}"
+            >
+              Simulate
+            </button>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  tbody.querySelectorAll(".btn-upgrade-single").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const pkg = btn.getAttribute("data-pkg");
+      simulatePackageUpgrade(pkg);
+    });
+  });
+}
+
+async function fetchInstalledPackages(query = "", page = 1) {
+  currentPkgSearchQuery = query || "";
+  currentPkgPage = page < 1 ? 1 : page;
+  const tbody = document.getElementById("pkg-installed-tbody");
+  if (tbody) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty-state">Loading installed packages...</td></tr>`;
+  }
+
+  try {
+    const url = `/api/packages/installed?q=${encodeURIComponent(currentPkgSearchQuery)}&page=${currentPkgPage}&limit=50`;
+    const resp = await apiFetch(url);
+    if (!resp.ok) {
+      throw new Error(`Failed to load installed packages (HTTP ${resp.status})`);
+    }
+    const data = await resp.json();
+    cachedInstalledPackages = data;
+
+    const countPill = document.getElementById("pkg-installed-count-pill");
+    const subtabBadge = document.getElementById("subtab-pkg-installed-badge");
+    const paginationInfo = document.getElementById("pkg-pagination-info");
+    const pageIndicator = document.getElementById("pkg-page-indicator");
+    const btnPrev = document.getElementById("btn-pkg-prev");
+    const btnNext = document.getElementById("btn-pkg-next");
+
+    const total = Number(data.total) || 0;
+    const pageNum = Number(data.page) || 1;
+    const limit = Number(data.limit) || 50;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    currentPkgTotalPages = totalPages;
+
+    if (countPill) countPill.textContent = `${total.toLocaleString()} package${total === 1 ? "" : "s"}`;
+    if (subtabBadge) subtabBadge.textContent = total > 999 ? `${(total / 1000).toFixed(1)}k` : String(total);
+
+    const startIdx = total === 0 ? 0 : (pageNum - 1) * limit + 1;
+    const endIdx = Math.min(pageNum * limit, total);
+    if (paginationInfo) {
+      paginationInfo.textContent = `Showing ${startIdx}-${endIdx} of ${total.toLocaleString()}`;
+    }
+    if (pageIndicator) {
+      pageIndicator.textContent = `Page ${pageNum} of ${totalPages}`;
+    }
+    if (btnPrev) btnPrev.disabled = pageNum <= 1;
+    if (btnNext) btnNext.disabled = pageNum >= totalPages;
+
+    renderInstalledPackagesTable(data.packages || []);
+  } catch (err) {
+    console.error("fetchInstalledPackages error:", err);
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty-state error-text">Error loading packages: ${escapeHtml(err.message)}</td></tr>`;
+    }
+    showToast({
+      title: "Package Inventory Error",
+      message: err.message,
+      type: "error",
+    });
+  }
+}
+
+function renderInstalledPackagesTable(packages) {
+  const tbody = document.getElementById("pkg-installed-tbody");
+  if (!tbody) return;
+
+  if (packages.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No installed packages found matching query.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = packages
+    .map((pkg) => `
+      <tr>
+        <td><strong class="mono-text">${escapeHtml(pkg.name)}</strong></td>
+        <td class="mono-text">${escapeHtml(pkg.version)}</td>
+        <td class="text-muted mono-text text-sm">${escapeHtml(pkg.architecture || "--")}</td>
+        <td><span class="status-badge status-ok">${escapeHtml(pkg.status || "installed")}</span></td>
+        <td class="text-sm text-muted">${escapeHtml(pkg.summary || "")}</td>
+      </tr>
+    `)
+    .join("");
+}
+
+async function refreshAptCache() {
+  const btn = document.getElementById("btn-refresh-apt-cache");
+  if (btn) btn.classList.add("loading");
+  showToast({
+    title: "Updating Catalog",
+    message: "Running apt-get update to refresh repository package lists...",
+    type: "info",
+  });
+
+  try {
+    const resp = await apiFetch("/api/packages/refresh", { method: "POST" });
+    if (!resp.ok) {
+      throw new Error(`Failed to update catalog (HTTP ${resp.status})`);
+    }
+    const result = await resp.json();
+    if (result.success) {
+      showToast({
+        title: "Catalog Updated",
+        message: "Successfully synchronized package indices.",
+        type: "success",
+      });
+      await fetchPackageUpdates(true);
+    } else {
+      showToast({
+        title: "Catalog Update Warning",
+        message: result.error || result.output || "apt update finished with non-zero status.",
+        type: "warning",
+      });
+    }
+  } catch (err) {
+    showToast({
+      title: "Update Failed",
+      message: err.message,
+      type: "error",
+    });
+  } finally {
+    if (btn) btn.classList.remove("loading");
+  }
+}
+
+async function simulatePackageUpgrade(packageName = null) {
+  const modal = document.getElementById("pkg-upgrade-modal");
+  const modalTitle = document.getElementById("pkg-upgrade-modal-title");
+  const modalSubtitle = document.getElementById("pkg-upgrade-modal-subtitle");
+  const terminal = document.getElementById("pkg-upgrade-terminal");
+
+  if (modalTitle) {
+    modalTitle.textContent = packageName
+      ? `Simulate Upgrade: ${packageName}`
+      : "Simulated System Upgrade";
+  }
+  if (modalSubtitle) {
+    modalSubtitle.textContent = packageName
+      ? `Dry run: apt-get -s install --only-upgrade ${packageName}`
+      : "Dry run: apt-get -s dist-upgrade (safe, non-destructive)";
+  }
+  if (terminal) {
+    terminal.textContent = "Executing simulation in background...\n\n";
+  }
+  modal?.classList.remove("hidden");
+
+  try {
+    const payload = {
+      packages: packageName ? [packageName] : [],
+      dry_run: true,
+    };
+    const resp = await apiFetch("/api/packages/upgrade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      throw new Error(`Simulation request failed (HTTP ${resp.status})`);
+    }
+    const result = await resp.json();
+    if (terminal) {
+      terminal.textContent = result.output || "Simulation completed with no output.";
+    }
+  } catch (err) {
+    if (terminal) {
+      terminal.textContent += `\nError executing simulation: ${err.message}`;
+    }
+  }
+}
+
+function closePackageUpgradeModal() {
+  document.getElementById("pkg-upgrade-modal")?.classList.add("hidden");
+}
+
+function refreshPackagesView() {
+  if (currentPackagesSubtab === "installed") {
+    fetchInstalledPackages(currentPkgSearchQuery, currentPkgPage);
+  } else {
+    fetchPackageUpdates();
+  }
+}
+
 /**
  * Initialize listeners and run startup authentication check.
  */
@@ -6313,6 +6736,10 @@ function initDashboard() {
     ?.addEventListener("click", () => switchViewTab("users", true));
 
   document
+    .getElementById("nav-tab-packages")
+    ?.addEventListener("click", () => switchViewTab("packages", true));
+
+  document
     .getElementById("nav-tab-notifications")
     ?.addEventListener("click", () => switchViewTab("notifications", true));
 
@@ -6338,8 +6765,69 @@ function initDashboard() {
     ?.addEventListener("click", () => switchViewTab("services", true));
 
   document
+    .getElementById("btn-goto-packages")
+    ?.addEventListener("click", () => switchViewTab("packages", true));
+
+  document
     .getElementById("btn-goto-notifications")
     ?.addEventListener("click", () => switchViewTab("notifications", true));
+
+  // Packages & Updates Listeners
+  document
+    .getElementById("btn-refresh-packages")
+    ?.addEventListener("click", () => fetchPackageUpdates(true));
+
+  document
+    .getElementById("btn-refresh-apt-cache")
+    ?.addEventListener("click", refreshAptCache);
+
+  document
+    .getElementById("btn-simulate-upgrade")
+    ?.addEventListener("click", () => simulatePackageUpgrade());
+
+  document
+    .getElementById("btn-close-pkg-upgrade-modal")
+    ?.addEventListener("click", closePackageUpgradeModal);
+
+  document
+    .getElementById("btn-dismiss-pkg-upgrade-modal")
+    ?.addEventListener("click", closePackageUpgradeModal);
+
+  document
+    .getElementById("subtab-pkg-updates-btn")
+    ?.addEventListener("click", () => switchPackagesSubtab("updates"));
+
+  document
+    .getElementById("subtab-pkg-installed-btn")
+    ?.addEventListener("click", () => switchPackagesSubtab("installed"));
+
+  document
+    .getElementById("pkg-updates-search")
+    ?.addEventListener("input", () => renderPackageUpdatesTable(cachedPackageUpdates?.updates || []));
+
+  const pkgInstalledSearchInput = document.getElementById("pkg-installed-search");
+  pkgInstalledSearchInput?.addEventListener("input", (e) => {
+    clearTimeout(pkgInstalledSearchDebounceTimer);
+    pkgInstalledSearchDebounceTimer = setTimeout(() => {
+      fetchInstalledPackages(e.target.value.trim(), 1);
+    }, 300);
+  });
+
+  document
+    .getElementById("btn-pkg-prev")
+    ?.addEventListener("click", () => {
+      if (currentPkgPage > 1) {
+        fetchInstalledPackages(currentPkgSearchQuery, currentPkgPage - 1);
+      }
+    });
+
+  document
+    .getElementById("btn-pkg-next")
+    ?.addEventListener("click", () => {
+      if (currentPkgPage < currentPkgTotalPages) {
+        fetchInstalledPackages(currentPkgSearchQuery, currentPkgPage + 1);
+      }
+    });
 
   // CPU Cores Drilldown Toggle
   const btnToggleCpuCores = document.getElementById("btn-toggle-cpu-cores");
