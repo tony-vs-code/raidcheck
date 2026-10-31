@@ -5178,6 +5178,24 @@ def get_storage_metrics() -> list[dict[str, Any]]:
                 "percent": percent,
             }
         )
+    if not disks:
+        try:
+            usage = psutil.disk_usage("/")
+            disks.append(
+                {
+                    "mountpoint": "/",
+                    "mount_point": "/",
+                    "device": "/",
+                    "fstype": "rootfs",
+                    "opts": "rw",
+                    "total": usage.total,
+                    "used": usage.used,
+                    "free": usage.free,
+                    "percent": usage.percent,
+                }
+            )
+        except (PermissionError, OSError):
+            pass
     return disks
 
 

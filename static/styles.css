@@ -3818,6 +3818,16 @@ body {
   margin-top: 8px;
 }
 
+.storage-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+
 .overview-mounts-header {
   font-size: 0.76rem;
   font-weight: 600;

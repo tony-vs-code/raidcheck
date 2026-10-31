@@ -722,13 +722,39 @@ def api_auth_logout(request: Request, response: Response) -> dict[str, Any]:
 
 @app.get("/api/system/storage")
 def api_system_storage(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    disks = get_storage_metrics()
-    return {"disks": disks, "filesystems": disks, "mounts": disks}
+    try:
+        disks = get_storage_metrics()
+        root_usage = None
+        try:
+            u = psutil.disk_usage("/")
+            root_usage = {
+                "total": u.total,
+                "used": u.used,
+                "free": u.free,
+                "percent": u.percent,
+            }
+        except Exception:
+            pass
+        return {
+            "disks": disks,
+            "filesystems": disks,
+            "mounts": disks,
+            "disk": root_usage or (disks[0] if disks else {}),
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching storage metrics: {exc}"
+        )
 
 
 @app.get("/api/system/metrics")
 def api_system_metrics(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return get_system_metrics()
+    try:
+        return get_system_metrics()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching system metrics: {exc}"
+        )
 
 
 @app.get("/api/status")
@@ -1401,7 +1427,12 @@ def api_docker_set_update_schedule(
 
 @app.get("/api/services")
 def api_services(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return main.get_system_services()
+    try:
+        return main.get_system_services()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching system services: {exc}"
+        )
 
 
 @app.post("/api/services/{service_name}/action")
@@ -1467,7 +1498,12 @@ def api_processes(
             status_code=400,
             detail="Invalid sort parameter. Must be one of: cpu, memory, pid, name",
         )
-    return main.get_process_list(sort=sort, limit=limit, q=q)
+    try:
+        return main.get_process_list(sort=sort, limit=limit, q=q)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching processes: {exc}"
+        )
 
 
 @app.post("/api/processes/{pid}/kill")
@@ -1503,7 +1539,12 @@ def api_kill_process(
 
 @app.get("/api/system/users")
 def api_get_users(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return main.get_system_users()
+    try:
+        return main.get_system_users()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching system users: {exc}"
+        )
 
 
 @app.post("/api/system/users")
@@ -1583,7 +1624,12 @@ def api_delete_user(
 
 @app.get("/api/system/groups")
 def api_get_groups(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return main.get_system_groups()
+    try:
+        return main.get_system_groups()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching system groups: {exc}"
+        )
 
 
 @app.post("/api/system/groups")
@@ -1668,15 +1714,19 @@ def api_get_audit_logs(
     q: Optional[str] = Query(default=None),
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
-    logs, total = main.get_audit_logs(
-        limit=limit,
-        offset=offset,
-        event_type=event_type,
-        severity=severity,
-        q=q,
-    )
-    return {"logs": logs, "total": total}
-
+    try:
+        logs, total = main.get_audit_logs(
+            limit=limit,
+            offset=offset,
+            event_type=event_type,
+            severity=severity,
+            q=q,
+        )
+        return {"logs": logs, "total": total}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching audit logs: {exc}"
+        )
 
 
 class CacheControlStaticFiles(StaticFiles):
@@ -1695,7 +1745,20 @@ class CacheControlStaticFiles(StaticFiles):
 
 
 @app.get("/")
-def serve_index():
+@app.get("/overview")
+@app.get("/storage")
+@app.get("/disks")
+@app.get("/raid")
+@app.get("/containers")
+@app.get("/containers/{subpath:path}")
+@app.get("/services")
+@app.get("/processes")
+@app.get("/users")
+@app.get("/users/{subpath:path}")
+@app.get("/notifications")
+@app.get("/audit")
+@app.get("/login")
+def serve_index(subpath: Optional[str] = None):
     headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache",
@@ -1724,6 +1787,31 @@ def serve_index():
     )
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def serve_favicon():
+    favicon_path = STATIC_DIR / "favicon.ico"
+    if favicon_path.is_file():
+        return FileResponse(
+            favicon_path,
+            media_type="image/x-icon",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    return Response(status_code=404)
+
+
 app.mount(
     "/static", CacheControlStaticFiles(directory=str(STATIC_DIR)), name="static"
 )
+
+
+@app.get("/{full_path:path}")
+def serve_spa_fallback(full_path: str):
+    if (
+        full_path == "api"
+        or full_path.startswith("api/")
+        or full_path == "static"
+        or full_path.startswith("static/")
+        or full_path == "favicon.ico"
+    ):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return serve_index()
