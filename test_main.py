@@ -1237,6 +1237,7 @@ class FastAPIEndpointTests(unittest.TestCase):
     def test_protected_endpoints_enforce_authentication(self):
         protected_get_paths = [
             "/api/status",
+            "/api/system/storage",
             "/api/history",
             "/api/settings",
             "/api/update/check",
@@ -1853,6 +1854,39 @@ class FastAPIEndpointTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["raid"]["status"], "degraded")
         self.assertIsNone(payload["notification_state"])
+
+    def test_get_system_metrics_and_storage_endpoint(self):
+        metrics = api.get_system_metrics()
+        self.assertIn("cpu_cores", metrics)
+        self.assertIsInstance(metrics["cpu_cores"], list)
+        self.assertIn("cpu_count_logical", metrics)
+        self.assertGreaterEqual(metrics["cpu_count_logical"], 1)
+        self.assertIn("cpu_count_physical", metrics)
+        self.assertGreaterEqual(metrics["cpu_count_physical"], 1)
+        self.assertIn("load_avg", metrics)
+        self.assertIsInstance(metrics["load_avg"], list)
+        self.assertIn("memory", metrics)
+        mem = metrics["memory"]
+        self.assertIn("total", mem)
+        self.assertIn("used", mem)
+        self.assertIn("available", mem)
+        self.assertIn("percent", mem)
+        self.assertIn("free", mem)
+        self.assertIn("cached", mem)
+        self.assertIn("buffers", mem)
+        self.assertIn("disks", metrics)
+        self.assertIsInstance(metrics["disks"], list)
+
+        # GET /api/system/storage
+        resp = asgi_get(api.app, "/api/system/storage", cookies=self.auth_cookies)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("disks", data)
+        self.assertIsInstance(data["disks"], list)
+        if data["disks"]:
+            disk_item = data["disks"][0]
+            for key in ["mountpoint", "device", "fstype", "opts", "total", "used", "free", "percent"]:
+                self.assertIn(key, disk_item)
 
     def test_get_api_history_returns_formatted_notifications_and_respects_limit(self):
         main.record_notification("clean", 1700000100.0, weekly=True)
@@ -3031,6 +3065,68 @@ class TestDockerBackend(unittest.TestCase):
             self.assertFalse(upd["update_available"])
             self.assertEqual(upd["current_id"], "111111111111")
             self.assertEqual(upd["latest_id"], "111111111111")
+
+    def test_docker_check_container_image_tag_repo_and_version(self):
+        dm = main.DockerManager()
+        dm.invalidate_cache()
+
+        sample_containers = [
+            {"id": "c1", "name": "grafana", "image": "grafana/grafana:10.1.0", "stack": "monitoring"},
+            {"id": "c2", "name": "web", "image": "library/nginx", "stack": ""},
+            {"id": "c3", "name": "app", "image": "localhost:5000/app:v2.0.1", "stack": "custom"},
+            {"id": "c4", "name": "oci_labeled", "image": "myregistry.local:8080/service:latest", "stack": ""},
+            {"id": "c5", "name": "ver_labeled", "image": "db:latest", "stack": "database"},
+        ]
+
+        def fake_run_docker(cmd, *args, **kwargs):
+            if cmd[:2] == ["image", "inspect"]:
+                target_img = cmd[2] if len(cmd) > 2 else ""
+                if "myregistry.local:8080/service:latest" in target_img:
+                    return json.dumps([{"Id": "sha256:444444444444", "Config": {"Labels": {"org.opencontainers.image.version": "3.8.4"}}}])
+                if "db:latest" in target_img:
+                    return json.dumps([{"Id": "sha256:555555555555", "Config": {"Labels": {"version": "15.2"}}}])
+                return json.dumps([{"Id": "sha256:000000000000"}])
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=sample_containers),
+            patch.object(dm, "_run_docker", side_effect=fake_run_docker),
+            patch.object(dm, "_get_remote_image_digest", return_value=None),
+        ):
+            res = dm.check_updates(force=True)
+            updates_by_id = {u["container_id"]: u for u in res["updates"]}
+            self.assertEqual(len(updates_by_id), 5)
+
+            # c1: grafana/grafana:10.1.0
+            c1 = updates_by_id["c1"]
+            self.assertEqual(c1["image_repo"], "grafana/grafana")
+            self.assertEqual(c1["image_tag"], "10.1.0")
+            self.assertEqual(c1["image_version"], "10.1.0")
+
+            # c2: library/nginx (no tag -> latest)
+            c2 = updates_by_id["c2"]
+            self.assertEqual(c2["image_repo"], "library/nginx")
+            self.assertEqual(c2["image_tag"], "latest")
+            self.assertEqual(c2["image_version"], "latest")
+
+            # c3: localhost:5000/app:v2.0.1
+            c3 = updates_by_id["c3"]
+            self.assertEqual(c3["image_repo"], "localhost:5000/app")
+            self.assertEqual(c3["image_tag"], "v2.0.1")
+            self.assertEqual(c3["image_version"], "v2.0.1")
+
+            # c4: myregistry.local:8080/service:latest with org.opencontainers.image.version
+            c4 = updates_by_id["c4"]
+            self.assertEqual(c4["image_repo"], "myregistry.local:8080/service")
+            self.assertEqual(c4["image_tag"], "latest")
+            self.assertEqual(c4["image_version"], "3.8.4")
+
+            # c5: db:latest with version label
+            c5 = updates_by_id["c5"]
+            self.assertEqual(c5["image_repo"], "db")
+            self.assertEqual(c5["image_tag"], "latest")
+            self.assertEqual(c5["image_version"], "15.2")
 
     def test_docker_get_remote_image_digest_fallback_chain(self):
         dm = main.DockerManager()
