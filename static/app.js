@@ -2487,8 +2487,10 @@ let cachedDiscordSettings = null;
  */
 let cachedNotificationCenterConfig = null;
 
+let notifFeedbackTimerId = null;
+
 /**
- * Show feedback message in Notification Center (#notif-feedback & #discord-feedback).
+ * Show feedback message in Notification Center (renders strictly to a single banner).
  */
 function showNotificationFeedback(message, isSuccess = true) {
   const notifFeedback = document.getElementById("notif-feedback");
@@ -2496,14 +2498,22 @@ function showNotificationFeedback(message, isSuccess = true) {
   const primary = notifFeedback || discordFeedback;
   if (!primary) return;
 
+  if (notifFeedbackTimerId) {
+    window.clearTimeout(notifFeedbackTimerId);
+    notifFeedbackTimerId = null;
+  }
+
+  // Ensure secondary legacy element is ALWAYS cleared and hidden
+  if (discordFeedback && discordFeedback !== primary) {
+    discordFeedback.textContent = "";
+    discordFeedback.className = "hidden";
+    discordFeedback.style.display = "none";
+  }
+
   if (!message) {
     primary.textContent = "";
     primary.classList.add("hidden");
     primary.classList.remove("feedback-success", "feedback-error");
-    if (discordFeedback && discordFeedback !== primary) {
-      discordFeedback.textContent = "";
-      discordFeedback.classList.add("hidden");
-    }
     return;
   }
 
@@ -2511,9 +2521,12 @@ function showNotificationFeedback(message, isSuccess = true) {
   primary.classList.remove("hidden", "feedback-success", "feedback-error");
   primary.classList.add(isSuccess ? "feedback-success" : "feedback-error");
 
-  if (discordFeedback && discordFeedback !== primary) {
-    discordFeedback.textContent = "";
-    discordFeedback.classList.add("hidden");
+  if (isSuccess) {
+    notifFeedbackTimerId = window.setTimeout(() => {
+      primary.textContent = "";
+      primary.classList.add("hidden");
+      primary.classList.remove("feedback-success", "feedback-error");
+    }, 5000);
   }
 }
 
@@ -2916,35 +2929,56 @@ async function saveNotificationCenterConfig() {
 }
 
 /**
- * Save Discord Configuration from Notifications tab (legacy handler).
+ * Save Delivery Channels configuration (Discord, Telegram, Webhook)
+ * from Delivery Channels card. Retains #save-discord-btn for contract compatibility.
  */
 async function handleSaveDiscordSettings() {
   const saveBtn = document.getElementById("save-discord-btn");
   if (saveBtn) saveBtn.disabled = true;
   showNotificationFeedback(null);
 
-  const toggle =
-    document.getElementById("notif-channel-discord-enable") ||
-    document.getElementById("discord-enabled-toggle");
-  const channelInput =
-    document.getElementById("notif-discord-channel-input") ||
-    document.getElementById("discord-channel-input");
-  const tokenInput =
-    document.getElementById("notif-discord-token-input") ||
-    document.getElementById("discord-token-input");
+  const discordToggle = document.getElementById("notif-channel-discord-enable");
+  const discordToken = document.getElementById("notif-discord-token-input");
+  const discordChannel = document.getElementById("notif-discord-channel-input");
 
-  const payload = {
-    discord_enabled: Boolean(toggle ? toggle.checked : false),
-    channel_id: channelInput ? channelInput.value.trim() : "",
+  const telegramToggle = document.getElementById("notif-channel-telegram-enable");
+  const telegramToken = document.getElementById("notif-telegram-token-input");
+  const telegramChatId = document.getElementById("notif-telegram-chat-id-input");
+
+  const webhookToggle = document.getElementById("notif-channel-webhook-enable");
+  const webhookUrl = document.getElementById("notif-webhook-url-input");
+
+  const discordPayload = {
+    enabled: Boolean(discordToggle ? discordToggle.checked : false),
+    channel_id: discordChannel ? discordChannel.value.trim() : "",
   };
-
-  const tokenVal = tokenInput ? tokenInput.value.trim() : "";
-  if (tokenVal.length > 0) {
-    payload.discord_token = tokenVal;
+  if (discordToken && discordToken.value.trim().length > 0) {
+    discordPayload.token = discordToken.value.trim();
   }
 
+  const telegramPayload = {
+    enabled: Boolean(telegramToggle ? telegramToggle.checked : false),
+    chat_id: telegramChatId ? telegramChatId.value.trim() : "",
+  };
+  if (telegramToken && telegramToken.value.trim().length > 0) {
+    telegramPayload.token = telegramToken.value.trim();
+  }
+
+  const webhookPayload = {
+    enabled: Boolean(webhookToggle ? webhookToggle.checked : false),
+    url: webhookUrl ? webhookUrl.value.trim() : "",
+  };
+
+  const payload = {
+    channels: {
+      discord: discordPayload,
+      telegram: telegramPayload,
+      webhook: webhookPayload,
+    },
+  };
+
   try {
-    const resp = await apiFetch("/api/settings", {
+    const resp = await apiFetch("/api/notifications/center", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -2957,11 +2991,11 @@ async function handleSaveDiscordSettings() {
     }
 
     if (!resp.ok) {
-      throw new Error(data.detail || `Failed to save Discord settings (${resp.status})`);
+      throw new Error(data.detail || `Failed to save delivery channels (${resp.status})`);
     }
 
-    populateDiscordForm(data);
-    showNotificationFeedback("Discord configuration saved successfully.", true);
+    populateNotificationCenter(data);
+    showNotificationFeedback("Delivery channels saved successfully.", true);
   } catch (err) {
     showNotificationFeedback(
       err instanceof Error ? err.message : String(err),
