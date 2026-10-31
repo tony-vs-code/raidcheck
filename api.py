@@ -118,11 +118,31 @@ async def docker_events_listener(
             backoff = min(backoff * 2, max_backoff)
 
 
+_notifications_task: Optional[asyncio.Task] = None
+
+
+async def notifications_evaluator_loop() -> None:
+    while True:
+        try:
+            await main.evaluate_threshold_alerts()
+            await main.evaluate_scheduled_reports()
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logging.error(f"Error in notifications evaluator loop: {exc}")
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            break
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _docker_events_task
+    global _docker_events_task, _notifications_task
     if _docker_events_task is None or _docker_events_task.done():
         _docker_events_task = asyncio.create_task(docker_events_listener())
+    if _notifications_task is None or _notifications_task.done():
+        _notifications_task = asyncio.create_task(notifications_evaluator_loop())
     try:
         yield
     finally:
@@ -130,6 +150,12 @@ async def lifespan(app: FastAPI):
             _docker_events_task.cancel()
             try:
                 await _docker_events_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if _notifications_task and not _notifications_task.done():
+            _notifications_task.cancel()
+            try:
+                await _notifications_task
             except (asyncio.CancelledError, Exception):
                 pass
 
@@ -235,6 +261,18 @@ class UpdateScheduleRequest(BaseModel):
     notify_discord: Optional[bool] = True
 
 
+class NotificationCenterUpdateRequest(BaseModel):
+    channels: Optional[dict[str, Any]] = None
+    schedule: Optional[dict[str, Any]] = None
+    topics: Optional[dict[str, Any]] = None
+    thresholds: Optional[dict[str, Any]] = None
+
+
+class TestNotificationRequest(BaseModel):
+    channel: Optional[str] = "all"
+
+
+NotificationTestRequest = TestNotificationRequest
 def _extract_session_token(request: Request) -> Optional[str]:
     cookie_token = request.cookies.get("session_token")
     if cookie_token:
@@ -461,6 +499,7 @@ def _build_full_snapshot() -> dict[str, Any]:
         "system": get_system_metrics(),
         "notification_state": _get_formatted_notification_state(),
         "history": _get_formatted_history(20),
+        "notification_center": main.get_masked_notification_center_config(),
         "version": main.get_current_version_info(),
         "refresh_intervals": main.get_refresh_intervals(),
         "timezone": tz,
@@ -501,6 +540,7 @@ async def _build_module_update(module_name: str) -> dict[str, Any]:
             "module": "notifications",
             "notification_state": _get_formatted_notification_state(),
             "history": _get_formatted_history(20),
+            "notification_center": main.get_masked_notification_center_config(),
         }
     if mod in ("docker", "containers"):
         docker_status = await asyncio.to_thread(main.docker_mgr.get_status)
@@ -683,11 +723,30 @@ def api_history(
     return {"history": _get_formatted_history(limit)}
 
 
-@app.post("/api/notifications/test")
-async def api_send_test_notification(
+@app.get("/api/notifications/center")
+def api_get_notification_center(
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
-    success, message = await main.send_test_notification()
+    return main.get_masked_notification_center_config()
+
+
+@app.post("/api/notifications/center")
+def api_update_notification_center(
+    payload: NotificationCenterUpdateRequest,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    updates = payload.model_dump(exclude_unset=True)
+    updated = main.update_notification_center_config(updates)
+    return main.get_masked_notification_center_config(updated)
+
+
+@app.post("/api/notifications/test")
+async def api_send_test_notification(
+    payload: Optional[TestNotificationRequest] = None,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    channel = payload.channel if payload and payload.channel else "all"
+    success, message = await main.send_test_notification(channel=channel)
     return {"success": success, "message": message}
 
 

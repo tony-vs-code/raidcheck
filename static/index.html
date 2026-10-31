@@ -1125,111 +1125,484 @@
         <div id="view-notifications" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-notifications">
           <section class="section-block" aria-labelledby="notifications-heading">
             <div class="section-header">
-              <h2 id="notifications-heading" class="section-title">Notifications</h2>
-              <div class="module-toolbar">
-                <select id="notifications-interval-select" class="module-interval-select" aria-label="Notifications refresh rate">
-                  <option value="15">15s</option>
-                  <option value="30">30s</option>
-                  <option value="60">60s</option>
-                  <option value="300">5m</option>
-                  <option value="0">Paused</option>
-                </select>
-                <span id="notifications-last-updated" class="module-last-updated">--</span>
-                <button id="refresh-notifications-btn" class="btn-module-refresh" type="button" aria-label="Refresh Notifications" title="Refresh Notifications">
-                  <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="23 4 23 10 17 10"></polyline>
-                    <polyline points="1 20 1 14 7 14"></polyline>
-                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              <div>
+                <h2 id="notifications-heading" class="section-title">Notification Center</h2>
+                <p class="section-subtitle">Multi-channel alerting, scheduled reports, and real-time metric thresholds</p>
+              </div>
+              <div class="notifications-header-actions">
+                <div class="module-toolbar">
+                  <select id="notifications-interval-select" class="module-interval-select" aria-label="Notifications refresh rate">
+                    <option value="15">15s</option>
+                    <option value="30">30s</option>
+                    <option value="60">60s</option>
+                    <option value="300">5m</option>
+                    <option value="0">Paused</option>
+                  </select>
+                  <span id="notifications-last-updated" class="module-last-updated">--</span>
+                  <button id="refresh-notifications-btn" class="btn-module-refresh" type="button" aria-label="Refresh Notifications" title="Refresh Notifications">
+                    <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="23 4 23 10 17 10"></polyline>
+                      <polyline points="1 20 1 14 7 14"></polyline>
+                      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                    </svg>
+                  </button>
+                </div>
+                <button id="save-notifications-btn" class="btn-primary" type="button">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                    <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                    <polyline points="7 3 7 8 15 8"></polyline>
                   </svg>
+                  <span>Save Notification Settings</span>
                 </button>
               </div>
             </div>
-            <div class="notifications-grid">
-              <!-- Discord Configuration & Setup Card -->
-              <article class="card discord-setup-card">
+
+            <!-- Global Feedback Alert Box -->
+            <div id="notif-feedback" class="auth-alert hidden" role="status"></div>
+            <div id="discord-feedback" class="auth-alert hidden" role="status"></div>
+
+            <div class="notifications-center-grid">
+              <!-- A. DELIVERY CHANNELS CARD -->
+              <article class="card channel-config-card">
                 <div class="card-header">
                   <div>
-                    <h3 class="card-title">Discord Configuration &amp; Setup</h3>
-                    <p class="card-subtitle">Manage webhook / bot credentials and test notification delivery</p>
+                    <h3 class="card-title">Delivery Channels</h3>
+                    <p class="card-subtitle">Dispatch alerts to Discord, Telegram, or generic webhooks</p>
                   </div>
                   <span id="discord-status-badge" class="status-badge status-unknown">UNKNOWN</span>
                 </div>
 
                 <div class="card-body">
-                  <form id="discord-config-form" class="discord-config-form" onsubmit="return false;">
-                    <div class="form-group toggle-group">
-                      <div class="toggle-container">
-                        <label class="toggle-switch" for="discord-enabled-toggle">
+                  <!-- Legacy form wrapper for backwards compatibility -->
+                  <form id="discord-config-form" class="notif-channels-form" onsubmit="return false;">
+                    <!-- Channel 1: Discord -->
+                    <div class="channel-section">
+                      <div class="channel-section-header">
+                        <div class="channel-title-group">
+                          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                          </svg>
+                          <span class="channel-title">Discord Bot</span>
+                        </div>
+                        <label class="toggle-switch" for="notif-channel-discord-enable">
                           <input
                             type="checkbox"
-                            id="discord-enabled-toggle"
-                            name="discord_enabled"
+                            id="notif-channel-discord-enable"
+                            name="notif_channel_discord_enable"
                             class="toggle-input"
                           />
                           <span class="toggle-slider"></span>
                         </label>
-                        <div class="toggle-label-group">
-                          <label for="discord-enabled-toggle" class="toggle-label">Enable Discord Notifications</label>
-                          <small class="form-hint">Master switch to enable or pause Discord alerting and weekly summaries.</small>
+                        <!-- Legacy toggle kept in sync -->
+                        <input type="checkbox" id="discord-enabled-toggle" name="discord_enabled" class="hidden" />
+                      </div>
+
+                      <div class="channel-fields">
+                        <div class="form-group">
+                          <label for="notif-discord-token-input">
+                            Discord Bot Token
+                            <span id="discord-token-status" class="token-status-badge">Not configured</span>
+                          </label>
+                          <input
+                            id="notif-discord-token-input"
+                            name="notif_discord_token"
+                            type="password"
+                            autocomplete="off"
+                            placeholder="Leave blank to keep existing token"
+                          />
+                          <!-- Legacy token input kept in sync -->
+                          <input id="discord-token-input" name="discord_token" type="password" class="hidden" autocomplete="off" />
+                          <small class="form-hint">Only overwritten if a new bot token is specified.</small>
+                        </div>
+
+                        <div class="form-group">
+                          <label for="notif-discord-channel-input">Channel ID</label>
+                          <input
+                            id="notif-discord-channel-input"
+                            name="notif_discord_channel"
+                            type="text"
+                            placeholder="e.g. 123456789012345678"
+                          />
+                          <!-- Legacy channel ID input kept in sync -->
+                          <input id="discord-channel-input" name="channel_id" type="text" class="hidden" />
+                          <small class="form-hint">Target Discord text channel ID where alerts are delivered.</small>
                         </div>
                       </div>
                     </div>
 
-                    <div class="form-group">
-                      <label for="discord-token-input">
-                        Discord Bot Token
-                        <span id="discord-token-status" class="token-status-badge">Not configured</span>
-                      </label>
-                      <input
-                        id="discord-token-input"
-                        name="discord_token"
-                        type="password"
-                        autocomplete="off"
-                        placeholder="Leave blank to keep existing token"
-                      />
-                      <small class="form-hint">Only overwritten if you enter a new token above.</small>
+                    <!-- Channel 2: Telegram -->
+                    <div class="channel-section">
+                      <div class="channel-section-header">
+                        <div class="channel-title-group">
+                          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                          </svg>
+                          <span class="channel-title">Telegram Bot</span>
+                        </div>
+                        <label class="toggle-switch" for="notif-channel-telegram-enable">
+                          <input
+                            type="checkbox"
+                            id="notif-channel-telegram-enable"
+                            name="notif_channel_telegram_enable"
+                            class="toggle-input"
+                          />
+                          <span class="toggle-slider"></span>
+                        </label>
+                      </div>
+
+                      <div class="channel-fields">
+                        <div class="form-group">
+                          <label for="notif-telegram-token-input">
+                            Telegram Bot Token
+                            <span id="notif-telegram-token-badge" class="token-status-badge">Not configured</span>
+                          </label>
+                          <input
+                            id="notif-telegram-token-input"
+                            name="notif_telegram_token"
+                            type="password"
+                            autocomplete="off"
+                            placeholder="e.g. 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+                          />
+                          <small class="form-hint">Telegram Bot Father HTTP API token.</small>
+                        </div>
+
+                        <div class="form-group">
+                          <label for="notif-telegram-chat-id-input">Chat ID</label>
+                          <input
+                            id="notif-telegram-chat-id-input"
+                            name="notif_telegram_chat_id"
+                            type="text"
+                            placeholder="e.g. -100123456789 or @channelname"
+                          />
+                          <small class="form-hint">Target chat, group, or channel ID.</small>
+                        </div>
+                      </div>
                     </div>
 
-                    <div class="form-group">
-                      <label for="discord-channel-input">Discord Channel ID</label>
-                      <input
-                        id="discord-channel-input"
-                        name="channel_id"
-                        type="text"
-                        placeholder="e.g. 123456789012345678"
-                      />
-                      <small class="form-hint">Target Discord text channel ID where alerts are delivered.</small>
+                    <!-- Channel 3: Generic Webhook -->
+                    <div class="channel-section">
+                      <div class="channel-section-header">
+                        <div class="channel-title-group">
+                          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="2" y1="12" x2="22" y2="12"></line>
+                            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                          </svg>
+                          <span class="channel-title">Generic Webhook</span>
+                        </div>
+                        <label class="toggle-switch" for="notif-channel-webhook-enable">
+                          <input
+                            type="checkbox"
+                            id="notif-channel-webhook-enable"
+                            name="notif_channel_webhook_enable"
+                            class="toggle-input"
+                          />
+                          <span class="toggle-slider"></span>
+                        </label>
+                      </div>
+
+                      <div class="channel-fields">
+                        <div class="form-group">
+                          <label for="notif-webhook-url-input">Webhook URL</label>
+                          <input
+                            id="notif-webhook-url-input"
+                            name="notif_webhook_url"
+                            type="url"
+                            placeholder="https://hooks.example.com/alerts/webhook"
+                          />
+                          <small class="form-hint">Standard JSON HTTP POST endpoint.</small>
+                        </div>
+                      </div>
                     </div>
 
-                    <div class="discord-actions-row">
-                      <button id="save-discord-btn" class="btn-primary" type="button">
-                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
-                          <polyline points="17 21 17 13 7 13 7 21"></polyline>
-                          <polyline points="7 3 7 8 15 8"></polyline>
-                        </svg>
-                        <span>Save Discord Settings</span>
-                      </button>
-                      <button id="send-test-notification-btn" class="btn-secondary" type="button">
-                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                          <line x1="22" y1="2" x2="11" y2="13"></line>
-                          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                        </svg>
-                        <span>Send Test Notification</span>
-                      </button>
+                    <!-- Test Notification Dropdown & Actions -->
+                    <div class="notif-test-toolbar">
+                      <div class="test-target-group">
+                        <label for="notif-test-channel-select" class="form-label-inline">Target Channel:</label>
+                        <select id="notif-test-channel-select" class="module-interval-select notif-select">
+                          <option value="all">All Enabled Channels</option>
+                          <option value="discord">Discord Only</option>
+                          <option value="telegram">Telegram Only</option>
+                          <option value="webhook">Generic Webhook Only</option>
+                        </select>
+                      </div>
+                      <div class="test-actions-group">
+                        <button id="send-test-notification-btn" class="btn-secondary" type="button">
+                          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                          </svg>
+                          <span>Send Test Notification</span>
+                        </button>
+                        <!-- Legacy save-discord-btn kept present and operational -->
+                        <button id="save-discord-btn" class="btn-secondary btn-sm" type="button">
+                          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                            <polyline points="7 3 7 8 15 8"></polyline>
+                          </svg>
+                          <span>Save Discord</span>
+                        </button>
+                      </div>
                     </div>
-
-                    <div id="discord-feedback" class="auth-alert hidden" role="status"></div>
                   </form>
                 </div>
               </article>
 
-              <!-- Weekly Notification State Card -->
-              <article class="card weekly-state-card">
+              <!-- B. AUTOMATED SCHEDULE & CRON CARD -->
+              <article class="card schedule-config-card">
                 <div class="card-header">
                   <div>
-                    <h3 class="card-title">Weekly Notification State</h3>
-                    <p class="card-subtitle">Scheduled summary throttling status</p>
+                    <h3 class="card-title">Automated Report Schedule</h3>
+                    <p class="card-subtitle">Periodic system summaries and health digests</p>
+                  </div>
+                  <label class="toggle-switch" for="notif-schedule-enable">
+                    <input
+                      type="checkbox"
+                      id="notif-schedule-enable"
+                      name="notif_schedule_enable"
+                      class="toggle-input"
+                    />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+
+                <div class="card-body">
+                  <div class="schedule-form-grid">
+                    <div class="form-group">
+                      <label for="notif-schedule-freq">Frequency</label>
+                      <select id="notif-schedule-freq" class="module-interval-select notif-select full-width">
+                        <option value="daily">Daily</option>
+                        <option value="weekly">Weekly</option>
+                        <option value="hourly">Hourly</option>
+                        <option value="6h">Every 6 Hours</option>
+                        <option value="12h">Every 12 Hours</option>
+                      </select>
+                      <small class="form-hint">Cadence for dispatching summary digests.</small>
+                    </div>
+
+                    <div id="notif-schedule-day-group" class="form-group hidden">
+                      <label for="notif-schedule-day">Day of Week</label>
+                      <select id="notif-schedule-day" class="module-interval-select notif-select full-width">
+                        <option value="monday">Monday</option>
+                        <option value="tuesday">Tuesday</option>
+                        <option value="wednesday">Wednesday</option>
+                        <option value="thursday">Thursday</option>
+                        <option value="friday">Friday</option>
+                        <option value="saturday">Saturday</option>
+                        <option value="sunday">Sunday</option>
+                      </select>
+                      <small class="form-hint">Selected day for weekly report.</small>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="notif-schedule-time">Dispatch Time</label>
+                      <input
+                        id="notif-schedule-time"
+                        type="time"
+                        value="09:00"
+                        class="notif-time-input"
+                      />
+                      <small class="form-hint">Scheduled local execution time (HH:MM).</small>
+                    </div>
+                  </div>
+
+                  <div class="schedule-next-run-box">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
+                    <span id="notif-schedule-next-run" class="mono-text">Next report scheduled: Daily at 09:00</span>
+                  </div>
+                </div>
+              </article>
+
+              <!-- C. REPORT TOPICS & RULES CARD -->
+              <article class="card topics-config-card">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">Report Content &amp; Topics</h3>
+                    <p class="card-subtitle">Choose which system details are compiled into the scheduled summary</p>
+                  </div>
+                </div>
+
+                <div class="card-body">
+                  <div class="topics-list">
+                    <label class="topic-checkbox-row" for="notif-topic-system">
+                      <input type="checkbox" id="notif-topic-system" class="topic-checkbox" checked />
+                      <div class="topic-info">
+                        <span class="topic-title">System Resources</span>
+                        <span class="topic-desc">CPU load average, RAM memory consumption, and host uptime.</span>
+                      </div>
+                    </label>
+
+                    <label class="topic-checkbox-row" for="notif-topic-disks">
+                      <input type="checkbox" id="notif-topic-disks" class="topic-checkbox" checked />
+                      <div class="topic-info">
+                        <span class="topic-title">Disk Health &amp; Storage Breakdown</span>
+                        <span class="topic-desc">Mount path capacities, direct filesystem usage, and available gigabytes.</span>
+                      </div>
+                    </label>
+
+                    <label class="topic-checkbox-row" for="notif-topic-raid">
+                      <input type="checkbox" id="notif-topic-raid" class="topic-checkbox" checked />
+                      <div class="topic-info">
+                        <span class="topic-title">RAID Array Status &amp; Health</span>
+                        <span class="topic-desc">Array consistency state, active member disks, spare drives, and rebuild sync progress.</span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+              </article>
+
+              <!-- D. REAL-TIME ALERT THRESHOLDS CARD -->
+              <article class="card thresholds-config-card">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">Metric Alert Thresholds</h3>
+                    <p class="card-subtitle">Automatically dispatch instant alerts when system health degrades or exceeds limits</p>
+                  </div>
+                </div>
+
+                <div class="card-body">
+                  <div class="thresholds-grid">
+                    <!-- RAM Threshold -->
+                    <div class="threshold-item">
+                      <div class="threshold-header">
+                        <div class="threshold-title-group">
+                          <span class="threshold-name">RAM Utilization Limit</span>
+                          <span class="threshold-desc">Trigger alert when system memory exceeds limit</span>
+                        </div>
+                        <label class="toggle-switch" for="notif-threshold-ram-enable">
+                          <input type="checkbox" id="notif-threshold-ram-enable" class="toggle-input" checked />
+                          <span class="toggle-slider"></span>
+                        </label>
+                      </div>
+                      <div class="threshold-input-row">
+                        <input
+                          type="range"
+                          id="notif-threshold-ram-slider"
+                          min="50"
+                          max="99"
+                          value="90"
+                          class="threshold-slider"
+                        />
+                        <div class="threshold-number-wrapper">
+                          <input
+                            type="number"
+                            id="notif-threshold-ram-value"
+                            min="1"
+                            max="100"
+                            value="90"
+                            class="threshold-number-input"
+                          />
+                          <span class="threshold-unit">%</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- CPU Spike Threshold -->
+                    <div class="threshold-item">
+                      <div class="threshold-header">
+                        <div class="threshold-title-group">
+                          <span class="threshold-name">CPU Spike Threshold</span>
+                          <span class="threshold-desc">Trigger alert when processor load exceeds limit</span>
+                        </div>
+                        <label class="toggle-switch" for="notif-threshold-cpu-enable">
+                          <input type="checkbox" id="notif-threshold-cpu-enable" class="toggle-input" checked />
+                          <span class="toggle-slider"></span>
+                        </label>
+                      </div>
+                      <div class="threshold-input-row">
+                        <input
+                          type="range"
+                          id="notif-threshold-cpu-slider"
+                          min="50"
+                          max="99"
+                          value="90"
+                          class="threshold-slider"
+                        />
+                        <div class="threshold-number-wrapper">
+                          <input
+                            type="number"
+                            id="notif-threshold-cpu-value"
+                            min="1"
+                            max="100"
+                            value="90"
+                            class="threshold-number-input"
+                          />
+                          <span class="threshold-unit">%</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Disk Space Threshold -->
+                    <div class="threshold-item">
+                      <div class="threshold-header">
+                        <div class="threshold-title-group">
+                          <span class="threshold-name">Disk Space Threshold</span>
+                          <span class="threshold-desc">Trigger alert when storage capacity exceeds limit</span>
+                        </div>
+                        <label class="toggle-switch" for="notif-threshold-disk-enable">
+                          <input type="checkbox" id="notif-threshold-disk-enable" class="toggle-input" checked />
+                          <span class="toggle-slider"></span>
+                        </label>
+                      </div>
+                      <div class="threshold-input-row">
+                        <input
+                          type="range"
+                          id="notif-threshold-disk-slider"
+                          min="50"
+                          max="99"
+                          value="85"
+                          class="threshold-slider"
+                        />
+                        <div class="threshold-number-wrapper">
+                          <input
+                            type="number"
+                            id="notif-threshold-disk-value"
+                            min="1"
+                            max="100"
+                            value="85"
+                            class="threshold-number-input"
+                          />
+                          <span class="threshold-unit">%</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- RAID Degraded Alert -->
+                    <div class="threshold-item">
+                      <div class="threshold-header">
+                        <div class="threshold-title-group">
+                          <span class="threshold-name">RAID Degradation Alert</span>
+                          <span class="threshold-desc">Immediate trigger on array degradation, drive failure, or resync recovery</span>
+                        </div>
+                        <label class="toggle-switch" for="notif-threshold-raid-enable">
+                          <input type="checkbox" id="notif-threshold-raid-enable" class="toggle-input" checked />
+                          <span class="toggle-slider"></span>
+                        </label>
+                      </div>
+                      <div class="threshold-immediate-pill">
+                        <span class="status-dot"></span>
+                        <span>Zero-delay instant dispatch</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </div>
+
+            <!-- E. NOTIFICATION AUDIT LOGS & WEEKLY STATE -->
+            <div class="notifications-audit-grid">
+              <!-- Weekly Notification State Card -->
+              <article class="card weekly-state-card" id="weekly-state-card">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">Weekly Summary Throttling</h3>
+                    <p class="card-subtitle">Scheduled summary throttling state</p>
                   </div>
                   <span id="weekly-state-badge" class="status-badge status-unknown">--</span>
                 </div>
@@ -1257,11 +1630,11 @@
               </article>
 
               <!-- Notification History Card -->
-              <article class="card history-card">
+              <article class="card history-card" id="history-card">
                 <div class="card-header">
                   <div>
-                    <h3 class="card-title">Notification History</h3>
-                    <p class="card-subtitle">Recent alerts &amp; weekly summaries sent to Discord</p>
+                    <h3 class="card-title">Notification Audit History</h3>
+                    <p class="card-subtitle">Recent alerts and summaries dispatched to channels</p>
                   </div>
                   <span id="history-count-badge" class="pill-counter">0 records</span>
                 </div>
