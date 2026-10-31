@@ -34,79 +34,85 @@
 
 ---
 
-## Quickstart
+## Quickstart Installation
 
-### Prerequisites
-* Linux OS (Debian/Ubuntu, RHEL/Fedora, Arch, etc.)
-* Python >= 3.11
-* [uv](https://docs.astral.sh/uv/) (recommended for fast, deterministic dependency management)
-* Docker (optional, for container & stack management)
+### 1-Line Automated Installation (Recommended)
 
-### 1. Clone the Repository
+Run the single-command installer with root privileges:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tony-vs-code/raidcheck/main/install.sh | sudo bash
+```
+
+Or from a local git clone:
+
 ```bash
 git clone https://github.com/tony-vs-code/raidcheck.git vigil
 cd vigil
+sudo ./install.sh
 ```
 
-### 2. Install Dependencies
+#### What the installer does automatically:
+1. **Validates & Installs Dependencies**: Detects your Linux distribution (`apt`, `dnf`, `yum`, or `pacman`), installs Python >= 3.10, and sets up [uv](https://docs.astral.sh/uv/) for high-speed dependency resolution.
+2. **Deploys Application**: Configures `/opt/vigil` with an isolated virtual environment and synced dependencies.
+3. **Installs & Starts Systemd Service**: Configures `/etc/systemd/system/vigil.service`, enables it to auto-start on boot, and launches the web dashboard immediately.
+4. **Installs Global CLI Helper**: Symlinks `/usr/local/bin/vigil` so you can manage your server from anywhere in the terminal.
+
+Once installation finishes, open **`http://<server-ip>:8000`** in your browser.
+
+---
+
+## Managing Vigil (CLI)
+
+The `vigil` command-line helper allows you to manage the background service, inspect logs, and invoke application utilities directly:
+
 ```bash
+# Check service health and daemon status
+vigil status
+
+# Stream live journald logs in real time
+vigil logs
+
+# Restart the service (e.g. after configuration changes)
+sudo vigil restart
+
+# Stop or start the daemon
+sudo vigil stop
+sudo vigil start
+
+# Pull latest release, update dependencies, and restart
+sudo vigil update
+
+# Create admin user credentials
+vigil create-user admin
+
+# Test alert delivery across configured notification channels
+vigil test-notification
+
+# View alert schedule and next delivery times
+vigil status
+```
+
+---
+
+## Manual Development Setup
+
+If you are developing Vigil or wish to run it in user-space without systemd:
+
+```bash
+# 1. Clone repository
+git clone https://github.com/tony-vs-code/raidcheck.git vigil
+cd vigil
+
+# 2. Install dependencies with uv
 uv sync
-```
-This sets up a dedicated virtual environment with all required dependencies locked from `pyproject.toml`.
 
-### 3. Initialize Initial Admin User
-```bash
+# 3. Create initial admin user
 uv run main.py create-user admin
-```
-You will be prompted to set a secure password for the admin account. (You can also perform this setup on the web UI when first accessing the application).
 
-### 4. Start the Web Dashboard
-```bash
+# 4. Start development web server
 uv run main.py web --host 0.0.0.0 --port 8000
 ```
-Open [http://localhost:8000](http://localhost:8000) in your browser and sign in.
-
----
-
-## Command-Line Usage
-
-Vigil can also be invoked as a standalone CLI or headless daemon:
-
-```bash
-# Run the background monitoring daemon
-uv run main.py
-
-# Check notification state and schedule from terminal
-uv run main.py status
-
-# Inspect recent notification history logs
-uv run main.py logs --limit 20
-
-# Test notification delivery across configured channels
-uv run main.py test-notification
-```
-
----
-
-## Running as a Systemd Service
-
-Pre-configured systemd unit files are provided in `systemd/` for continuous background operation:
-
-1. Copy the service unit files to `/etc/systemd/system/`:
-   ```bash
-   sudo cp systemd/*.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   ```
-
-2. Enable and start the Vigil web service:
-   ```bash
-   sudo systemctl enable --now raidcheck-web.service
-   ```
-
-3. Enable the background alerting worker (optional if running standalone web):
-   ```bash
-   sudo systemctl enable --now raidcheck.service
-   ```
 
 ---
 
@@ -132,4 +138,4 @@ We are actively expanding Vigil into a complete host administration suite:
 * **Systemd Service Layer Monitoring**: Track failed units (`systemctl --failed`), start/stop/restart daemons, and stream live journald logs in the browser.
 * **Host OS Package & Security Updates**: Inspect upgradable packages (`apt`/`dnf`), detect pending security advisories, and track reboot requirements (`/var/run/reboot-required`).
 * **Interactive Process Explorer**: Real-time `htop`-style process table sorted by CPU and RAM consumption, with search, parent/child process inspection, and safe signal controls (`SIGTERM`/`SIGKILL`).
-* **Zero-Friction One-Line Installer**: Single `curl | bash` installation script with automatic systemd setup, architecture detection, and port configuration.
+* **Hardware & Storage Health**: SMART drive diagnostics and automatic NVMe/SATA temperature alerting.
