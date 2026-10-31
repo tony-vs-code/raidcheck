@@ -1,35 +1,38 @@
-# Release v0.9.7
+# Release v1.0.0
 
 ## Overview
-Vigil v0.9.7 introduces a visual overhaul for Discord notifications—featuring high-contrast unicode telemetry gauges, multi-column inline grids, dynamic status banners, and host metadata footers. This release also debuts the zero-friction automated installer (`install.sh`), automatic systemd service deployment (`vigil.service`), and the global `vigil` command-line helper tool.
+Vigil v1.0.0 marks a landmark milestone, evolving Vigil into a unified, zero-overhead **Linux Host Operations & Observability Suite**. This major release introduces full systemd service management, an interactive process explorer, Linux user and group administration, a security and activity audit log system, and an optimized, balanced telemetry dashboard layout.
 
 ## Highlights & Enhancements
 
-### 1. Modernized Discord Notification Embeds
-- **Unicode Telemetry Gauges**: Real-time progress bars (`▰▰▰▰▰▱▱▱▱▱`) and humanized byte scaling for CPU, RAM, and storage mounts.
-- **Dynamic Status Banners**: Top-level alert banner reflecting array and system health (`🟢 All Systems Operational`, `🟡 RAID Array REBUILDING`, `🔴 Attention: RAID Array DEGRADED`).
-- **Multi-Column Inline Grids**: Structured parallel field cards displaying CPU load with core counts, memory usage with exact GB metrics, and uptime with load averages.
-- **Host Context & Native Timestamps**: Author header with host badge (`Vigil System Monitor [<hostname>]`), system footer (`Vigil v0.9.7 • <OS/Kernel> • <hostname>`), and native Discord ISO timestamps.
-- **Color-Coded Severity Palette**: Test/Healthy (Emerald `0x2ECC71`), Warnings/Elevated (Amber `0xF59E0B`), and Critical alerts (Coral Red `0xEF4444`).
-- **Modernized RAID Embeds**: Replaced raw text blocks with structured status cards, device breakdown metrics, and drive health indicators.
+### 1. Systemctl Services Management
+- **Live Daemon Observability**: Real-time status monitoring for systemd service units with active/sub state tracking, instant failed unit alerts, and summary counters.
+- **Interactive Lifecycle Controls**: Direct `start`, `stop`, `restart`, `enable`, and `disable` actions with input sanitization and safety guards protecting core system daemons (`systemd`, `dbus`, `vigil`).
+- **Integrated Journald Log Viewer**: Built-in modal to stream and inspect recent journalctl service logs directly from the browser.
 
-### 2. Zero-Friction Automated Installer (`install.sh`)
-- **Single-Line Quickstart**:
-  ```bash
-  curl -fsSL https://raw.githubusercontent.com/tony-vs-code/vigil/main/install.sh | sudo bash
-  ```
-- **Universal Linux Support**: Automated package detection and prerequisite installation across Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`/`yum`), and Arch (`pacman`).
-- **Astral `uv` Virtual Environment**: High-speed, reproducible dependency isolation with automatic fallback to standard Python `venv`.
-- **Automated Systemd Deployment**: Configures, enables, and starts `/etc/systemd/system/vigil.service` with automatic restarts and secure environment file handling.
+### 2. Interactive Process Explorer
+- **Live Process Telemetry**: Sortable task list detailing PID, Process Name, User, CPU %, RAM %, Thread count, and Status.
+- **Visual Utilization Meters**: Mini inline progress bars for per-process CPU and Memory utilization.
+- **Dynamic Sorting & Filtering**: Real-time search query filtering and sorting by CPU %, Memory %, PID, or Name.
+- **Safe Process Termination**: Secure modal controls to send `SIGTERM` or `SIGKILL` signals, enforced by a safety blacklist guarding PID 1, kernel threads, and the Vigil process itself.
 
-### 3. Global `vigil` CLI Management Tool
-- Symlinks `/usr/local/bin/vigil` for instant server management from any shell:
-  - `vigil status`: Service health and uptime
-  - `vigil logs`: Live streaming journald service logs
-  - `sudo vigil restart`: Immediate daemon reload
-  - `sudo vigil update`: Automated pull, dependency sync, and service restart
-  - Application subcommands: `vigil create-user`, `vigil test-notification`, `vigil status`
+### 3. Linux User & Group Management
+- **Host Account Categorization**: Clear distinction between **Human / Regular Users** (`UID >= 1000`) and **System Daemons** (`UID < 1000`), detailing display names, home directories, login shells, and group memberships.
+- **Group Administration**: Group explorer displaying GIDs, membership lists, and member management.
+- **Account Lifecycle Actions**: Modals to create, modify, and delete host users and groups (`useradd`, `usermod`, `userdel`, `groupadd`, `groupdel`, `gpasswd`).
+- **System Protection Locks**: Safeguards preventing deletion of `root`, `sudo`, `wheel`, `shadow`, or `docker` accounts.
 
-### 4. Documentation & Repository Cleanup
-- Updated `README.md` with the 1-line installer and `vigil` CLI commands.
-- Removed legacy `systemd/raidcheck*.service` files and replaced them with the unified `vigil.service`.
+### 4. Security & Activity Audit Log
+- **Persistent SQLite Event Log**: Dedicated `audit_logs` store capturing operational history, configuration changes, and security events.
+- **Authentication Security Tracking**: Automated logging of failed login attempts (with client IP, timestamp, and failure reason), successful logins, user logouts, and initial admin setup.
+- **Configuration & Operations Diffs**: Records application settings changes, notification threshold adjustments, systemctl service commands, and process termination signals.
+- **Audit Explorer UI**: Filterable timeline by severity (`INFO`, `WARNING`, `SECURITY`), event type, or keyword search with expandable JSON metadata details.
+
+### 5. System Metrics Layout Optimization
+- **Enhanced Health Status Ribbon**: Prominent top overview ribbon monitoring **Storage**, **Containers**, **Alerts**, and **Services** with direct navigation links.
+- **Balanced Telemetry Grid**: Re-sorted into clean multi-column rows:
+  - **Row 1**: CPU Telemetry (overall load, load averages 1m/5m/15m, core count, per-core drilldown) & Memory Telemetry (vector SVG rolling trend chart, breakdown chips: Used, Cached, Free).
+  - **Row 2**: Storage & Filesystems table (Root `/` and all mounted storage volumes with capacity gauges) & Host Platform Details (uptime, OS distribution, kernel version, boot time).
+
+### 6. UI Polish & Navigation
+- **Collapsed Navbar Fix**: Strict vertical icon stacking for user avatar and logout buttons within `.user-session-box`, ensuring zero border overflow in collapsed sidebar mode.

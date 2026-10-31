@@ -338,6 +338,23 @@ def _connect_state_db() -> sqlite3.Connection:
         "created_at REAL NOT NULL, "
         "updated_at REAL NOT NULL)"
     )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS audit_logs ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "timestamp REAL NOT NULL, "
+        "event_type TEXT NOT NULL, "
+        "actor TEXT NOT NULL, "
+        "ip_address TEXT, "
+        "severity TEXT NOT NULL DEFAULT 'info', "
+        "description TEXT NOT NULL, "
+        "metadata TEXT)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_logs_event_type ON audit_logs(event_type)"
+    )
     connection.commit()
     return connection
 
@@ -477,6 +494,98 @@ def delete_session(token: Optional[str]) -> None:
         connection.commit()
     finally:
         connection.close()
+
+
+def record_audit_event(
+    event_type: str,
+    description: str,
+    actor: str = "system",
+    ip_address: str = "",
+    severity: str = "info",
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    """Record a structured security or activity event in audit_logs."""
+    meta_json = json.dumps(metadata) if metadata is not None else None
+    ts = time.time()
+    try:
+        conn = _connect_state_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO audit_logs (timestamp, event_type, actor, ip_address, severity, description, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, event_type, actor, ip_address, severity, description, meta_json),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error) as exc:
+        logging.warning(f"Could not write audit log: {exc}")
+
+
+def get_audit_logs(
+    limit: int = 50,
+    offset: int = 0,
+    event_type: Optional[str] = None,
+    severity: Optional[str] = None,
+    q: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Retrieve filtered audit logs and total matching count."""
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+
+    where_clauses: list[str] = []
+    params: list[Any] = []
+
+    if event_type:
+        where_clauses.append("event_type = ?")
+        params.append(event_type.strip())
+    if severity:
+        where_clauses.append("severity = ?")
+        params.append(severity.strip().lower())
+    if q:
+        term = f"%{q.strip().lower()}%"
+        where_clauses.append("(LOWER(description) LIKE ? OR LOWER(actor) LIKE ? OR LOWER(event_type) LIKE ?)")
+        params.extend([term, term, term])
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+    conn = _connect_state_db()
+    try:
+        count_query = f"SELECT COUNT(*) FROM audit_logs {where_sql}"
+        total = conn.execute(count_query, params).fetchone()[0]
+
+        query = f"""
+            SELECT id, timestamp, event_type, actor, ip_address, severity, description, metadata
+            FROM audit_logs
+            {where_sql}
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ? OFFSET ?
+        """
+        rows = conn.execute(query, params + [limit, offset]).fetchall()
+        logs = []
+        for row in rows:
+            meta = None
+            if row[7]:
+                try:
+                    meta = json.loads(row[7])
+                except (ValueError, TypeError):
+                    meta = row[7]
+            logs.append({
+                "id": row[0],
+                "timestamp": row[1],
+                "event_type": row[2],
+                "actor": row[3],
+                "ip_address": row[4] or "",
+                "severity": row[5],
+                "description": row[6],
+                "metadata": meta,
+            })
+        return logs, total
+    finally:
+        conn.close()
+
 
 
 DEFAULT_NOTIFICATION_CENTER_CONFIG: dict[str, Any] = {
@@ -4748,6 +4857,719 @@ get_docker_auto_update_config = docker_manager.get_auto_update_config
 set_docker_auto_update_config = docker_manager.set_auto_update_config
 invalidate_docker_cache = docker_manager.invalidate_cache
 _clean_docker_error = DockerManager._clean_docker_error
+
+# ============================================================================
+# System Services & Process Monitoring Helpers
+# ============================================================================
+
+SERVICE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.@-]+\.service$")
+PROTECTED_SERVICES = {"systemd.service", "dbus.service", "vigil.service"}
+
+USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+GROUPNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+PROTECTED_USERS = {"root", "daemon", "nobody"}
+PROTECTED_GROUPS = {"root", "sudo", "wheel", "shadow", "docker"}
+
+
+def get_system_services() -> dict[str, Any]:
+    """Collect systemd service units and summary."""
+    systemctl_path = shutil.which("systemctl")
+    if not systemctl_path:
+        return {
+            "services": [],
+            "summary": {"total": 0, "running": 0, "failed": 0, "inactive": 0},
+            "failed_services": [],
+            "systemctl_available": False,
+        }
+
+    try:
+        res = subprocess.run(
+            ["systemctl", "list-units", "--type=service", "--all", "--no-pager", "--plain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "SYSTEMD_COLORS": "0", "LC_ALL": "C"},
+        )
+        if res.returncode != 0:
+            return {
+                "services": [],
+                "summary": {"total": 0, "running": 0, "failed": 0, "inactive": 0},
+                "failed_services": [],
+                "systemctl_available": False,
+                "error": res.stderr.strip() or f"systemctl exited with {res.returncode}",
+            }
+        output = res.stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "services": [],
+            "summary": {"total": 0, "running": 0, "failed": 0, "inactive": 0},
+            "failed_services": [],
+            "systemctl_available": False,
+            "error": str(exc),
+        }
+
+    services = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(("●", "*", "-", "×", "+")):
+            line = line[1:].strip()
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            continue
+        unit = parts[0]
+        if not unit.endswith(".service"):
+            continue
+        load_state = parts[1]
+        active_state = parts[2]
+        sub_state = parts[3]
+        description = parts[4] if len(parts) > 4 else ""
+        name = unit[:-8]
+
+        services.append({
+            "unit": unit,
+            "name": name,
+            "load_state": load_state,
+            "active_state": active_state,
+            "sub_state": sub_state,
+            "description": description,
+        })
+
+    total = len(services)
+    running = sum(1 for s in services if s["active_state"] == "active" and s["sub_state"] == "running")
+    failed = sum(1 for s in services if s["active_state"] == "failed")
+    inactive = sum(1 for s in services if s["active_state"] in ("inactive", "dead"))
+    failed_services = [s["unit"] for s in services if s["active_state"] == "failed"]
+
+    return {
+        "services": services,
+        "summary": {
+            "total": total,
+            "running": running,
+            "failed": failed,
+            "inactive": inactive,
+        },
+        "failed_services": failed_services,
+        "systemctl_available": True,
+    }
+
+
+def get_services_summary() -> dict[str, int]:
+    """Return compact services summary (running, failed, total)."""
+    data = get_system_services()
+    summary = data.get("summary", {})
+    return {
+        "running": summary.get("running", 0),
+        "failed": summary.get("failed", 0),
+        "total": summary.get("total", 0),
+    }
+
+
+def execute_service_action(service_name: str, action: str) -> dict[str, Any]:
+    """Execute a lifecycle action on a systemd service unit."""
+    action_clean = (action or "").strip().lower()
+    allowed_actions = {"start", "stop", "restart", "enable", "disable"}
+    if action_clean not in allowed_actions:
+        raise ValueError(f"Invalid action '{action}'. Must be one of: {', '.join(sorted(allowed_actions))}")
+
+    clean_name = (service_name or "").strip()
+    if not clean_name.endswith(".service"):
+        clean_name = f"{clean_name}.service"
+
+    if not SERVICE_NAME_RE.match(clean_name):
+        raise ValueError(f"Invalid service name '{service_name}'. Must match pattern {SERVICE_NAME_RE.pattern}")
+
+    if clean_name in PROTECTED_SERVICES and action_clean in ("stop", "disable"):
+        raise PermissionError(f"Action '{action_clean}' is not permitted on protected service '{clean_name}'.")
+
+    if not shutil.which("systemctl"):
+        raise RuntimeError("systemctl is not available on this system.")
+
+    res = subprocess.run(
+        ["systemctl", action_clean, clean_name],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if res.returncode != 0:
+        err = res.stderr.strip() or res.stdout.strip() or f"systemctl {action_clean} exited with {res.returncode}"
+        raise RuntimeError(err)
+
+    return {
+        "status": "ok",
+        "service": clean_name,
+        "action": action_clean,
+        "output": res.stdout.strip(),
+    }
+
+
+def get_service_logs(service_name: str, lines: int = 100) -> list[str]:
+    """Retrieve recent journalctl logs for a service."""
+    lines_val = max(1, min(int(lines), 500))
+    clean_name = (service_name or "").strip()
+    if not clean_name.endswith(".service"):
+        clean_name = f"{clean_name}.service"
+
+    if not SERVICE_NAME_RE.match(clean_name):
+        raise ValueError(f"Invalid service name '{service_name}'. Must match pattern {SERVICE_NAME_RE.pattern}")
+
+    if not shutil.which("journalctl"):
+        return []
+
+    try:
+        res = subprocess.run(
+            ["journalctl", "-u", clean_name, "-n", str(lines_val), "--no-pager"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if res.returncode != 0:
+            return []
+        return res.stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def get_process_list(
+    sort: str = "cpu",
+    limit: int = 50,
+    q: Optional[str] = None,
+) -> dict[str, Any]:
+    """List system processes with summary metrics, filtering, and sorting."""
+    valid_sorts = {"cpu", "memory", "pid", "name"}
+    sort_key = (sort or "cpu").strip().lower()
+    if sort_key not in valid_sorts:
+        sort_key = "cpu"
+
+    limit_val = max(1, min(int(limit), 200))
+
+    processes: list[dict[str, Any]] = []
+    running_count = 0
+    sleeping_count = 0
+
+    attrs = ["pid", "name", "username", "cpu_percent", "memory_percent", "status", "num_threads", "create_time"]
+    for p in psutil.process_iter(attrs):
+        try:
+            info = p.info
+            if not info or info.get("pid") is None:
+                continue
+            status_val = str(info.get("status") or "")
+            if status_val == psutil.STATUS_RUNNING or status_val == "running":
+                running_count += 1
+            elif status_val == psutil.STATUS_SLEEPING or status_val == "sleeping":
+                sleeping_count += 1
+
+            proc_data = {
+                "pid": int(info["pid"]),
+                "name": str(info.get("name") or "unknown"),
+                "username": str(info.get("username") or ""),
+                "cpu_percent": round(float(info.get("cpu_percent") or 0.0), 2),
+                "memory_percent": round(float(info.get("memory_percent") or 0.0), 2),
+                "status": status_val,
+                "num_threads": int(info.get("num_threads") or 1),
+                "create_time": float(info.get("create_time") or 0.0),
+            }
+            processes.append(proc_data)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+
+    total_processes = len(processes)
+    top_cpu = max(processes, key=lambda p: p["cpu_percent"])["name"] if processes else None
+    top_memory = max(processes, key=lambda p: p["memory_percent"])["name"] if processes else None
+
+    summary = {
+        "total_processes": total_processes,
+        "running_count": running_count,
+        "sleeping_count": sleeping_count,
+        "top_cpu_process": top_cpu,
+        "top_memory_process": top_memory,
+    }
+
+    filtered = processes
+    if q:
+        term = q.strip().lower()
+        if term:
+            filtered = [
+                p for p in filtered
+                if term in p["name"].lower()
+                or term in p["username"].lower()
+                or term in str(p["pid"])
+            ]
+
+    if sort_key == "cpu":
+        filtered.sort(key=lambda p: (p["cpu_percent"], p["memory_percent"]), reverse=True)
+    elif sort_key == "memory":
+        filtered.sort(key=lambda p: (p["memory_percent"], p["cpu_percent"]), reverse=True)
+    elif sort_key == "pid":
+        filtered.sort(key=lambda p: p["pid"])
+    elif sort_key == "name":
+        filtered.sort(key=lambda p: p["name"].lower())
+
+    return {
+        "processes": filtered[:limit_val],
+        "summary": summary,
+    }
+
+
+def kill_process(pid: int, signal_name: str = "SIGTERM") -> dict[str, Any]:
+    """Safely terminate or kill a process with safety blacklist protection."""
+    sig = (signal_name or "SIGTERM").strip().upper()
+    if sig not in ("SIGTERM", "SIGKILL"):
+        raise ValueError(f"Invalid signal '{signal_name}'. Must be 'SIGTERM' or 'SIGKILL'.")
+
+    # Safety blacklist
+    if pid <= 2:
+        raise PermissionError(f"Cannot terminate protected system/kernel PID {pid}.")
+    if pid == os.getpid():
+        raise PermissionError(f"Cannot terminate Vigil application process (PID {pid}).")
+
+    try:
+        proc = psutil.Process(pid)
+        if sig == "SIGKILL":
+            proc.kill()
+        else:
+            proc.terminate()
+    except psutil.NoSuchProcess:
+        raise ProcessLookupError(f"Process {pid} not found.")
+    except psutil.AccessDenied:
+        raise PermissionError(f"Permission denied to terminate process {pid}.")
+    except Exception as exc:
+        raise RuntimeError(f"Failed to terminate process {pid}: {exc}")
+
+    return {
+        "status": "ok",
+        "pid": pid,
+        "signal": sig,
+    }
+
+
+def get_storage_metrics() -> list[dict[str, Any]]:
+    """Collect mounted partition metrics via psutil."""
+    partitions = psutil.disk_partitions(all=False)
+    seen_mountpoints: set[str] = set()
+    disks: list[dict[str, Any]] = []
+    for p in partitions:
+        if p.mountpoint in seen_mountpoints:
+            continue
+        seen_mountpoints.add(p.mountpoint)
+        try:
+            usage = psutil.disk_usage(p.mountpoint)
+            total = usage.total
+            used = usage.used
+            free = usage.free
+            percent = usage.percent
+        except (PermissionError, OSError):
+            total = 0
+            used = 0
+            free = 0
+            percent = 0.0
+
+        disks.append(
+            {
+                "mountpoint": p.mountpoint,
+                "mount_point": p.mountpoint,
+                "device": p.device,
+                "fstype": p.fstype,
+                "opts": p.opts,
+                "total": total,
+                "used": used,
+                "free": free,
+                "percent": percent,
+            }
+        )
+    return disks
+
+
+def get_system_metrics_data() -> dict[str, Any]:
+    """Collect real-time system metrics via psutil, mounted disks, and services summary."""
+    cpu_percent = psutil.cpu_percent(interval=None)
+    cpu_cores = psutil.cpu_percent(percpu=True)
+    if not isinstance(cpu_cores, list):
+        cpu_cores = [cpu_cores]
+    cpu_count_logical = psutil.cpu_count(logical=True) or 1
+    cpu_count_physical = psutil.cpu_count(logical=False) or 1
+
+    cpu_freq_val: Optional[float] = None
+    try:
+        if hasattr(psutil, "cpu_freq"):
+            freq = psutil.cpu_freq()
+            if freq and getattr(freq, "current", None) is not None:
+                cpu_freq_val = float(freq.current)
+    except Exception:
+        cpu_freq_val = None
+
+    load_avg = list(os.getloadavg()) if hasattr(os, "getloadavg") else []
+    vm = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+    boot_time = psutil.boot_time()
+    storage_metrics = get_storage_metrics()
+    services_summary = get_services_summary()
+
+    os_distro = ""
+    try:
+        os_distro = platform.freedesktop_os_release().get("PRETTY_NAME", "")
+    except Exception:
+        pass
+    if not os_distro:
+        os_distro = f"{platform.system()} {platform.release()}"
+    kernel = platform.release()
+
+    return {
+        "cpu_percent": cpu_percent,
+        "cpu_cores": cpu_cores,
+        "cpu_count_logical": cpu_count_logical,
+        "cpu_count_physical": cpu_count_physical,
+        "cpu_freq": cpu_freq_val,
+        "load_avg": load_avg,
+        "memory": {
+            "total": vm.total,
+            "used": vm.used,
+            "available": vm.available,
+            "percent": vm.percent,
+            "free": getattr(vm, "free", 0),
+            "cached": getattr(vm, "cached", 0),
+            "buffers": getattr(vm, "buffers", 0),
+        },
+        "disk": {
+            "total": disk.total,
+            "used": disk.used,
+            "free": disk.free,
+            "percent": disk.percent,
+        },
+        "disks": storage_metrics,
+        "filesystems": storage_metrics,
+        "mounts": storage_metrics,
+        "services_summary": services_summary,
+        "boot_time": boot_time,
+        "platform": platform.system(),
+        "kernel": kernel,
+        "os_distro": os_distro,
+        "hostname": platform.node() or "localhost",
+    }
+
+
+def get_system_users() -> dict[str, Any]:
+    """List system users and summary using pwd/grp or /etc/passwd."""
+    user_groups: dict[str, list[str]] = {}
+    try:
+        import grp
+        for g in grp.getgrall():
+            for member in g.gr_mem:
+                user_groups.setdefault(member, []).append(g.gr_name)
+    except Exception:
+        if os.path.exists("/etc/group"):
+            try:
+                with open("/etc/group", "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split(":")
+                        if len(parts) >= 4:
+                            gname, members = parts[0], parts[3].split(",")
+                            for m in members:
+                                if m.strip():
+                                    user_groups.setdefault(m.strip(), []).append(gname)
+            except Exception:
+                pass
+
+    users = []
+    try:
+        import pwd
+        for u in pwd.getpwall():
+            is_sys = u.pw_uid < 1000 or u.pw_uid == 65534
+            groups = sorted(set(user_groups.get(u.pw_name, [])))
+            try:
+                import grp
+                primary = grp.getgrgid(u.pw_gid).gr_name
+                if primary and primary not in groups:
+                    groups.insert(0, primary)
+            except Exception:
+                pass
+
+            users.append({
+                "username": u.pw_name,
+                "uid": u.pw_uid,
+                "gid": u.pw_gid,
+                "name": u.pw_gecos,
+                "home": u.pw_dir,
+                "shell": u.pw_shell,
+                "is_system": is_sys,
+                "groups": groups,
+            })
+    except Exception:
+        if os.path.exists("/etc/passwd"):
+            try:
+                with open("/etc/passwd", "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split(":")
+                        if len(parts) >= 7:
+                            uname, uid, gid, gecos, home, shell = (
+                                parts[0], int(parts[2]), int(parts[3]), parts[4], parts[5], parts[6]
+                            )
+                            is_sys = uid < 1000 or uid == 65534
+                            users.append({
+                                "username": uname,
+                                "uid": uid,
+                                "gid": gid,
+                                "name": gecos,
+                                "home": home,
+                                "shell": shell,
+                                "is_system": is_sys,
+                                "groups": sorted(user_groups.get(uname, [])),
+                            })
+            except Exception:
+                pass
+
+    users.sort(key=lambda u: (u["is_system"], u["uid"]))
+    regular_count = sum(1 for u in users if not u["is_system"])
+    system_count = sum(1 for u in users if u["is_system"])
+
+    return {
+        "users": users,
+        "summary": {
+            "total_users": len(users),
+            "regular_users_count": regular_count,
+            "system_users_count": system_count,
+        },
+    }
+
+
+def get_system_groups() -> dict[str, Any]:
+    """List system groups and summary using grp or /etc/group."""
+    groups = []
+    try:
+        import grp
+        for g in grp.getgrall():
+            is_sys = g.gr_gid < 1000
+            groups.append({
+                "name": g.gr_name,
+                "gid": g.gr_gid,
+                "members": list(g.gr_mem),
+                "is_system": is_sys,
+            })
+    except Exception:
+        if os.path.exists("/etc/group"):
+            try:
+                with open("/etc/group", "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split(":")
+                        if len(parts) >= 4:
+                            gname = parts[0]
+                            gid = int(parts[2])
+                            members = [m.strip() for m in parts[3].split(",") if m.strip()]
+                            groups.append({
+                                "name": gname,
+                                "gid": gid,
+                                "members": members,
+                                "is_system": gid < 1000,
+                            })
+            except Exception:
+                pass
+
+    groups.sort(key=lambda g: (g["is_system"], g["gid"]))
+    regular_count = sum(1 for g in groups if not g["is_system"])
+
+    return {
+        "groups": groups,
+        "summary": {
+            "total_groups": len(groups),
+            "regular_groups_count": regular_count,
+        },
+    }
+
+
+def create_system_user(
+    username: str,
+    shell: Optional[str] = None,
+    groups: Optional[list[str]] = None,
+    create_home: bool = True,
+) -> dict[str, Any]:
+    """Create a new system user with useradd."""
+    username = (username or "").strip()
+    if not USERNAME_RE.match(username):
+        raise ValueError(f"Invalid username '{username}'. Must match {USERNAME_RE.pattern}")
+
+    cmd = ["useradd"]
+    if create_home:
+        cmd.append("-m")
+    if shell:
+        if not re.match(r"^/[a-zA-Z0-9_/-]+$", shell):
+            raise ValueError(f"Invalid shell path: {shell}")
+        cmd.extend(["-s", shell])
+    if groups:
+        clean_groups = []
+        for g in groups:
+            g_clean = g.strip()
+            if not GROUPNAME_RE.match(g_clean):
+                raise ValueError(f"Invalid group name: {g_clean}")
+            clean_groups.append(g_clean)
+        if clean_groups:
+            cmd.extend(["-G", ",".join(clean_groups)])
+    cmd.append(username)
+
+    if not shutil.which("useradd"):
+        raise RuntimeError("useradd command not available on this system.")
+
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    if res.returncode != 0:
+        err = res.stderr.strip() or res.stdout.strip() or f"useradd exited with {res.returncode}"
+        raise RuntimeError(err)
+
+    return {"status": "ok", "username": username, "output": res.stdout.strip()}
+
+
+def update_system_user(
+    username: str,
+    shell: Optional[str] = None,
+    groups: Optional[list[str]] = None,
+    locked: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Update user settings with usermod."""
+    username = (username or "").strip()
+    if not USERNAME_RE.match(username):
+        raise ValueError(f"Invalid username '{username}'. Must match {USERNAME_RE.pattern}")
+
+    cmd = ["usermod"]
+    if shell is not None:
+        if not re.match(r"^/[a-zA-Z0-9_/-]+$", shell):
+            raise ValueError(f"Invalid shell path: {shell}")
+        cmd.extend(["-s", shell])
+    if groups is not None:
+        clean_groups = []
+        for g in groups:
+            g_clean = g.strip()
+            if not GROUPNAME_RE.match(g_clean):
+                raise ValueError(f"Invalid group name: {g_clean}")
+            clean_groups.append(g_clean)
+        cmd.extend(["-G", ",".join(clean_groups)])
+    if locked is True:
+        cmd.append("-L")
+    elif locked is False:
+        cmd.append("-U")
+    cmd.append(username)
+
+    if not shutil.which("usermod"):
+        raise RuntimeError("usermod command not available on this system.")
+
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    if res.returncode != 0:
+        err = res.stderr.strip() or res.stdout.strip() or f"usermod exited with {res.returncode}"
+        raise RuntimeError(err)
+
+    return {"status": "ok", "username": username, "output": res.stdout.strip()}
+
+
+def delete_system_user(username: str, remove_home: bool = False) -> dict[str, Any]:
+    """Delete a user with userdel, protecting essential system accounts."""
+    username = (username or "").strip()
+    if not USERNAME_RE.match(username):
+        raise ValueError(f"Invalid username '{username}'. Must match {USERNAME_RE.pattern}")
+
+    current_user = ""
+    try:
+        import pwd
+        current_user = pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        current_user = os.environ.get("USER", "")
+
+    if username in PROTECTED_USERS or (current_user and username == current_user):
+        raise PermissionError(f"Cannot delete protected system user '{username}'.")
+
+    cmd = ["userdel"]
+    if remove_home:
+        cmd.append("-r")
+    cmd.append(username)
+
+    if not shutil.which("userdel"):
+        raise RuntimeError("userdel command not available on this system.")
+
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    if res.returncode != 0:
+        err = res.stderr.strip() or res.stdout.strip() or f"userdel exited with {res.returncode}"
+        raise RuntimeError(err)
+
+    return {"status": "ok", "username": username, "removed_home": remove_home}
+
+
+def create_system_group(name: str, gid: Optional[int] = None) -> dict[str, Any]:
+    """Create a new group with groupadd."""
+    name = (name or "").strip()
+    if not GROUPNAME_RE.match(name):
+        raise ValueError(f"Invalid group name '{name}'. Must match {GROUPNAME_RE.pattern}")
+
+    cmd = ["groupadd"]
+    if gid is not None:
+        if gid < 0:
+            raise ValueError("GID must be a non-negative integer.")
+        cmd.extend(["-g", str(gid)])
+    cmd.append(name)
+
+    if not shutil.which("groupadd"):
+        raise RuntimeError("groupadd command not available on this system.")
+
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    if res.returncode != 0:
+        err = res.stderr.strip() or res.stdout.strip() or f"groupadd exited with {res.returncode}"
+        raise RuntimeError(err)
+
+    return {"status": "ok", "group": name, "output": res.stdout.strip()}
+
+
+def delete_system_group(groupname: str) -> dict[str, Any]:
+    """Delete a group with groupdel, protecting essential system groups."""
+    groupname = (groupname or "").strip()
+    if not GROUPNAME_RE.match(groupname):
+        raise ValueError(f"Invalid group name '{groupname}'. Must match {GROUPNAME_RE.pattern}")
+
+    if groupname in PROTECTED_GROUPS:
+        raise PermissionError(f"Cannot delete protected system group '{groupname}'.")
+
+    if not shutil.which("groupdel"):
+        raise RuntimeError("groupdel command not available on this system.")
+
+    cmd = ["groupdel", groupname]
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    if res.returncode != 0:
+        err = res.stderr.strip() or res.stdout.strip() or f"groupdel exited with {res.returncode}"
+        raise RuntimeError(err)
+
+    return {"status": "ok", "group": groupname}
+
+
+def manage_group_membership(groupname: str, action: str, username: str) -> dict[str, Any]:
+    """Add or remove a user to/from a group using gpasswd or usermod."""
+    groupname = (groupname or "").strip()
+    username = (username or "").strip()
+    action_clean = (action or "").strip().lower()
+
+    if not GROUPNAME_RE.match(groupname):
+        raise ValueError(f"Invalid group name '{groupname}'. Must match {GROUPNAME_RE.pattern}")
+    if not USERNAME_RE.match(username):
+        raise ValueError(f"Invalid username '{username}'. Must match {USERNAME_RE.pattern}")
+    if action_clean not in ("add", "remove"):
+        raise ValueError(f"Invalid action '{action}'. Must be 'add' or 'remove'.")
+
+    if shutil.which("gpasswd"):
+        flag = "-a" if action_clean == "add" else "-d"
+        cmd = ["gpasswd", flag, username, groupname]
+    elif action_clean == "add" and shutil.which("usermod"):
+        cmd = ["usermod", "-a", "-G", groupname, username]
+    else:
+        raise RuntimeError("Neither gpasswd nor usermod is available on this system.")
+
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    if res.returncode != 0:
+        err = res.stderr.strip() or res.stdout.strip() or f"Membership command exited with {res.returncode}"
+        raise RuntimeError(err)
+
+    return {
+        "status": "ok",
+        "group": groupname,
+        "username": username,
+        "action": action_clean,
+        "output": res.stdout.strip(),
+    }
+
+
 
 
 @client.event

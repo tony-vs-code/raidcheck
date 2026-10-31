@@ -576,10 +576,10 @@ function renderSystemMetrics(system) {
     const freeFormatted = formatBytes(disk.free ?? disk.free_bytes ?? disk.available);
     const mountLabel = disk.mount || disk.mount_path || disk.path;
     const prefix = mountLabel ? `[${mountLabel}] ` : "";
-    diskDetailEl.textContent = `${prefix}${usedFormatted} / ${totalFormatted} used (${freeFormatted} free)`;
+    diskDetailEl.textContent = `${prefix}${usedFormatted} / ${totalFormatted} (${freeFormatted} free)`;
   }
 
-  // Uptime
+  // Uptime & Host Platform Telemetry
   if (system.boot_time) {
     currentBootTime = system.boot_time;
   }
@@ -601,10 +601,52 @@ function renderSystemMetrics(system) {
     }
   }
 
-  // Storage Volumes breakdown table
+  const hostOsEl = document.getElementById("host-os-detail");
+  if (hostOsEl) {
+    hostOsEl.textContent = system.os_distro || system.platform || "Linux";
+  }
+  const hostKernelEl = document.getElementById("host-kernel-detail");
+  if (hostKernelEl) {
+    hostKernelEl.textContent = system.kernel || "--";
+  }
+
+  // Mounted Storage Volumes Mini-List on Overview Card 3
+  const mountsListEl = document.getElementById("overview-mounts-list");
+  if (mountsListEl) {
+    const disks = Array.isArray(system.disks) ? system.disks : (Array.isArray(system.filesystems) ? system.filesystems : []);
+    if (disks.length > 0) {
+      mountsListEl.innerHTML = disks.map((d) => {
+        const pct = Math.max(0, Math.min(100, Number(d.percent) || 0));
+        let barClass = "progress-fill";
+        if (pct >= 90) barClass += " danger";
+        else if (pct >= 75) barClass += " warn";
+        return `
+          <div class="overview-mount-item">
+            <div class="mount-item-row">
+              <span class="mount-point-name mono-text">${escapeHtml(d.mountpoint || "/")}</span>
+              <span class="mount-fs-type">${escapeHtml(d.fstype || "ext4")}</span>
+              <span class="mount-usage-subtext mono-text">${pct.toFixed(1)}% (${formatBytes(d.used)} / ${formatBytes(d.total)})</span>
+            </div>
+            <div class="progress-track" style="height: 4px;">
+              <div class="${barClass}" style="width: ${pct.toFixed(1)}%"></div>
+            </div>
+          </div>
+        `;
+      }).join("");
+    } else {
+      mountsListEl.innerHTML = `<div class="empty-state-mini">No additional mounted volumes.</div>`;
+    }
+  }
+
+  // Storage Volumes breakdown table on #view-raid
   if (Array.isArray(system.disks) && system.disks.length > 0) {
     cachedStorageDisks = system.disks;
     renderStorageMounts(system.disks);
+  }
+
+  // Services Ribbon Summary
+  if (system.services_summary) {
+    renderServicesSummary(system.services_summary);
   }
 }
 
@@ -3115,23 +3157,35 @@ function escapeHtml(str) {
 }
 
 /**
- * Switch view panel between 'overview', 'raid', 'notifications', and 'containers'.
+ * Switch view panel between 'overview', 'raid', 'notifications', 'containers', 'services', 'processes', 'users', and 'audit'.
  */
 function switchViewTab(tabName, updateHash = true) {
   currentViewTab = tabName;
   const isNotifications = tabName === "notifications";
   const isContainers = tabName === "containers";
   const isRaid = tabName === "raid";
+  const isServices = tabName === "services";
+  const isProcesses = tabName === "processes";
+  const isUsers = tabName === "users";
+  const isAudit = tabName === "audit";
 
   const overviewTab = document.getElementById("nav-tab-overview");
   const raidTab = document.getElementById("nav-tab-raid");
   const notificationsTab = document.getElementById("nav-tab-notifications");
   const containersTab = document.getElementById("nav-tab-containers");
+  const servicesTab = document.getElementById("nav-tab-services");
+  const processesTab = document.getElementById("nav-tab-processes");
+  const usersTab = document.getElementById("nav-tab-users");
+  const auditTab = document.getElementById("nav-tab-audit");
 
   const overviewView = document.getElementById("view-overview");
   const raidView = document.getElementById("view-raid");
   const notificationsView = document.getElementById("view-notifications");
   const containersView = document.getElementById("view-containers");
+  const servicesView = document.getElementById("view-services");
+  const processesView = document.getElementById("view-processes");
+  const usersView = document.getElementById("view-users");
+  const auditView = document.getElementById("view-audit");
 
   const pageTitle = document.getElementById("page-title");
 
@@ -3143,11 +3197,23 @@ function switchViewTab(tabName, updateHash = true) {
   notificationsTab?.setAttribute("aria-selected", "false");
   containersTab?.classList.remove("active");
   containersTab?.setAttribute("aria-selected", "false");
+  servicesTab?.classList.remove("active");
+  servicesTab?.setAttribute("aria-selected", "false");
+  processesTab?.classList.remove("active");
+  processesTab?.setAttribute("aria-selected", "false");
+  usersTab?.classList.remove("active");
+  usersTab?.setAttribute("aria-selected", "false");
+  auditTab?.classList.remove("active");
+  auditTab?.setAttribute("aria-selected", "false");
 
   overviewView?.classList.add("hidden");
   raidView?.classList.add("hidden");
   notificationsView?.classList.add("hidden");
   containersView?.classList.add("hidden");
+  servicesView?.classList.add("hidden");
+  processesView?.classList.add("hidden");
+  usersView?.classList.add("hidden");
+  auditView?.classList.add("hidden");
 
   // Automatically close mobile sidebar if opened
   document.getElementById("app-sidebar")?.classList.remove("open");
@@ -3191,6 +3257,58 @@ function switchViewTab(tabName, updateHash = true) {
     if (isAuthenticated) {
       fetchNotificationCenterConfig();
     }
+  } else if (isServices) {
+    servicesTab?.classList.add("active");
+    servicesTab?.setAttribute("aria-selected", "true");
+    servicesView?.classList.remove("hidden");
+    if (pageTitle) pageTitle.textContent = "System Services";
+
+    if (updateHash && window.location.hash !== "#services") {
+      history.replaceState(null, "", "#services");
+    }
+
+    if (isAuthenticated) {
+      fetchSystemServices();
+    }
+  } else if (isProcesses) {
+    processesTab?.classList.add("active");
+    processesTab?.setAttribute("aria-selected", "true");
+    processesView?.classList.remove("hidden");
+    if (pageTitle) pageTitle.textContent = "Process Explorer";
+
+    if (updateHash && window.location.hash !== "#processes") {
+      history.replaceState(null, "", "#processes");
+    }
+
+    if (isAuthenticated) {
+      fetchProcesses();
+    }
+  } else if (isUsers) {
+    usersTab?.classList.add("active");
+    usersTab?.setAttribute("aria-selected", "true");
+    usersView?.classList.remove("hidden");
+    if (pageTitle) pageTitle.textContent = "Users & Groups";
+
+    if (updateHash && !window.location.hash.startsWith("#users")) {
+      history.replaceState(null, "", "#users");
+    }
+
+    if (isAuthenticated) {
+      switchUsersSubtab(currentUsersSubtab);
+    }
+  } else if (isAudit) {
+    auditTab?.classList.add("active");
+    auditTab?.setAttribute("aria-selected", "true");
+    auditView?.classList.remove("hidden");
+    if (pageTitle) pageTitle.textContent = "Security & Audit Logs";
+
+    if (updateHash && window.location.hash !== "#audit") {
+      history.replaceState(null, "", "#audit");
+    }
+
+    if (isAuthenticated) {
+      fetchAuditLogs();
+    }
   } else {
     overviewTab?.classList.add("active");
     overviewTab?.setAttribute("aria-selected", "true");
@@ -3215,11 +3333,1088 @@ function syncTabFromHash() {
     switchDockerSubtab(subtab, false);
   } else if (hash === "raid" || hash === "storage" || hash === "disks") {
     switchViewTab("raid", false);
+  } else if (hash === "services" || hash === "systemctl") {
+    switchViewTab("services", false);
+  } else if (hash === "processes" || hash === "proc" || hash === "tasks") {
+    switchViewTab("processes", false);
+  } else if (hash.startsWith("users") || hash.startsWith("groups")) {
+    switchViewTab("users", false);
+    if (hash.includes("groups")) {
+      switchUsersSubtab("groups");
+    } else {
+      switchUsersSubtab("users");
+    }
+  } else if (hash === "audit" || hash === "security" || hash === "audit-log") {
+    switchViewTab("audit", false);
   } else if (hash === "notifications" || hash === "logs" || hash === "notifications-logs") {
     switchViewTab("notifications", false);
   } else {
     switchViewTab("overview", false);
   }
+}
+
+/* =========================================================================
+ * Services Summary Ribbon Helper
+ * ========================================================================= */
+function renderServicesSummary(summary) {
+  if (!summary) return;
+  const running = Number(summary.running) || 0;
+  const failed = Number(summary.failed) || 0;
+  const badge = document.getElementById("overview-services-badge");
+  const summaryEl = document.getElementById("overview-services-summary");
+  if (badge) {
+    if (failed > 0) {
+      badge.textContent = `${failed} FAILED`;
+      badge.className = "status-badge status-danger";
+    } else if (running > 0) {
+      badge.textContent = "ACTIVE";
+      badge.className = "status-badge status-ok";
+    } else {
+      badge.textContent = "OK";
+      badge.className = "status-badge status-ok";
+    }
+  }
+  if (summaryEl) {
+    summaryEl.textContent = `${running} Running, ${failed} Failed`;
+  }
+}
+
+/* =========================================================================
+ * Systemctl Services Monitoring View (#view-services)
+ * ========================================================================= */
+let cachedServicesData = null;
+let servicesFilterState = "all";
+let servicesSearchTerm = "";
+let currentViewingService = null;
+
+async function fetchSystemServices() {
+  const refreshBtn = document.getElementById("refresh-services-btn");
+  if (refreshBtn) refreshBtn.classList.add("loading");
+  try {
+    const resp = await apiFetch("/api/services");
+    if (!resp.ok) {
+      throw new Error(`Failed to fetch services (HTTP ${resp.status})`);
+    }
+    const data = await resp.json();
+    cachedServicesData = data;
+    renderSystemServices(data);
+  } catch (err) {
+    console.error("fetchSystemServices error:", err);
+    showToast({
+      title: "Services Error",
+      message: err instanceof Error ? err.message : String(err),
+      type: "danger",
+    });
+  } finally {
+    if (refreshBtn) refreshBtn.classList.remove("loading");
+  }
+}
+
+function renderSystemServices(data) {
+  if (!data) return;
+
+  const lastUpdatedEl = document.getElementById("services-last-updated");
+  if (lastUpdatedEl) {
+    lastUpdatedEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  const summary = data.summary || {};
+  const totalCount = Number(summary.total) || (Array.isArray(data.services) ? data.services.length : 0);
+  const runningCount = Number(summary.running) || 0;
+  const failedCount = Number(summary.failed) || 0;
+  const inactiveCount = Number(summary.inactive) || 0;
+
+  const totalEl = document.getElementById("services-total-count");
+  if (totalEl) totalEl.textContent = String(totalCount);
+
+  const runningEl = document.getElementById("services-running-count");
+  if (runningEl) runningEl.textContent = String(runningCount);
+
+  const failedEl = document.getElementById("services-failed-count");
+  if (failedEl) failedEl.textContent = String(failedCount);
+
+  const failedBadge = document.getElementById("services-failed-badge");
+  if (failedBadge) {
+    if (failedCount > 0) {
+      failedBadge.className = "status-badge status-danger";
+    } else {
+      failedBadge.className = "status-badge status-ok";
+    }
+  }
+
+  const inactiveEl = document.getElementById("services-inactive-count");
+  if (inactiveEl) inactiveEl.textContent = String(inactiveCount);
+
+  renderServicesSummary(summary);
+
+  const navBadge = document.getElementById("nav-tab-services-badge");
+  if (navBadge) {
+    if (failedCount > 0) {
+      navBadge.textContent = `${failedCount}`;
+      navBadge.className = "nav-tab-badge danger";
+      navBadge.classList.remove("hidden");
+    } else {
+      navBadge.classList.add("hidden");
+    }
+  }
+
+  // Filter & Render Table
+  const tbody = document.getElementById("services-table-body");
+  if (!tbody) return;
+
+  const services = Array.isArray(data.services) ? data.services : [];
+  const term = (servicesSearchTerm || "").toLowerCase().trim();
+  const stateFilter = (servicesFilterState || "all").toLowerCase();
+
+  const filtered = services.filter((s) => {
+    if (stateFilter === "running") {
+      if (s.active_state !== "active" || s.sub_state !== "running") return false;
+    } else if (stateFilter === "failed") {
+      if (s.active_state !== "failed") return false;
+    } else if (stateFilter === "inactive") {
+      if (!["inactive", "dead"].includes(s.active_state)) return false;
+    }
+
+    if (term) {
+      const matchUnit = (s.unit || "").toLowerCase().includes(term);
+      const matchName = (s.name || "").toLowerCase().includes(term);
+      const matchDesc = (s.description || "").toLowerCase().includes(term);
+      if (!matchUnit && !matchName && !matchDesc) return false;
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No matching services found.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((s) => {
+    const isFailed = s.active_state === "failed";
+    const isActive = s.active_state === "active";
+    let stateBadgeClass = "status-badge status-muted";
+    if (isFailed) stateBadgeClass = "status-badge status-danger";
+    else if (isActive) stateBadgeClass = "status-badge status-ok";
+
+    const isRunning = s.sub_state === "running";
+    const safeUnit = escapeHtml(s.unit || "");
+
+    return `
+      <tr>
+        <td class="mono-text font-bold">${safeUnit}</td>
+        <td><span class="${stateBadgeClass}">${escapeHtml(s.active_state || "unknown")}</span></td>
+        <td><span class="kind-badge">${escapeHtml(s.sub_state || "-")}</span></td>
+        <td class="text-secondary" style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(s.description || "-")}</td>
+        <td>
+          <div class="table-actions-cell">
+            <button class="btn-action-sm btn-service-restart" data-service="${safeUnit}" title="Restart Service">Restart</button>
+            ${isRunning
+              ? `<button class="btn-action-sm btn-action-danger btn-service-stop" data-service="${safeUnit}" title="Stop Service">Stop</button>`
+              : `<button class="btn-action-sm btn-action-success btn-service-start" data-service="${safeUnit}" title="Start Service">Start</button>`
+            }
+            <button class="btn-action-sm btn-service-logs" data-service="${safeUnit}" title="Inspect Journal Logs">Logs</button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  tbody.querySelectorAll(".btn-service-restart").forEach((btn) => {
+    btn.addEventListener("click", () => handleServiceAction(btn.getAttribute("data-service"), "restart"));
+  });
+  tbody.querySelectorAll(".btn-service-stop").forEach((btn) => {
+    btn.addEventListener("click", () => handleServiceAction(btn.getAttribute("data-service"), "stop"));
+  });
+  tbody.querySelectorAll(".btn-service-start").forEach((btn) => {
+    btn.addEventListener("click", () => handleServiceAction(btn.getAttribute("data-service"), "start"));
+  });
+  tbody.querySelectorAll(".btn-service-logs").forEach((btn) => {
+    btn.addEventListener("click", () => openServiceLogsModal(btn.getAttribute("data-service")));
+  });
+}
+
+async function handleServiceAction(serviceName, action) {
+  if (!serviceName || !action) return;
+  try {
+    const resp = await apiFetch("/api/services/" + encodeURIComponent(serviceName) + "/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const result = await resp.json();
+    if (!resp.ok) {
+      throw new Error(result.detail || `Action failed with HTTP ${resp.status}`);
+    }
+    showToast({
+      title: "Service Action Executed",
+      message: `${serviceName}: ${action} completed successfully`,
+      type: "success",
+    });
+    fetchSystemServices();
+  } catch (err) {
+    showToast({
+      title: "Action Failed",
+      message: err instanceof Error ? err.message : String(err),
+      type: "danger",
+    });
+  }
+}
+
+async function openServiceLogsModal(serviceName) {
+  currentViewingService = serviceName;
+  const modal = document.getElementById("service-logs-modal");
+  const title = document.getElementById("service-logs-title");
+  const content = document.getElementById("service-logs-content");
+  const feedback = document.getElementById("service-logs-feedback");
+
+  if (title) title.textContent = `Journal Logs: ${serviceName}`;
+  if (content) content.textContent = "Loading journald execution logs...";
+  if (feedback) feedback.classList.add("hidden");
+  if (modal) modal.classList.remove("hidden");
+
+  await fetchServiceLogs(serviceName);
+}
+
+function closeServiceLogsModal() {
+  const modal = document.getElementById("service-logs-modal");
+  if (modal) modal.classList.add("hidden");
+  currentViewingService = null;
+}
+
+async function fetchServiceLogs(serviceName) {
+  if (!serviceName) return;
+  const content = document.getElementById("service-logs-content");
+  const feedback = document.getElementById("service-logs-feedback");
+  try {
+    const resp = await apiFetch("/api/services/" + encodeURIComponent(serviceName) + "/logs?lines=100");
+    const data = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data.detail || `HTTP ${resp.status}`);
+    }
+    const lines = Array.isArray(data.logs) ? data.logs : [];
+    if (content) {
+      content.textContent = lines.length > 0 ? lines.join("\n") : "No recent journal entries recorded for this service unit.";
+      content.scrollTop = content.scrollHeight;
+    }
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = `Error reading journal: ${err instanceof Error ? err.message : String(err)}`;
+      feedback.classList.remove("hidden");
+    }
+  }
+}
+
+/* =========================================================================
+ * Process Explorer View (#view-processes)
+ * ========================================================================= */
+let cachedProcessesData = null;
+let processesSort = "cpu";
+let processesLimit = 50;
+let processesSearchTerm = "";
+let processToKill = null;
+
+async function fetchProcesses() {
+  const refreshBtn = document.getElementById("refresh-processes-btn");
+  if (refreshBtn) refreshBtn.classList.add("loading");
+  try {
+    const query = "?sort=" + encodeURIComponent(processesSort) + "&limit=" + encodeURIComponent(processesLimit) + (processesSearchTerm ? "&q=" + encodeURIComponent(processesSearchTerm) : "");
+    const resp = await apiFetch("/api/processes" + query);
+    if (!resp.ok) {
+      throw new Error(`Failed to fetch processes (HTTP ${resp.status})`);
+    }
+    const data = await resp.json();
+    cachedProcessesData = data;
+    renderProcesses(data);
+  } catch (err) {
+    console.error("fetchProcesses error:", err);
+    showToast({
+      title: "Process Explorer Error",
+      message: err instanceof Error ? err.message : String(err),
+      type: "danger",
+    });
+  } finally {
+    if (refreshBtn) refreshBtn.classList.remove("loading");
+  }
+}
+
+function renderProcesses(data) {
+  if (!data) return;
+
+  const lastUpdatedEl = document.getElementById("processes-last-updated");
+  if (lastUpdatedEl) {
+    lastUpdatedEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  const summary = data.summary || {};
+  const totalProcesses = Number(summary.total_processes) || 0;
+  const runningCount = Number(summary.running_count) || 0;
+  const sleepingCount = Number(summary.sleeping_count) || 0;
+
+  const totalEl = document.getElementById("proc-total-count");
+  if (totalEl) totalEl.textContent = String(totalProcesses);
+
+  const runningEl = document.getElementById("proc-running-count");
+  if (runningEl) runningEl.textContent = String(runningCount);
+
+  const sleepingEl = document.getElementById("proc-sleeping-count");
+  if (sleepingEl) sleepingEl.textContent = String(sleepingCount);
+
+  const topCpuEl = document.getElementById("proc-top-cpu");
+  if (topCpuEl) topCpuEl.textContent = summary.top_cpu_process || "--";
+
+  const topMemEl = document.getElementById("proc-top-memory");
+  if (topMemEl) topMemEl.textContent = summary.top_memory_process || "--";
+
+  const tbody = document.getElementById("processes-table-body");
+  if (!tbody) return;
+
+  const procs = Array.isArray(data.processes) ? data.processes : [];
+  if (procs.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No matching processes found.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = procs.map((p) => {
+    const cpuPct = Math.max(0, Math.min(100, Number(p.cpu_percent) || 0));
+    const memPct = Math.max(0, Math.min(100, Number(p.memory_percent) || 0));
+
+    let cpuBarClass = "proc-mini-bar-fill";
+    if (cpuPct >= 75) cpuBarClass += " danger";
+    else if (cpuPct >= 40) cpuBarClass += " warn";
+
+    let memBarClass = "proc-mini-bar-fill";
+    if (memPct >= 75) memBarClass += " danger";
+    else if (memPct >= 40) memBarClass += " warn";
+
+    const isRunning = (p.status || "").toLowerCase() === "running";
+    const statusBadgeClass = isRunning ? "status-badge status-ok" : "status-badge status-muted";
+
+    return `
+      <tr>
+        <td class="mono-text font-bold">${p.pid}</td>
+        <td class="font-bold">${escapeHtml(p.name || "unknown")}</td>
+        <td class="text-secondary mono-text">${escapeHtml(p.username || "-")}</td>
+        <td class="proc-metric-cell">
+          <div class="proc-metric-row">
+            <span class="mono-text">${cpuPct.toFixed(1)}%</span>
+          </div>
+          <div class="proc-mini-bar">
+            <div class="${cpuBarClass}" style="width: ${cpuPct.toFixed(1)}%"></div>
+          </div>
+        </td>
+        <td class="proc-metric-cell">
+          <div class="proc-metric-row">
+            <span class="mono-text">${memPct.toFixed(1)}%</span>
+          </div>
+          <div class="proc-mini-bar">
+            <div class="${memBarClass}" style="width: ${memPct.toFixed(1)}%"></div>
+          </div>
+        </td>
+        <td><span class="${statusBadgeClass}">${escapeHtml(p.status || "-")}</span></td>
+        <td class="mono-text">${p.num_threads || 1}</td>
+        <td>
+          <div class="table-actions-cell">
+            <button class="btn-action-sm btn-action-danger btn-kill-proc" data-pid="${p.pid}" data-name="${escapeHtml(p.name || "")}" title="Terminate Process">Kill</button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  tbody.querySelectorAll(".btn-kill-proc").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const pid = parseInt(btn.getAttribute("data-pid") || "0", 10);
+      const name = btn.getAttribute("data-name") || "";
+      openProcessKillModal({ pid, name });
+    });
+  });
+}
+
+function openProcessKillModal(proc) {
+  processToKill = proc;
+  const modal = document.getElementById("process-kill-modal");
+  const pidEl = document.getElementById("kill-process-pid");
+  const nameEl = document.getElementById("kill-process-name");
+  const feedback = document.getElementById("kill-process-feedback");
+  const sigSelect = document.getElementById("kill-signal-select");
+
+  if (pidEl) pidEl.textContent = String(proc.pid);
+  if (nameEl) nameEl.textContent = proc.name || "--";
+  if (sigSelect) sigSelect.value = "SIGTERM";
+  if (feedback) feedback.classList.add("hidden");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeProcessKillModal() {
+  const modal = document.getElementById("process-kill-modal");
+  if (modal) modal.classList.add("hidden");
+  processToKill = null;
+}
+
+async function handleKillProcess() {
+  if (!processToKill) return;
+  const sigSelect = document.getElementById("kill-signal-select");
+  const signal = sigSelect ? sigSelect.value : "SIGTERM";
+  const feedback = document.getElementById("kill-process-feedback");
+
+  try {
+    const resp = await apiFetch("/api/processes/" + processToKill.pid + "/kill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ signal }),
+    });
+    const result = await resp.json();
+    if (!resp.ok) {
+      throw new Error(result.detail || `HTTP ${resp.status}`);
+    }
+    showToast({
+      title: "Process Terminated",
+      message: `PID ${processToKill.pid} (${processToKill.name}) sent ${signal}`,
+      type: "warning",
+    });
+    closeProcessKillModal();
+    fetchProcesses();
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = err instanceof Error ? err.message : String(err);
+      feedback.classList.remove("hidden");
+    }
+  }
+}
+
+/* =========================================================================
+ * Linux Users & Groups View (#view-users)
+ * ========================================================================= */
+let currentUsersSubtab = "users";
+let cachedUsersData = null;
+let cachedGroupsData = null;
+let usersRegularOnly = true;
+let usersSearchTerm = "";
+let groupsSearchTerm = "";
+let editingUser = null;
+let managingGroup = null;
+
+function switchUsersSubtab(subtab) {
+  currentUsersSubtab = subtab;
+  const isUsers = subtab === "users";
+  const usersBtn = document.getElementById("subtab-users-btn");
+  const groupsBtn = document.getElementById("subtab-groups-btn");
+  const usersPanel = document.getElementById("users-subtab-panel");
+  const groupsPanel = document.getElementById("groups-subtab-panel");
+
+  if (isUsers) {
+    usersBtn?.classList.add("active");
+    usersBtn?.setAttribute("aria-selected", "true");
+    groupsBtn?.classList.remove("active");
+    groupsBtn?.setAttribute("aria-selected", "false");
+    usersPanel?.classList.remove("hidden");
+    groupsPanel?.classList.add("hidden");
+    fetchSystemUsers();
+  } else {
+    groupsBtn?.classList.add("active");
+    groupsBtn?.setAttribute("aria-selected", "true");
+    usersBtn?.classList.remove("active");
+    usersBtn?.setAttribute("aria-selected", "false");
+    groupsPanel?.classList.remove("hidden");
+    usersPanel?.classList.add("hidden");
+    fetchSystemGroups();
+  }
+}
+
+async function fetchSystemUsers() {
+  const refreshBtn = document.getElementById("refresh-users-btn");
+  if (refreshBtn) refreshBtn.classList.add("loading");
+  try {
+    const resp = await apiFetch("/api/system/users");
+    if (!resp.ok) {
+      throw new Error(`Failed to fetch users (HTTP ${resp.status})`);
+    }
+    const data = await resp.json();
+    cachedUsersData = data;
+    renderSystemUsers(data);
+  } catch (err) {
+    console.error("fetchSystemUsers error:", err);
+    showToast({
+      title: "Users Error",
+      message: err instanceof Error ? err.message : String(err),
+      type: "danger",
+    });
+  } finally {
+    if (refreshBtn) refreshBtn.classList.remove("loading");
+  }
+}
+
+function renderSystemUsers(data) {
+  if (!data) return;
+
+  const lastUpdatedEl = document.getElementById("users-last-updated");
+  if (lastUpdatedEl) {
+    lastUpdatedEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  const summary = data.summary || {};
+  const totalCount = Number(summary.total_users) || 0;
+  const regularCount = Number(summary.regular_users_count) || 0;
+  const systemCount = Number(summary.system_users_count) || 0;
+
+  const totalEl = document.getElementById("users-total-count");
+  if (totalEl) totalEl.textContent = String(totalCount);
+
+  const regEl = document.getElementById("users-regular-count");
+  if (regEl) regEl.textContent = String(regularCount);
+
+  const sysEl = document.getElementById("users-system-count");
+  if (sysEl) sysEl.textContent = String(systemCount);
+
+  const badgeEl = document.getElementById("subtab-users-badge");
+  if (badgeEl) badgeEl.textContent = String(regularCount);
+
+  const tbody = document.getElementById("users-table-body");
+  if (!tbody) return;
+
+  const users = Array.isArray(data.users) ? data.users : [];
+  const term = (usersSearchTerm || "").toLowerCase().trim();
+
+  const filtered = users.filter((u) => {
+    if (usersRegularOnly && u.is_system) return false;
+    if (term) {
+      const matchUser = (u.username || "").toLowerCase().includes(term);
+      const matchName = (u.name || "").toLowerCase().includes(term);
+      const matchShell = (u.shell || "").toLowerCase().includes(term);
+      const matchHome = (u.home || "").toLowerCase().includes(term);
+      if (!matchUser && !matchName && !matchShell && !matchHome) return false;
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No matching users found.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((u) => {
+    const isSys = Boolean(u.is_system);
+    const typeBadge = isSys
+      ? `<span class="kind-badge">System</span>`
+      : `<span class="status-badge status-ok">Human</span>`;
+
+    const groups = Array.isArray(u.groups) ? u.groups : [];
+    const groupChips = groups.length > 0
+      ? groups.map((g) => `<span class="chip-tag">${escapeHtml(g)}</span>`).join("")
+      : `<span class="text-muted">-</span>`;
+
+    const safeUser = escapeHtml(u.username || "");
+
+    return `
+      <tr>
+        <td class="mono-text font-bold">${safeUser}</td>
+        <td class="mono-text text-secondary">${u.uid} / ${u.gid}</td>
+        <td>${escapeHtml(u.name || "-")}</td>
+        <td class="mono-text text-secondary">${escapeHtml(u.home || "-")}</td>
+        <td class="mono-text">${escapeHtml(u.shell || "-")}</td>
+        <td><div class="chips-wrap">${groupChips}</div></td>
+        <td>${typeBadge}</td>
+        <td>
+          <div class="table-actions-cell">
+            <button class="btn-action-sm btn-edit-user" data-user='${JSON.stringify({ username: u.username, shell: u.shell, groups: u.groups })}'>Edit</button>
+            ${isSys ? "" : `<button class="btn-action-sm btn-action-danger btn-delete-user" data-username="${safeUser}">Delete</button>`}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  tbody.querySelectorAll(".btn-edit-user").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      try {
+        const udata = JSON.parse(btn.getAttribute("data-user") || "{}");
+        openEditUserModal(udata);
+      } catch (e) {}
+    });
+  });
+
+  tbody.querySelectorAll(".btn-delete-user").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const username = btn.getAttribute("data-username");
+      if (username) handleDeleteUser(username);
+    });
+  });
+}
+
+async function fetchSystemGroups() {
+  const refreshBtn = document.getElementById("refresh-users-btn");
+  if (refreshBtn) refreshBtn.classList.add("loading");
+  try {
+    const resp = await apiFetch("/api/system/groups");
+    if (!resp.ok) {
+      throw new Error(`Failed to fetch groups (HTTP ${resp.status})`);
+    }
+    const data = await resp.json();
+    cachedGroupsData = data;
+    renderSystemGroups(data);
+  } catch (err) {
+    console.error("fetchSystemGroups error:", err);
+    showToast({
+      title: "Groups Error",
+      message: err instanceof Error ? err.message : String(err),
+      type: "danger",
+    });
+  } finally {
+    if (refreshBtn) refreshBtn.classList.remove("loading");
+  }
+}
+
+function renderSystemGroups(data) {
+  if (!data) return;
+
+  const summary = data.summary || {};
+  const totalCount = Number(summary.total_groups) || 0;
+  const regularCount = Number(summary.regular_groups_count) || 0;
+
+  const totalEl = document.getElementById("groups-total-count");
+  if (totalEl) totalEl.textContent = String(totalCount);
+
+  const regEl = document.getElementById("groups-regular-count");
+  if (regEl) regEl.textContent = String(regularCount);
+
+  const badgeEl = document.getElementById("subtab-groups-badge");
+  if (badgeEl) badgeEl.textContent = String(regularCount);
+
+  const tbody = document.getElementById("groups-table-body");
+  if (!tbody) return;
+
+  const groups = Array.isArray(data.groups) ? data.groups : [];
+  const term = (groupsSearchTerm || "").toLowerCase().trim();
+
+  const filtered = groups.filter((g) => {
+    if (term) {
+      const matchName = (g.name || "").toLowerCase().includes(term);
+      const matchMember = Array.isArray(g.members) && g.members.some((m) => m.toLowerCase().includes(term));
+      if (!matchName && !matchMember) return false;
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No matching groups found.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((g) => {
+    const members = Array.isArray(g.members) ? g.members : [];
+    const memberChips = members.length > 0
+      ? members.map((m) => `<span class="chip-tag chip-primary">${escapeHtml(m)}</span>`).join("")
+      : `<span class="text-muted">No members</span>`;
+
+    const safeGroup = escapeHtml(g.name || "");
+    const isSys = Boolean(g.is_system);
+
+    return `
+      <tr>
+        <td class="mono-text font-bold">${safeGroup}</td>
+        <td class="mono-text text-secondary">${g.gid}</td>
+        <td><div class="chips-wrap">${memberChips}</div></td>
+        <td>
+          <div class="table-actions-cell">
+            <button class="btn-action-sm btn-manage-members" data-group="${safeGroup}">Members</button>
+            ${isSys ? "" : `<button class="btn-action-sm btn-action-danger btn-delete-group" data-group="${safeGroup}">Delete</button>`}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  tbody.querySelectorAll(".btn-manage-members").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const gname = btn.getAttribute("data-group");
+      if (gname) openGroupMemberModal(gname);
+    });
+  });
+
+  tbody.querySelectorAll(".btn-delete-group").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const gname = btn.getAttribute("data-group");
+      if (gname) handleDeleteGroup(gname);
+    });
+  });
+}
+
+function openAddUserModal() {
+  const modal = document.getElementById("modal-add-user");
+  const form = document.getElementById("form-add-user");
+  const feedback = document.getElementById("add-user-feedback");
+  if (form) form.reset();
+  const shellInput = document.getElementById("input-add-user-shell");
+  if (shellInput) shellInput.value = "/bin/bash";
+  const homeCheck = document.getElementById("input-add-user-home");
+  if (homeCheck) homeCheck.checked = true;
+  if (feedback) feedback.classList.add("hidden");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeAddUserModal() {
+  const modal = document.getElementById("modal-add-user");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function handleAddUserSubmit(e) {
+  e.preventDefault();
+  const usernameInput = document.getElementById("input-add-user-name");
+  const shellInput = document.getElementById("input-add-user-shell");
+  const groupsInput = document.getElementById("input-add-user-groups");
+  const homeCheck = document.getElementById("input-add-user-home");
+  const feedback = document.getElementById("add-user-feedback");
+
+  const username = (usernameInput?.value || "").trim();
+  const shell = (shellInput?.value || "").trim() || "/bin/bash";
+  const rawGroups = (groupsInput?.value || "").trim();
+  const groups = rawGroups ? rawGroups.split(",").map((s) => s.trim()).filter(Boolean) : [];
+  const create_home = homeCheck ? homeCheck.checked : true;
+
+  try {
+    const resp = await apiFetch("/api/system/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, shell, groups, create_home }),
+    });
+    const result = await resp.json();
+    if (!resp.ok) {
+      throw new Error(result.detail || `HTTP ${resp.status}`);
+    }
+    showToast({
+      title: "User Created",
+      message: `User '${username}' created successfully`,
+      type: "success",
+    });
+    closeAddUserModal();
+    fetchSystemUsers();
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = err instanceof Error ? err.message : String(err);
+      feedback.classList.remove("hidden");
+    }
+  }
+}
+
+function openEditUserModal(udata) {
+  editingUser = udata;
+  const modal = document.getElementById("modal-edit-user");
+  const nameDisp = document.getElementById("edit-user-name-display");
+  const shellInput = document.getElementById("input-edit-user-shell");
+  const groupsInput = document.getElementById("input-edit-user-groups");
+  const lockedCheck = document.getElementById("input-edit-user-locked");
+  const feedback = document.getElementById("edit-user-feedback");
+
+  if (nameDisp) nameDisp.textContent = udata.username;
+  if (shellInput) shellInput.value = udata.shell || "/bin/bash";
+  if (groupsInput) groupsInput.value = Array.isArray(udata.groups) ? udata.groups.join(",") : "";
+  if (lockedCheck) lockedCheck.checked = false;
+  if (feedback) feedback.classList.add("hidden");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeEditUserModal() {
+  const modal = document.getElementById("modal-edit-user");
+  if (modal) modal.classList.add("hidden");
+  editingUser = null;
+}
+
+async function handleEditUserSubmit(e) {
+  e.preventDefault();
+  if (!editingUser) return;
+  const shellInput = document.getElementById("input-edit-user-shell");
+  const groupsInput = document.getElementById("input-edit-user-groups");
+  const lockedCheck = document.getElementById("input-edit-user-locked");
+  const feedback = document.getElementById("edit-user-feedback");
+
+  const shell = (shellInput?.value || "").trim();
+  const rawGroups = (groupsInput?.value || "").trim();
+  const groups = rawGroups ? rawGroups.split(",").map((s) => s.trim()).filter(Boolean) : [];
+  const locked = lockedCheck ? lockedCheck.checked : false;
+
+  try {
+    const resp = await apiFetch("/api/system/users/" + encodeURIComponent(editingUser.username), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shell, groups, locked }),
+    });
+    const result = await resp.json();
+    if (!resp.ok) {
+      throw new Error(result.detail || `HTTP ${resp.status}`);
+    }
+    showToast({
+      title: "User Updated",
+      message: `User '${editingUser.username}' updated successfully`,
+      type: "success",
+    });
+    closeEditUserModal();
+    fetchSystemUsers();
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = err instanceof Error ? err.message : String(err);
+      feedback.classList.remove("hidden");
+    }
+  }
+}
+
+async function handleDeleteUser(username) {
+  if (!confirm(`Are you sure you want to delete user '${username}'?`)) return;
+  try {
+    const resp = await apiFetch("/api/system/users/" + encodeURIComponent(username), {
+      method: "DELETE",
+    });
+    const result = await resp.json();
+    if (!resp.ok) {
+      throw new Error(result.detail || `HTTP ${resp.status}`);
+    }
+    showToast({
+      title: "User Deleted",
+      message: `User '${username}' deleted successfully`,
+      type: "warning",
+    });
+    fetchSystemUsers();
+  } catch (err) {
+    showToast({
+      title: "Delete Failed",
+      message: err instanceof Error ? err.message : String(err),
+      type: "danger",
+    });
+  }
+}
+
+function openAddGroupModal() {
+  const modal = document.getElementById("modal-add-group");
+  const form = document.getElementById("form-add-group");
+  const feedback = document.getElementById("add-group-feedback");
+  if (form) form.reset();
+  if (feedback) feedback.classList.add("hidden");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeAddGroupModal() {
+  const modal = document.getElementById("modal-add-group");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function handleAddGroupSubmit(e) {
+  e.preventDefault();
+  const nameInput = document.getElementById("input-add-group-name");
+  const gidInput = document.getElementById("input-add-group-gid");
+  const feedback = document.getElementById("add-group-feedback");
+
+  const name = (nameInput?.value || "").trim();
+  const gidVal = gidInput?.value ? parseInt(gidInput.value, 10) : null;
+
+  try {
+    const payload = { name };
+    if (gidVal !== null && !isNaN(gidVal)) payload.gid = gidVal;
+    const resp = await apiFetch("/api/system/groups", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = await resp.json();
+    if (!resp.ok) {
+      throw new Error(result.detail || `HTTP ${resp.status}`);
+    }
+    showToast({
+      title: "Group Created",
+      message: `Group '${name}' created successfully`,
+      type: "success",
+    });
+    closeAddGroupModal();
+    fetchSystemGroups();
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = err instanceof Error ? err.message : String(err);
+      feedback.classList.remove("hidden");
+    }
+  }
+}
+
+function openGroupMemberModal(groupname) {
+  managingGroup = { name: groupname };
+  const modal = document.getElementById("modal-group-member");
+  const form = document.getElementById("form-group-member");
+  const nameDisp = document.getElementById("member-group-name-display");
+  const feedback = document.getElementById("group-member-feedback");
+  if (form) form.reset();
+  if (nameDisp) nameDisp.textContent = groupname;
+  if (feedback) feedback.classList.add("hidden");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeGroupMemberModal() {
+  const modal = document.getElementById("modal-group-member");
+  if (modal) modal.classList.add("hidden");
+  managingGroup = null;
+}
+
+async function handleGroupMemberSubmit(e) {
+  e.preventDefault();
+  if (!managingGroup) return;
+  const actionSelect = document.getElementById("input-member-action");
+  const usernameInput = document.getElementById("input-member-username");
+  const feedback = document.getElementById("group-member-feedback");
+
+  const action = actionSelect?.value || "add";
+  const username = (usernameInput?.value || "").trim();
+
+  try {
+    const resp = await apiFetch("/api/system/groups/" + encodeURIComponent(managingGroup.name) + "/members", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, username }),
+    });
+    const result = await resp.json();
+    if (!resp.ok) {
+      throw new Error(result.detail || `HTTP ${resp.status}`);
+    }
+    showToast({
+      title: "Membership Updated",
+      message: `User '${username}' ${action}ed to group '${managingGroup.name}'`,
+      type: "success",
+    });
+    closeGroupMemberModal();
+    fetchSystemGroups();
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = err instanceof Error ? err.message : String(err);
+      feedback.classList.remove("hidden");
+    }
+  }
+}
+
+async function handleDeleteGroup(groupname) {
+  if (!confirm(`Are you sure you want to delete group '${groupname}'?`)) return;
+  try {
+    const resp = await apiFetch("/api/system/groups/" + encodeURIComponent(groupname), {
+      method: "DELETE",
+    });
+    const result = await resp.json();
+    if (!resp.ok) {
+      throw new Error(result.detail || `HTTP ${resp.status}`);
+    }
+    showToast({
+      title: "Group Deleted",
+      message: `Group '${groupname}' deleted successfully`,
+      type: "warning",
+    });
+    fetchSystemGroups();
+  } catch (err) {
+    showToast({
+      title: "Delete Failed",
+      message: err instanceof Error ? err.message : String(err),
+      type: "danger",
+    });
+  }
+}
+
+/* =========================================================================
+ * Security & Audit Logs View (#view-audit)
+ * ========================================================================= */
+let cachedAuditData = null;
+let auditSeverityFilter = "";
+let auditSearchTerm = "";
+let auditLimit = 50;
+let auditOffset = 0;
+
+async function fetchAuditLogs() {
+  const refreshBtn = document.getElementById("refresh-audit-btn");
+  if (refreshBtn) refreshBtn.classList.add("loading");
+  try {
+    const query = "?limit=" + encodeURIComponent(auditLimit) + "&offset=" + encodeURIComponent(auditOffset) + (auditSeverityFilter ? "&severity=" + encodeURIComponent(auditSeverityFilter) : "") + (auditSearchTerm ? "&q=" + encodeURIComponent(auditSearchTerm) : "");
+    const resp = await apiFetch("/api/audit/logs" + query);
+    if (!resp.ok) {
+      throw new Error(`Failed to fetch audit logs (HTTP ${resp.status})`);
+    }
+    const data = await resp.json();
+    cachedAuditData = data;
+    renderAuditLogs(data);
+  } catch (err) {
+    console.error("fetchAuditLogs error:", err);
+    showToast({
+      title: "Audit Logs Error",
+      message: err instanceof Error ? err.message : String(err),
+      type: "danger",
+    });
+  } finally {
+    if (refreshBtn) refreshBtn.classList.remove("loading");
+  }
+}
+
+function renderAuditLogs(data) {
+  if (!data) return;
+
+  const lastUpdatedEl = document.getElementById("audit-last-updated");
+  if (lastUpdatedEl) {
+    lastUpdatedEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  const logs = Array.isArray(data.logs) ? data.logs : [];
+  const total = Number(data.total) || logs.length;
+
+  const totalEl = document.getElementById("audit-total-count");
+  if (totalEl) totalEl.textContent = String(total);
+
+  const securityCount = logs.filter((l) => ["warning", "security"].includes(String(l.severity || "").toLowerCase())).length;
+  const secEl = document.getElementById("audit-security-count");
+  if (secEl) {
+    secEl.textContent = `${securityCount} Flagged`;
+    if (securityCount > 0) {
+      secEl.className = "status-badge status-warning";
+    } else {
+      secEl.className = "status-badge status-ok";
+    }
+  }
+
+  const tbody = document.getElementById("audit-table-body");
+  if (!tbody) return;
+
+  if (logs.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No security audit logs recorded.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = logs.map((log) => {
+    const sev = String(log.severity || "info").toLowerCase();
+    let badgeClass = "badge-audit-info";
+    if (sev === "warning") badgeClass = "badge-audit-warning";
+    else if (sev === "security") badgeClass = "badge-audit-security";
+
+    const hasMeta = Boolean(log.metadata && Object.keys(log.metadata).length > 0);
+    const metaJson = hasMeta ? JSON.stringify(log.metadata, null, 2) : "";
+
+    return `
+      <tr>
+        <td class="mono-text text-secondary">${formatTimestampLocal(log.timestamp)}</td>
+        <td><span class="status-badge ${badgeClass}">${sev.toUpperCase()}</span></td>
+        <td><span class="kind-badge font-bold">${escapeHtml(log.event_type || "-")}</span></td>
+        <td class="mono-text font-bold">${escapeHtml(log.actor || "system")}</td>
+        <td class="mono-text text-secondary">${escapeHtml(log.ip_address || "--")}</td>
+        <td>
+          <div style="font-size: 0.82rem;">${escapeHtml(log.description || "-")}</div>
+          ${hasMeta ? `<pre class="audit-meta-pre hidden" id="meta-log-${log.id}">${escapeHtml(metaJson)}</pre>` : ""}
+        </td>
+        <td>
+          <div class="table-actions-cell">
+            ${hasMeta
+              ? `<button class="btn-action-sm btn-toggle-meta" data-id="${log.id}">Details</button>`
+              : `<span class="text-muted" style="font-size: 0.75rem;">-</span>`
+            }
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  tbody.querySelectorAll(".btn-toggle-meta").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const lid = btn.getAttribute("data-id");
+      const pre = document.getElementById(`meta-log-${lid}`);
+      if (pre) pre.classList.toggle("hidden");
+    });
+  });
 }
 
 /**
@@ -5046,8 +6241,24 @@ function initDashboard() {
     ?.addEventListener("click", () => switchViewTab("containers", true));
 
   document
+    .getElementById("nav-tab-services")
+    ?.addEventListener("click", () => switchViewTab("services", true));
+
+  document
+    .getElementById("nav-tab-processes")
+    ?.addEventListener("click", () => switchViewTab("processes", true));
+
+  document
+    .getElementById("nav-tab-users")
+    ?.addEventListener("click", () => switchViewTab("users", true));
+
+  document
     .getElementById("nav-tab-notifications")
     ?.addEventListener("click", () => switchViewTab("notifications", true));
+
+  document
+    .getElementById("nav-tab-audit")
+    ?.addEventListener("click", () => switchViewTab("audit", true));
 
   // Overview Quick Link Actions
   document
@@ -5057,6 +6268,10 @@ function initDashboard() {
   document
     .getElementById("btn-goto-containers")
     ?.addEventListener("click", () => switchViewTab("containers", true));
+
+  document
+    .getElementById("btn-goto-services")
+    ?.addEventListener("click", () => switchViewTab("services", true));
 
   document
     .getElementById("btn-goto-notifications")
@@ -5427,6 +6642,200 @@ function initDashboard() {
   document
     .getElementById("refresh-notifications-btn")
     ?.addEventListener("click", () => requestModuleRefresh("notifications"));
+
+  // Systemctl Services Listeners
+  document
+    .getElementById("refresh-services-btn")
+    ?.addEventListener("click", fetchSystemServices);
+
+  document
+    .getElementById("services-search-input")
+    ?.addEventListener("input", (e) => {
+      servicesSearchTerm = e.target.value;
+      if (cachedServicesData) renderSystemServices(cachedServicesData);
+    });
+
+  document
+    .getElementById("services-state-filter")
+    ?.addEventListener("change", (e) => {
+      servicesFilterState = e.target.value;
+      if (cachedServicesData) renderSystemServices(cachedServicesData);
+    });
+
+  document
+    .getElementById("btn-close-service-logs")
+    ?.addEventListener("click", closeServiceLogsModal);
+
+  document
+    .getElementById("btn-dismiss-service-logs")
+    ?.addEventListener("click", closeServiceLogsModal);
+
+  document
+    .getElementById("btn-refresh-service-logs")
+    ?.addEventListener("click", () => {
+      if (currentViewingService) fetchServiceLogs(currentViewingService);
+    });
+
+  const serviceLogsModal = document.getElementById("service-logs-modal");
+  serviceLogsModal?.addEventListener("click", (e) => {
+    if (e.target === serviceLogsModal) closeServiceLogsModal();
+  });
+
+  // Process Explorer Listeners
+  document
+    .getElementById("refresh-processes-btn")
+    ?.addEventListener("click", fetchProcesses);
+
+  let procSearchDebounce = null;
+  document
+    .getElementById("processes-search-input")
+    ?.addEventListener("input", (e) => {
+      processesSearchTerm = e.target.value;
+      clearTimeout(procSearchDebounce);
+      procSearchDebounce = setTimeout(() => fetchProcesses(), 250);
+    });
+
+  document
+    .getElementById("processes-sort-select")
+    ?.addEventListener("change", (e) => {
+      processesSort = e.target.value;
+      fetchProcesses();
+    });
+
+  document
+    .getElementById("processes-limit-select")
+    ?.addEventListener("change", (e) => {
+      processesLimit = parseInt(e.target.value, 10) || 50;
+      fetchProcesses();
+    });
+
+  document
+    .getElementById("btn-close-kill-modal")
+    ?.addEventListener("click", closeProcessKillModal);
+
+  document
+    .getElementById("btn-cancel-kill-process")
+    ?.addEventListener("click", closeProcessKillModal);
+
+  document
+    .getElementById("btn-confirm-kill-process")
+    ?.addEventListener("click", handleKillProcess);
+
+  const processKillModal = document.getElementById("process-kill-modal");
+  processKillModal?.addEventListener("click", (e) => {
+    if (e.target === processKillModal) closeProcessKillModal();
+  });
+
+  // Users & Groups Listeners
+  document
+    .getElementById("refresh-users-btn")
+    ?.addEventListener("click", () => switchUsersSubtab(currentUsersSubtab));
+
+  document
+    .getElementById("subtab-users-btn")
+    ?.addEventListener("click", () => switchUsersSubtab("users"));
+
+  document
+    .getElementById("subtab-groups-btn")
+    ?.addEventListener("click", () => switchUsersSubtab("groups"));
+
+  document
+    .getElementById("users-regular-only-toggle")
+    ?.addEventListener("change", (e) => {
+      usersRegularOnly = Boolean(e.target.checked);
+      if (cachedUsersData) renderSystemUsers(cachedUsersData);
+    });
+
+  document
+    .getElementById("users-search-input")
+    ?.addEventListener("input", (e) => {
+      usersSearchTerm = e.target.value;
+      if (cachedUsersData) renderSystemUsers(cachedUsersData);
+    });
+
+  document
+    .getElementById("groups-search-input")
+    ?.addEventListener("input", (e) => {
+      groupsSearchTerm = e.target.value;
+      if (cachedGroupsData) renderSystemGroups(cachedGroupsData);
+    });
+
+  document
+    .getElementById("btn-open-add-user")
+    ?.addEventListener("click", openAddUserModal);
+
+  document
+    .getElementById("btn-close-add-user")
+    ?.addEventListener("click", closeAddUserModal);
+
+  document
+    .getElementById("btn-cancel-add-user")
+    ?.addEventListener("click", closeAddUserModal);
+
+  document
+    .getElementById("form-add-user")
+    ?.addEventListener("submit", handleAddUserSubmit);
+
+  document
+    .getElementById("btn-close-edit-user")
+    ?.addEventListener("click", closeEditUserModal);
+
+  document
+    .getElementById("btn-cancel-edit-user")
+    ?.addEventListener("click", closeEditUserModal);
+
+  document
+    .getElementById("form-edit-user")
+    ?.addEventListener("submit", handleEditUserSubmit);
+
+  document
+    .getElementById("btn-open-add-group")
+    ?.addEventListener("click", openAddGroupModal);
+
+  document
+    .getElementById("btn-close-add-group")
+    ?.addEventListener("click", closeAddGroupModal);
+
+  document
+    .getElementById("btn-cancel-add-group")
+    ?.addEventListener("click", closeAddGroupModal);
+
+  document
+    .getElementById("form-add-group")
+    ?.addEventListener("submit", handleAddGroupSubmit);
+
+  document
+    .getElementById("btn-close-group-member")
+    ?.addEventListener("click", closeGroupMemberModal);
+
+  document
+    .getElementById("btn-cancel-group-member")
+    ?.addEventListener("click", closeGroupMemberModal);
+
+  document
+    .getElementById("form-group-member")
+    ?.addEventListener("submit", handleGroupMemberSubmit);
+
+  // Security & Audit Logs Listeners
+  document
+    .getElementById("refresh-audit-btn")
+    ?.addEventListener("click", fetchAuditLogs);
+
+  let auditSearchDebounce = null;
+  document
+    .getElementById("audit-search-input")
+    ?.addEventListener("input", (e) => {
+      auditSearchTerm = e.target.value;
+      clearTimeout(auditSearchDebounce);
+      auditSearchDebounce = setTimeout(() => fetchAuditLogs(), 250);
+    });
+
+  document
+    .getElementById("audit-severity-filter")
+    ?.addEventListener("change", (e) => {
+      auditSeverityFilter = e.target.value;
+      fetchAuditLogs();
+    });
 
   document
     .getElementById("auth-setup-form")
