@@ -2493,20 +2493,28 @@ let cachedNotificationCenterConfig = null;
 function showNotificationFeedback(message, isSuccess = true) {
   const notifFeedback = document.getElementById("notif-feedback");
   const discordFeedback = document.getElementById("discord-feedback");
-  const testFeedback = document.getElementById("test-notification-feedback");
-  const targets = [notifFeedback, discordFeedback, testFeedback].filter(Boolean);
+  const primary = notifFeedback || discordFeedback;
+  if (!primary) return;
 
-  targets.forEach((el) => {
-    if (!message) {
-      el.textContent = "";
-      el.classList.add("hidden");
-      el.classList.remove("feedback-success", "feedback-error");
-    } else {
-      el.textContent = message;
-      el.classList.remove("hidden", "feedback-success", "feedback-error");
-      el.classList.add(isSuccess ? "feedback-success" : "feedback-error");
+  if (!message) {
+    primary.textContent = "";
+    primary.classList.add("hidden");
+    primary.classList.remove("feedback-success", "feedback-error");
+    if (discordFeedback && discordFeedback !== primary) {
+      discordFeedback.textContent = "";
+      discordFeedback.classList.add("hidden");
     }
-  });
+    return;
+  }
+
+  primary.textContent = message;
+  primary.classList.remove("hidden", "feedback-success", "feedback-error");
+  primary.classList.add(isSuccess ? "feedback-success" : "feedback-error");
+
+  if (discordFeedback && discordFeedback !== primary) {
+    discordFeedback.textContent = "";
+    discordFeedback.classList.add("hidden");
+  }
 }
 
 const showDiscordFeedback = showNotificationFeedback;
