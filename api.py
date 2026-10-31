@@ -789,6 +789,7 @@ def api_status(_user: str = Depends(require_auth)) -> dict[str, Any]:
         },
         "services_summary": main.get_services_summary(),
         "reboot_status": main.package_manager.get_reboot_status(),
+        "updates_summary": main.package_manager.get_updates_summary(),
     }
 
 
@@ -1519,6 +1520,16 @@ def api_vigil_logs(
 # ============================================================================
 # Package Management & System Updates Routes
 # ============================================================================
+
+
+@app.get("/api/packages/summary")
+def api_packages_summary(
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        return main.package_manager.get_updates_summary()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error checking package updates summary: {exc}")
 
 
 @app.get("/api/packages/updates")
