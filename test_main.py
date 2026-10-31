@@ -1987,6 +1987,7 @@ class FastAPIEndpointTests(unittest.TestCase):
             "/containers/logs/web-service",
             "/users/manage/admin",
             "/login",
+            "/logs",
             "/deep/nested/view",
         ]
         for path in spa_paths:
@@ -2385,6 +2386,17 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="raid-sync-container"', raid_view_html)
         self.assertIn('id="raid-interval-select"', raid_view_html)
         self.assertIn('id="refresh-raid-btn"', raid_view_html)
+
+        # Verify Storage Volumes & Filesystems card is positioned above the RAID Array Details grid
+        mounts_pos = raid_view_html.find('id="storage-mounts-card"')
+        raid_grid_pos = raid_view_html.find('class="raid-grid"')
+        self.assertGreater(mounts_pos, -1)
+        self.assertGreater(raid_grid_pos, -1)
+        self.assertLess(mounts_pos, raid_grid_pos)
+
+        # Verify Vigil Logs buttons exist
+        self.assertIn('id="btn-topbar-vigil-logs"', html)
+        self.assertIn('id="btn-sidebar-vigil-logs"', html)
 
         # Verify overview panel contains the cockpit summary cards and quick navigation buttons
         overview_start = html.find('id="view-overview"')
@@ -6076,6 +6088,60 @@ class TestSystemServicesEndpoints(unittest.TestCase):
             self.assertEqual(data["service"], "cron.service")
             self.assertEqual(len(data["logs"]), 2)
             self.assertEqual(data["lines"], 2)
+
+    def test_vigil_logs_endpoints_and_fallback(self):
+        # 1. Auth required
+        unauth_resp = asgi_get(api.app, "/api/vigil/logs")
+        self.assertEqual(unauth_resp.status_code, 401)
+        unauth_sys = asgi_get(api.app, "/api/system/logs")
+        self.assertEqual(unauth_sys.status_code, 401)
+
+        # 2. Journalctl returns vigil log entries
+        journal_output = "Oct 31 12:00:00 server vigil[100]: Vigil Host Manager v1.0.2 started\nOct 31 12:00:01 server vigil[100]: Listening on 0.0.0.0:8000\n"
+        with (
+            patch("shutil.which", return_value="/bin/journalctl"),
+            patch(
+                "subprocess.run",
+                return_value=MagicMock(returncode=0, stdout=journal_output, stderr=""),
+            ),
+        ):
+            resp = asgi_get(api.app, "/api/vigil/logs?lines=50", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["service"], "vigil.service")
+            self.assertEqual(len(data["logs"]), 2)
+            self.assertIn("Vigil Host Manager", data["logs"][0])
+
+            # Alias /api/system/logs returns same structure
+            resp_sys = asgi_get(api.app, "/api/system/logs?lines=50", cookies=self.auth_cookies)
+            self.assertEqual(resp_sys.status_code, 200)
+            self.assertEqual(resp_sys.json()["service"], "vigil.service")
+
+        # 3. Journalctl unavailable -> falls back to file logs if present
+        temp_log = Path(self.temp_dir.name) / "vigil.log"
+        temp_log.write_text("2026-10-31 12:00:00 [INFO] File log line 1\n2026-10-31 12:00:01 [INFO] File log line 2\n", encoding="utf-8")
+        with (
+            patch("shutil.which", return_value=None),
+            patch.object(main, "Path", side_effect=lambda p: temp_log if "vigil.log" in str(p) else Path(p)),
+        ):
+            logs = main.get_vigil_logs(lines=10)
+            self.assertEqual(len(logs), 2)
+            self.assertIn("File log line 1", logs[0])
+
+        # 4. Neither journalctl nor file log present -> returns friendly fallback indicator
+        with (
+            patch("shutil.which", return_value=None),
+            patch("pathlib.Path.is_file", return_value=False),
+        ):
+            logs_none = main.get_vigil_logs(lines=10)
+            self.assertEqual(len(logs_none), 1)
+            self.assertIn("-- No journald or file log entries found for vigil.service --", logs_none[0])
+
+        # 5. Error handling returns 500
+        with patch.object(main, "get_vigil_logs", side_effect=RuntimeError("unexpected log failure")):
+            err_resp = asgi_get(api.app, "/api/vigil/logs", cookies=self.auth_cookies)
+            self.assertEqual(err_resp.status_code, 500)
+            self.assertIn("Error fetching Vigil logs", err_resp.json()["detail"])
 
 
 class TestProcessExplorerEndpoints(unittest.TestCase):

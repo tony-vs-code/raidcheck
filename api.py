@@ -1481,6 +1481,23 @@ def api_service_logs(
         raise HTTPException(status_code=500, detail=f"Error fetching service logs: {exc}")
 
 
+@app.get("/api/vigil/logs")
+@app.get("/api/system/logs")
+def api_vigil_logs(
+    lines: int = Query(default=100, ge=1, le=1000),
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        log_lines = main.get_vigil_logs(lines=lines)
+        return {
+            "service": "vigil.service",
+            "logs": log_lines,
+            "lines": len(log_lines),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error fetching Vigil logs: {exc}")
+
+
 # ============================================================================
 # Process Explorer Routes
 # ============================================================================
@@ -1758,6 +1775,7 @@ class CacheControlStaticFiles(StaticFiles):
 @app.get("/notifications")
 @app.get("/audit")
 @app.get("/login")
+@app.get("/logs")
 def serve_index(subpath: Optional[str] = None):
     headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
