@@ -200,6 +200,23 @@
             <span>Processes</span>
           </button>
           <button
+            id="nav-tab-packages"
+            class="nav-tab sidebar-nav-item"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="view-packages"
+            title="Packages &amp; Updates"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+              <line x1="12" y1="22.08" x2="12" y2="12"></line>
+            </svg>
+            <span>Packages</span>
+            <span id="nav-tab-packages-badge" class="nav-tab-badge hidden">0</span>
+          </button>
+          <button
             id="nav-tab-users"
             class="nav-tab sidebar-nav-item"
             type="button"
@@ -447,6 +464,20 @@
                 </div>
                 <span id="overview-services-summary" class="status-ribbon-desc">-- Running, 0 Failed</span>
                 <button id="btn-goto-services" type="button" class="btn-ribbon-nav" title="Jump to Services">
+                  <span>Manage</span>
+                  <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </button>
+              </div>
+
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Packages</span>
+                  <span id="overview-packages-badge" class="status-badge status-ok">CLEAN</span>
+                </div>
+                <span id="overview-packages-summary" class="status-ribbon-desc">0 updates, system clean</span>
+                <button id="btn-goto-packages" type="button" class="btn-ribbon-nav" title="Jump to Packages &amp; Updates">
                   <span>Manage</span>
                   <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
                 </button>
@@ -1977,6 +2008,201 @@
           </section>
         </div>
 
+        <!-- View Panel: Packages & Updates (#view-packages) -->
+        <div id="view-packages" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-packages">
+          <section class="section-block" aria-labelledby="packages-heading">
+            <div class="section-header">
+              <div>
+                <h2 id="packages-heading" class="section-title">Packages &amp; Updates</h2>
+                <p class="section-subtitle">Debian / Ubuntu APT update management, security patches, reboot requirements, and dpkg package inventory</p>
+              </div>
+              <div class="module-toolbar">
+                <span id="packages-last-updated" class="module-last-updated">--</span>
+                <button id="btn-refresh-packages" class="btn-icon" title="Check for available updates (apt-get update)" aria-label="Check for updates">
+                  <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                  </svg>
+                </button>
+                <button id="btn-simulate-upgrade" class="btn-secondary" type="button" title="Simulate upgrade with apt-get -s dist-upgrade">
+                  <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                  </svg>
+                  <span>Simulate Upgrade</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Reboot Alert Banner -->
+            <div id="pkg-reboot-banner" class="reboot-required-banner hidden" role="alert">
+              <div class="reboot-banner-header">
+                <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="reboot-icon">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                  <line x1="12" y1="9" x2="12" y2="13"></line>
+                  <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                </svg>
+                <div class="reboot-banner-text">
+                  <strong class="reboot-title">System Reboot Required</strong>
+                  <p class="reboot-desc">Updates affecting the Linux kernel or core system libraries have been installed. A system reboot is required to activate these changes.</p>
+                </div>
+              </div>
+              <div id="pkg-reboot-pkgs-wrapper" class="reboot-pkgs-wrapper hidden">
+                <span class="reboot-pkgs-label">Packages triggering reboot:</span>
+                <div id="pkg-reboot-pkgs-list" class="reboot-pkgs-list"></div>
+              </div>
+            </div>
+
+            <!-- Subtab Navigation -->
+            <div class="view-subtabs-nav" role="tablist" aria-label="Packages Subtabs">
+              <button id="subtab-pkg-updates-btn" class="subtab-nav-btn active" type="button" role="tab" aria-selected="true" aria-controls="pkg-updates-subtab-panel">
+                <span>Available Updates</span>
+                <span id="subtab-pkg-updates-badge" class="pill-counter">0</span>
+              </button>
+              <button id="subtab-pkg-installed-btn" class="subtab-nav-btn" type="button" role="tab" aria-selected="false" aria-controls="pkg-installed-subtab-panel">
+                <span>Installed Packages</span>
+                <span id="subtab-pkg-installed-badge" class="pill-counter">0</span>
+              </button>
+            </div>
+
+            <!-- Available Updates Subtab Panel -->
+            <div id="pkg-updates-subtab-panel" class="subtab-panel" role="tabpanel" aria-labelledby="subtab-pkg-updates-btn">
+              <div class="overview-status-ribbon" role="region" aria-label="Updates Summary">
+                <div class="status-ribbon-item">
+                  <div class="status-ribbon-badge-group">
+                    <span class="status-ribbon-label">Total Updates</span>
+                    <span id="pkg-count-total" class="pill-counter">0</span>
+                  </div>
+                  <span class="status-ribbon-desc">Pending apt upgrades</span>
+                </div>
+                <div class="status-ribbon-divider" aria-hidden="true"></div>
+                <div class="status-ribbon-item">
+                  <div class="status-ribbon-badge-group">
+                    <span class="status-ribbon-label">Security Updates</span>
+                    <span id="pkg-count-security" class="count-number count-crit">0</span>
+                  </div>
+                  <span class="status-ribbon-desc">Security CVE patches</span>
+                </div>
+                <div class="status-ribbon-divider" aria-hidden="true"></div>
+                <div class="status-ribbon-item">
+                  <div class="status-ribbon-badge-group">
+                    <span class="status-ribbon-label">Standard Updates</span>
+                    <span id="pkg-count-standard" class="count-number count-warn">0</span>
+                  </div>
+                  <span class="status-ribbon-desc">Bug fixes &amp; enhancements</span>
+                </div>
+                <div class="status-ribbon-divider" aria-hidden="true"></div>
+                <div class="status-ribbon-item">
+                  <div class="status-ribbon-badge-group">
+                    <span class="status-ribbon-label">Reboot Status</span>
+                    <span id="pkg-reboot-status-text" class="status-badge status-ok">CLEAN</span>
+                  </div>
+                  <span class="status-ribbon-desc">Kernel / core restart required</span>
+                </div>
+              </div>
+
+              <div class="table-controls-bar">
+                <div class="search-box">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <input id="pkg-updates-search" type="search" placeholder="Filter updates by package name or origin..." aria-label="Filter Updates" />
+                </div>
+                <div class="filter-actions">
+                  <button id="btn-refresh-apt-cache" class="btn-secondary" type="button" title="Fetch latest package lists from mirrors">
+                    <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <polyline points="23 4 23 10 17 10"></polyline>
+                      <polyline points="1 20 1 14 7 14"></polyline>
+                      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                    </svg>
+                    <span>Update Catalog (apt update)</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="card table-card">
+                <div class="table-container">
+                  <table class="data-table" id="pkg-updates-table">
+                    <thead>
+                      <tr>
+                        <th>Package</th>
+                        <th>Type</th>
+                        <th>Installed Version</th>
+                        <th>Candidate Version</th>
+                        <th>Origin / Repository</th>
+                        <th style="text-align: right;">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="pkg-updates-tbody">
+                      <tr>
+                        <td colspan="6" class="empty-state">Loading available updates...</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- Installed Packages Subtab Panel -->
+            <div id="pkg-installed-subtab-panel" class="subtab-panel hidden" role="tabpanel" aria-labelledby="subtab-pkg-installed-btn">
+              <div class="table-controls-bar">
+                <div class="search-box">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <input id="pkg-installed-search" type="search" placeholder="Search installed packages by name or summary..." aria-label="Search Installed Packages" />
+                </div>
+                <div class="filter-actions">
+                  <span id="pkg-installed-count-pill" class="pill-counter">0 packages</span>
+                </div>
+              </div>
+
+              <div class="card table-card">
+                <div class="table-container">
+                  <table class="data-table" id="pkg-installed-table">
+                    <thead>
+                      <tr>
+                        <th>Package</th>
+                        <th>Version</th>
+                        <th>Architecture</th>
+                        <th>Status</th>
+                        <th>Summary</th>
+                      </tr>
+                    </thead>
+                    <tbody id="pkg-installed-tbody">
+                      <tr>
+                        <td colspan="5" class="empty-state">Loading installed packages...</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Pagination Toolbar -->
+              <div class="pagination-strip">
+                <div id="pkg-pagination-info" class="pagination-info">Showing 0-0 of 0</div>
+                <div class="pagination-controls">
+                  <button id="btn-pkg-prev" class="btn-secondary btn-pagination" type="button" disabled>
+                    <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                    <span>Previous</span>
+                  </button>
+                  <span id="pkg-page-indicator" class="pagination-page-indicator">Page 1</span>
+                  <button id="btn-pkg-next" class="btn-secondary btn-pagination" type="button" disabled>
+                    <span>Next</span>
+                    <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <polyline points="9 18 15 12 9 6"></polyline>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
         <!-- View Panel: Users & Groups (#view-users) -->
         <div id="view-users" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-users">
           <section class="section-block" aria-labelledby="users-heading">
@@ -2810,6 +3036,25 @@
           <button id="btn-submit-member-action" type="submit" class="btn-primary">Apply Membership</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Package Upgrade Simulation / Output Modal (#pkg-upgrade-modal) -->
+  <div id="pkg-upgrade-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="pkg-upgrade-modal-title">
+    <div class="modal-card terminal-modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="pkg-upgrade-modal-title" class="modal-title">Simulated Package Upgrade</h2>
+          <p class="modal-subtitle" id="pkg-upgrade-modal-subtitle">Simulation of apt-get upgrade (dry run, non-destructive)</p>
+        </div>
+        <button id="btn-close-pkg-upgrade-modal" type="button" class="btn-icon-close" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="terminal-container">
+        <pre id="pkg-upgrade-terminal" class="service-logs-terminal">Running simulation...</pre>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-dismiss-pkg-upgrade-modal" type="button" class="btn-secondary">Close</button>
+      </div>
     </div>
   </div>
 
