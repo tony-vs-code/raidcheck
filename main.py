@@ -56,7 +56,13 @@ def config(key: str, default: Any = "", cast: Optional[Any] = None) -> Any:
 from discord.ext import tasks
 from subprocess import check_output, CalledProcessError, STDOUT
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+import html
+import psutil
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # type: ignore
 from typing import Any, Optional, Tuple
 import re
 
@@ -85,6 +91,7 @@ APP_SETTING_KEYS = (
     "docker_auto_update_frequency",
     "docker_auto_update_schedule",
     "timezone",
+    "notification_center_config",
 )
 
 client = discord.Client(intents=discord.Intents.default())
@@ -380,6 +387,48 @@ def delete_session(token: Optional[str]) -> None:
         connection.close()
 
 
+DEFAULT_NOTIFICATION_CENTER_CONFIG: dict[str, Any] = {
+    "channels": {
+        "discord": {
+            "enabled": False,
+            "bot_token": "",
+            "channel_id": "",
+            "webhook_url": "",
+        },
+        "telegram": {
+            "enabled": False,
+            "bot_token": "",
+            "chat_id": "",
+        },
+        "webhook": {
+            "enabled": False,
+            "url": "",
+            "headers": {},
+        },
+    },
+    "schedule": {
+        "enabled": True,
+        "frequency": "weekly",
+        "day_of_week": "monday",
+        "time": "09:00",
+        "interval_hours": 168,
+    },
+    "topics": {
+        "system_status": True,
+        "disk_health": True,
+        "raid_status": True,
+    },
+    "thresholds": {
+        "enabled": True,
+        "ram_percent": 90.0,
+        "cpu_percent": 90.0,
+        "disk_percent": 85.0,
+        "raid_degraded": True,
+        "cooldown_minutes": 60,
+    },
+}
+
+
 def _default_app_settings_from_env() -> dict[str, str]:
     env_token = str(config("DISCORD_TOKEN", default="") or "")
     env_discord_enabled = config("DISCORD_ENABLED", default=None)
@@ -391,6 +440,11 @@ def _default_app_settings_from_env() -> dict[str, str]:
         )
     else:
         discord_enabled = "true" if env_token else "false"
+
+    default_nc_cfg = copy.deepcopy(DEFAULT_NOTIFICATION_CENTER_CONFIG)
+    default_nc_cfg["channels"]["discord"]["enabled"] = (discord_enabled == "true")
+    default_nc_cfg["channels"]["discord"]["bot_token"] = env_token
+    default_nc_cfg["channels"]["discord"]["channel_id"] = str(config("CHANNEL_ID", default="") or "")
 
     return {
         "discord_token": env_token,
@@ -423,6 +477,7 @@ def _default_app_settings_from_env() -> dict[str, str]:
             )
         ),
         "timezone": str(config("TIMEZONE", default="UTC") or "UTC"),
+        "notification_center_config": json.dumps(default_nc_cfg),
     }
 
 
@@ -510,6 +565,39 @@ def update_app_settings(updates: dict[str, Any]) -> dict[str, str]:
                 )
                 if key == "channel_id" and str_val:
                     CHANNEL_ID = str_val
+
+        # Synchronize legacy discord keys to notification_center_config if updated
+        if any(k in updates for k in ("discord_token", "channel_id", "discord_enabled")):
+            row = connection.execute(
+                "SELECT value FROM app_settings WHERE key = 'notification_center_config'"
+            ).fetchone()
+            cfg_dict = copy.deepcopy(DEFAULT_NOTIFICATION_CENTER_CONFIG)
+            if row and row[0]:
+                try:
+                    loaded = json.loads(row[0])
+                    if isinstance(loaded, dict):
+                        for sec in ("channels", "schedule", "topics", "thresholds"):
+                            if sec in loaded and isinstance(loaded[sec], dict):
+                                cfg_dict[sec].update(loaded[sec])
+                except Exception:
+                    pass
+            if "discord_enabled" in updates:
+                cfg_dict["channels"]["discord"]["enabled"] = (
+                    str(updates["discord_enabled"]).strip().lower() == "true"
+                )
+            if "discord_token" in updates and str(updates["discord_token"]).strip():
+                cfg_dict["channels"]["discord"]["bot_token"] = str(
+                    updates["discord_token"]
+                ).strip()
+            if "channel_id" in updates and str(updates["channel_id"]).strip():
+                cfg_dict["channels"]["discord"]["channel_id"] = str(
+                    updates["channel_id"]
+                ).strip()
+            connection.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                ("notification_center_config", json.dumps(cfg_dict), now),
+            )
+
         connection.commit()
     finally:
         connection.close()
@@ -808,28 +896,69 @@ def apply_release_update() -> dict[str, Any]:
     }
 
 
-def get_weekly_notification_state() -> Optional[Tuple[float, float, str]]:
+def get_notification_state_entry(name: str) -> Optional[Tuple[float, float, str]]:
     connection = _connect_state_db()
     try:
         row = connection.execute(
             "SELECT sent_at, due_at, status FROM notification_state WHERE name = ?",
-            ("raid_summary",),
+            (name,),
         ).fetchone()
         if row:
-            return float(row[0]), float(row[1]), row[2] or "unknown"
+            due_at = (
+                float(row[1])
+                if row[1] is not None
+                else float(row[0]) + WEEK_SECONDS
+            )
+            return float(row[0]), due_at, row[2] or "unknown"
+        return None
+    except (OSError, sqlite3.Error):
         return None
     finally:
         connection.close()
 
 
-def record_notification(status: str, timestamp: float, weekly: bool) -> None:
+def set_notification_state_entry(
+    name: str, sent_at: float, due_at: float, status: str
+) -> None:
+    connection = _connect_state_db()
+    try:
+        connection.execute(
+            "INSERT OR REPLACE INTO notification_state (name, sent_at, due_at, status) "
+            "VALUES (?, ?, ?, ?)",
+            (name, sent_at, due_at, status),
+        )
+        connection.commit()
+    except (OSError, sqlite3.Error) as exc:
+        logging.warning(f"Could not save notification state for {name}: {exc}")
+    finally:
+        connection.close()
+
+
+def get_weekly_notification_state() -> Optional[Tuple[float, float, str]]:
+    return get_notification_state_entry("raid_summary")
+
+
+def record_notification(
+    status: str,
+    timestamp: float,
+    weekly: bool,
+    due_at: Optional[float] = None,
+) -> None:
     connection = _connect_state_db()
     try:
         if weekly:
+            computed_due = (
+                due_at if due_at is not None else timestamp + WEEK_SECONDS
+            )
             connection.execute(
                 "INSERT OR REPLACE INTO notification_state "
                 "(name, sent_at, due_at, status) VALUES (?, ?, ?, ?)",
-                ("raid_summary", timestamp, timestamp + WEEK_SECONDS, status),
+                ("raid_summary", timestamp, computed_due, status),
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO notification_state "
+                "(name, sent_at, due_at, status) VALUES (?, ?, ?, ?)",
+                ("periodic_report", timestamp, computed_due, status),
             )
         connection.execute(
             "INSERT INTO notification_history (status, sent_at, weekly) "
@@ -861,53 +990,889 @@ def format_timestamp(timestamp: float) -> str:
     )
 
 
-async def send_test_notification() -> tuple[bool, str]:
-    global _last_send_error
-    _last_send_error = ""
+class NotificationProvider:
+    name: str = "base"
 
+    async def send_notification(
+        self,
+        title: str,
+        message: str,
+        embed_data: Optional[dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        raise NotImplementedError("send_notification must be implemented by subclass")
+
+
+class DiscordProvider(NotificationProvider):
+    name: str = "discord"
+
+    def __init__(
+        self,
+        bot_token: str = "",
+        channel_id: str = "",
+        webhook_url: str = "",
+        enabled: bool = True,
+    ) -> None:
+        self.bot_token = bot_token.strip()
+        self.channel_id = channel_id.strip()
+        self.webhook_url = webhook_url.strip()
+        self.enabled = enabled
+
+    async def send_notification(
+        self,
+        title: str,
+        message: str,
+        embed_data: Optional[dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        if not self.enabled:
+            return False, "Discord notifications are disabled in settings."
+
+        # Webhook delivery
+        if self.webhook_url and (
+            self.webhook_url.startswith("http://")
+            or self.webhook_url.startswith("https://")
+        ):
+            embed_payload = copy.deepcopy(embed_data) if embed_data else {}
+            if embed_payload and "title" not in embed_payload:
+                embed_payload["title"] = title
+            if embed_payload and "description" not in embed_payload:
+                embed_payload["description"] = message
+
+            payload: dict[str, Any] = {}
+            if embed_payload:
+                payload["embeds"] = [embed_payload]
+            else:
+                payload["content"] = f"**{title}**\n{message}"
+
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=10.0)
+                ) as session:
+                    async with session.post(self.webhook_url, json=payload) as resp:
+                        if resp.status in (200, 204):
+                            return True, "Discord notification sent successfully via webhook."
+                        body = await resp.text()
+                        return False, f"Discord webhook error {resp.status}: {body}"
+            except Exception as e:
+                return False, f"Discord webhook request failed: {e}"
+
+        # Bot token / client delivery
+        effective_token = (
+            self.bot_token
+            or get_app_settings().get("discord_token", "").strip()
+            or str(config("DISCORD_TOKEN", default="") or "").strip()
+        )
+        effective_channel = (
+            self.channel_id
+            or (CHANNEL_ID or get_app_settings().get("channel_id", "")).strip()
+        )
+
+        if not effective_token:
+            return False, "Discord token is not configured."
+        if not effective_channel:
+            return False, "Discord channel ID is not configured."
+
+        if embed_data:
+            embed = discord.Embed(
+                title=embed_data.get("title") or title,
+                description=embed_data.get("description") or message,
+                color=embed_data.get("color", 0x3498DB),
+            )
+            for f in embed_data.get("fields", []):
+                embed.add_field(
+                    name=f.get("name", ""),
+                    value=f.get("value", ""),
+                    inline=f.get("inline", False),
+                )
+        else:
+            embed = discord.Embed(
+                title=title,
+                description=message,
+                color=0x3498DB,
+            )
+
+        success = await send_message(embed)
+        if success:
+            return True, "Discord notification sent successfully."
+        else:
+            global _last_send_error
+            return False, _last_send_error or "Failed to send message via Discord."
+
+
+class TelegramProvider(NotificationProvider):
+    name: str = "telegram"
+
+    def __init__(
+        self,
+        bot_token: str = "",
+        chat_id: str = "",
+        enabled: bool = True,
+    ) -> None:
+        self.bot_token = bot_token.strip()
+        self.chat_id = chat_id.strip()
+        self.enabled = enabled
+
+    async def send_notification(
+        self,
+        title: str,
+        message: str,
+        embed_data: Optional[dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        if not self.enabled:
+            return False, "Telegram notifications are disabled in settings."
+        if not self.bot_token:
+            return False, "Telegram bot token is not configured."
+        if not self.chat_id:
+            return False, "Telegram chat ID is not configured."
+
+        text_parts = [f"<b>{html.escape(title)}</b>", "", html.escape(message)]
+        if embed_data and "fields" in embed_data:
+            text_parts.append("")
+            for f in embed_data["fields"]:
+                fname = html.escape(str(f.get("name", "")))
+                fval = html.escape(str(f.get("value", "")))
+                text_parts.append(f"<b>{fname}</b>: {fval}")
+        full_text = "\n".join(text_parts).strip()
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        payload = {
+            "chat_id": self.chat_id,
+            "text": full_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=10.0)
+            ) as session:
+                async with session.post(url, json=payload) as resp:
+                    resp_text = await resp.text()
+                    try:
+                        data = json.loads(resp_text)
+                    except Exception:
+                        data = {}
+                    if resp.status == 200 and data.get("ok"):
+                        return True, "Telegram notification sent successfully."
+
+                    if resp.status == 400 and "can't parse" in resp_text.lower():
+                        plain_payload = {
+                            "chat_id": self.chat_id,
+                            "text": f"{title}\n\n{message}",
+                        }
+                        async with session.post(url, json=plain_payload) as retry_resp:
+                            retry_text = await retry_resp.text()
+                            if retry_resp.status == 200:
+                                return True, "Telegram notification sent successfully."
+                            return False, f"Telegram API error {retry_resp.status}: {retry_text}"
+
+                    desc = data.get("description", resp_text)
+                    err_msg = f"Telegram API error {resp.status}: {desc}"
+                    logging.error(err_msg)
+                    return False, err_msg
+        except Exception as exc:
+            err_msg = f"Telegram request failed: {exc}"
+            logging.error(err_msg)
+            return False, err_msg
+
+
+class WebhookProvider(NotificationProvider):
+    name: str = "webhook"
+
+    def __init__(
+        self,
+        url: str = "",
+        headers: Optional[dict[str, str]] = None,
+        enabled: bool = True,
+    ) -> None:
+        self.url = url.strip()
+        self.headers = headers or {}
+        self.enabled = enabled
+
+    async def send_notification(
+        self,
+        title: str,
+        message: str,
+        embed_data: Optional[dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        if not self.enabled:
+            return False, "Webhook notifications are disabled in settings."
+        if not self.url:
+            return False, "Webhook URL is not configured."
+        if not (self.url.startswith("http://") or self.url.startswith("https://")):
+            return False, "Webhook URL must start with http:// or https://"
+
+        payload = {
+            "title": title,
+            "message": message,
+            "embed": embed_data or {},
+            "timestamp": time.time(),
+            "iso_timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        req_headers = {"Content-Type": "application/json"}
+        req_headers.update(self.headers)
+
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=10.0)
+            ) as session:
+                async with session.post(self.url, json=payload, headers=req_headers) as resp:
+                    if resp.status in (200, 201, 202, 204):
+                        return True, "Webhook notification delivered successfully."
+                    resp_body = await resp.text()
+                    err = f"Webhook error {resp.status}: {resp_body}"
+                    logging.error(err)
+                    return False, err
+        except Exception as exc:
+            err = f"Webhook request failed: {exc}"
+            logging.error(err)
+            return False, err
+
+
+class NotificationManager:
+    def __init__(self, config_dict: Optional[dict[str, Any]] = None) -> None:
+        self.config = (
+            config_dict
+            if config_dict is not None
+            else get_notification_center_config()
+        )
+        self.providers: dict[str, NotificationProvider] = {}
+        self._init_providers()
+
+    def _init_providers(self) -> None:
+        channels = self.config.get("channels", {})
+
+        discord_cfg = channels.get("discord", {})
+        self.providers["discord"] = DiscordProvider(
+            bot_token=discord_cfg.get("bot_token", ""),
+            channel_id=discord_cfg.get("channel_id", ""),
+            webhook_url=discord_cfg.get("webhook_url", ""),
+            enabled=bool(discord_cfg.get("enabled", False)),
+        )
+
+        telegram_cfg = channels.get("telegram", {})
+        self.providers["telegram"] = TelegramProvider(
+            bot_token=telegram_cfg.get("bot_token", ""),
+            chat_id=telegram_cfg.get("chat_id", ""),
+            enabled=bool(telegram_cfg.get("enabled", False)),
+        )
+
+        webhook_cfg = channels.get("webhook", {})
+        self.providers["webhook"] = WebhookProvider(
+            url=webhook_cfg.get("url", ""),
+            headers=webhook_cfg.get("headers", {}),
+            enabled=bool(webhook_cfg.get("enabled", False)),
+        )
+
+    async def send_channel(
+        self,
+        channel: str,
+        title: str,
+        message: str,
+        embed_data: Optional[dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
+        ch = (channel or "all").lower().strip()
+        if ch == "all":
+            results = await self.send_all(title, message, embed_data)
+            successes = [k for k, (ok, _) in results.items() if ok]
+            if successes:
+                return True, f"Notification sent successfully via {', '.join(successes)}."
+            errors = [f"{k}: {msg}" for k, (ok, msg) in results.items() if not ok]
+            return False, "; ".join(errors) if errors else "No notification channels enabled."
+
+        provider = self.providers.get(ch)
+        if not provider:
+            return False, f"Unknown notification channel '{channel}'."
+        return await provider.send_notification(title, message, embed_data)
+
+    async def send_all(
+        self,
+        title: str,
+        message: str,
+        embed_data: Optional[dict[str, Any]] = None,
+    ) -> dict[str, tuple[bool, str]]:
+        enabled_providers = {
+            k: p for k, p in self.providers.items() if getattr(p, "enabled", False)
+        }
+        if not enabled_providers:
+            return {"none": (False, "No notification channels are enabled.")}
+
+        results: dict[str, tuple[bool, str]] = {}
+        for name, provider in enabled_providers.items():
+            results[name] = await provider.send_notification(title, message, embed_data)
+        return results
+
+
+def get_notification_center_config() -> dict[str, Any]:
     settings = get_app_settings()
-    if settings.get("discord_enabled", "false").strip().lower() != "true":
-        msg = "Discord notifications are disabled in settings."
-        logging.info(msg)
-        return False, msg
+    raw = settings.get("notification_center_config", "")
+    config_dict = copy.deepcopy(DEFAULT_NOTIFICATION_CENTER_CONFIG)
+    if raw:
+        try:
+            stored = json.loads(raw)
+            if isinstance(stored, dict):
+                for section in ("channels", "schedule", "topics", "thresholds"):
+                    if section in stored and isinstance(stored[section], dict):
+                        config_dict[section].update(stored[section])
+        except (json.JSONDecodeError, TypeError):
+            pass
 
-    discord_token = (
+    # Synchronize discord channel with top-level app_settings
+    discord_cfg = config_dict["channels"]["discord"]
+    app_discord_enabled = settings.get("discord_enabled", "false").strip().lower() == "true"
+    if app_discord_enabled and not discord_cfg.get("enabled"):
+        discord_cfg["enabled"] = True
+
+    app_discord_token = (
         settings.get("discord_token", "").strip()
         or str(config("DISCORD_TOKEN", default="") or "").strip()
     )
-    if not discord_token:
-        msg = "Discord token is not configured."
-        logging.error(msg)
-        return False, msg
+    if not discord_cfg.get("bot_token") and app_discord_token:
+        discord_cfg["bot_token"] = app_discord_token
 
-    effective_channel_id = (CHANNEL_ID or settings.get("channel_id", "")).strip()
-    if not effective_channel_id:
-        msg = "Discord channel ID is not configured."
-        logging.error(msg)
-        return False, msg
+    app_channel_id = (CHANNEL_ID or settings.get("channel_id", "")).strip()
+    if not discord_cfg.get("channel_id") and app_channel_id:
+        discord_cfg["channel_id"] = app_channel_id
 
-    embed = discord.Embed(
-        title="🔔 System Alerts - Test Notification",
-        description="This is a test notification from SystemAlerts Server Manager.\nDiscord notifications are configured and functioning properly.",
-        color=0x3498DB,
+    return config_dict
+
+
+def get_masked_notification_center_config(
+    cfg: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    if cfg is None:
+        cfg = get_notification_center_config()
+    result = copy.deepcopy(cfg)
+
+    discord_cfg = result.get("channels", {}).get("discord", {})
+    bot_token = discord_cfg.get("bot_token", "")
+    discord_cfg["bot_token_configured"] = bool(bot_token)
+    discord_cfg["bot_token"] = "********" if bot_token else ""
+
+    telegram_cfg = result.get("channels", {}).get("telegram", {})
+    t_bot_token = telegram_cfg.get("bot_token", "")
+    telegram_cfg["bot_token_configured"] = bool(t_bot_token)
+    telegram_cfg["bot_token"] = "********" if t_bot_token else ""
+
+    return result
+
+
+def update_notification_center_config(updates: dict[str, Any]) -> dict[str, Any]:
+    global CHANNEL_ID
+    current = get_notification_center_config()
+
+    if "channels" in updates and isinstance(updates["channels"], dict):
+        for ch_key in ("discord", "telegram", "webhook"):
+            if ch_key in updates["channels"] and isinstance(
+                updates["channels"][ch_key], dict
+            ):
+                incoming = updates["channels"][ch_key]
+                target = current["channels"][ch_key]
+                for k, v in incoming.items():
+                    if k == "bot_token":
+                        str_val = str(v).strip()
+                        if (
+                            str_val
+                            and not str_val.startswith("***")
+                            and str_val != "••••••••"
+                        ):
+                            target["bot_token"] = str_val
+                    elif k == "headers" and isinstance(v, dict):
+                        target["headers"] = v
+                    elif v is not None:
+                        target[k] = v
+
+    if "schedule" in updates and isinstance(updates["schedule"], dict):
+        current["schedule"].update(updates["schedule"])
+
+    if "topics" in updates and isinstance(updates["topics"], dict):
+        current["topics"].update(updates["topics"])
+
+    if "thresholds" in updates and isinstance(updates["thresholds"], dict):
+        current["thresholds"].update(updates["thresholds"])
+
+    json_val = json.dumps(current)
+    now = time.time()
+    connection = _connect_state_db()
+    try:
+        connection.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+            ("notification_center_config", json_val, now),
+        )
+
+        discord_cfg = current["channels"]["discord"]
+        discord_enabled_str = "true" if discord_cfg.get("enabled") else "false"
+        discord_token_str = discord_cfg.get("bot_token", "")
+        channel_id_str = discord_cfg.get("channel_id", "")
+
+        connection.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+            ("discord_enabled", discord_enabled_str, now),
+        )
+        if discord_token_str:
+            connection.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                ("discord_token", discord_token_str, now),
+            )
+        if channel_id_str:
+            connection.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                ("channel_id", channel_id_str, now),
+            )
+            CHANNEL_ID = channel_id_str
+
+        connection.commit()
+    finally:
+        connection.close()
+
+    return current
+
+
+def compute_next_scheduled_run(
+    schedule_config: dict[str, Any],
+    from_time: Optional[float] = None,
+    timezone_str: str = "UTC",
+) -> float:
+    now_ts = time.time() if from_time is None else float(from_time)
+    frequency = str(schedule_config.get("frequency", "weekly")).lower().strip()
+
+    if frequency == "hourly":
+        return now_ts + 3600.0
+
+    if frequency in ("interval", "interval_hours", "custom"):
+        hours = float(schedule_config.get("interval_hours", 24) or 24)
+        return now_ts + (max(0.1, hours) * 3600.0)
+
+    tz = None
+    if ZoneInfo is not None and timezone_str:
+        try:
+            tz = ZoneInfo(timezone_str)
+        except Exception:
+            tz = timezone.utc
+    if tz is None:
+        tz = timezone.utc
+
+    now_dt = datetime.fromtimestamp(now_ts, tz=tz)
+    time_str = str(schedule_config.get("time", "09:00")).strip()
+    try:
+        parts = time_str.split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        hour = 9
+        minute = 0
+
+    if frequency == "daily":
+        candidate = now_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate.timestamp() <= now_ts:
+            candidate += timedelta(days=1)
+        return candidate.timestamp()
+
+    # weekly (default)
+    weekday_names = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+    target_weekday = weekday_names.get(
+        str(schedule_config.get("day_of_week", "monday")).lower().strip(), 0
     )
-    embed.add_field(name="Status", value="Test / Operational", inline=True)
-    embed.add_field(
-        name="Timestamp",
-        value=format_timestamp(time.time()),
-        inline=True,
+    days_ahead = (target_weekday - now_dt.weekday()) % 7
+    candidate = (now_dt + timedelta(days=days_ahead)).replace(
+        hour=hour, minute=minute, second=0, microsecond=0
     )
+    if candidate.timestamp() <= now_ts:
+        candidate += timedelta(days=7)
+    return candidate.timestamp()
 
-    success = await send_message(embed)
+
+def build_periodic_report_data(
+    topics: Optional[dict[str, bool]] = None,
+) -> tuple[str, str, dict[str, Any]]:
+    if topics is None:
+        cfg = get_notification_center_config()
+        topics = cfg.get("topics", {})
+
+    title = "📊 SystemAlerts - Periodic Report"
+    description = "Scheduled system health and status summary report."
+    fields: list[dict[str, Any]] = []
+
+    # 1. System Status
+    if topics.get("system_status", True):
+        try:
+            cpu_pct = psutil.cpu_percent(interval=None)
+            vm = psutil.virtual_memory()
+            boot_time = psutil.boot_time()
+            uptime_sec = max(0, int(time.time() - boot_time))
+            days, rem = divmod(uptime_sec, 86400)
+            hours, rem = divmod(rem, 3600)
+            minutes = rem // 60
+            uptime_str = f"{days}d {hours}h {minutes}m"
+            ram_info = f"{vm.percent}% ({_format_bytes(vm.used)} / {_format_bytes(vm.total)})"
+            fields.append({
+                "name": "🖥️ System Status",
+                "value": f"• CPU Usage: {cpu_pct}%\n• Memory: {ram_info}\n• Uptime: {uptime_str}",
+                "inline": False,
+            })
+        except Exception as exc:
+            fields.append({
+                "name": "🖥️ System Status",
+                "value": f"Error gathering system metrics: {exc}",
+                "inline": False,
+            })
+
+    # 2. Disk Health
+    if topics.get("disk_health", True):
+        try:
+            lines = []
+            root_stat = get_disk_usage_statvfs("/")
+            lines.append(f"• Root (/): {root_stat.get('storage_info', 'N/A')}")
+            mount_path = get_app_settings().get("mount_path")
+            if mount_path and Path(mount_path).exists() and mount_path != "/":
+                mnt_stat = get_disk_usage_statvfs(mount_path)
+                lines.append(f"• Mount ({mount_path}): {mnt_stat.get('storage_info', 'N/A')}")
+            fields.append({
+                "name": "💾 Disk Health",
+                "value": "\n".join(lines),
+                "inline": False,
+            })
+        except Exception as exc:
+            fields.append({
+                "name": "💾 Disk Health",
+                "value": f"Error gathering disk metrics: {exc}",
+                "inline": False,
+            })
+
+    # 3. RAID Status
+    if topics.get("raid_status", True):
+        try:
+            status, details = check_raid_status()
+            fields.append({
+                "name": "🛡️ RAID Status",
+                "value": f"• Array Health: {status.upper()}\n• Status Details: {details[:200]}",
+                "inline": False,
+            })
+        except Exception as exc:
+            fields.append({
+                "name": "🛡️ RAID Status",
+                "value": f"Error checking RAID: {exc}",
+                "inline": False,
+            })
+
+    fields.append({
+        "name": "Timestamp",
+        "value": format_timestamp(time.time()),
+        "inline": True,
+    })
+
+    embed_data = {
+        "title": title,
+        "description": description,
+        "color": 0x3498DB,
+        "fields": fields,
+    }
+    return title, description, embed_data
+
+
+async def evaluate_threshold_alerts(
+    now: Optional[float] = None,
+) -> list[dict[str, Any]]:
+    current_time = time.time() if now is None else float(now)
+    config_dict = get_notification_center_config()
+    thresholds = config_dict.get("thresholds", {})
+    if not thresholds.get("enabled", True):
+        return []
+
+    cooldown_minutes = int(thresholds.get("cooldown_minutes", 60) or 60)
+    cooldown_sec = cooldown_minutes * 60
+
+    alerts: list[dict[str, Any]] = []
+
+    # RAM
+    ram_limit = thresholds.get("ram_percent")
+    if ram_limit is not None and float(ram_limit) > 0:
+        try:
+            vm = psutil.virtual_memory()
+            if vm.percent >= float(ram_limit):
+                key = "ram"
+                entry = get_notification_state_entry(f"threshold_{key}")
+                in_cooldown = entry is not None and current_time < entry[1]
+                if not in_cooldown:
+                    title = f"⚠️ Alert: High Memory Usage ({vm.percent}%)"
+                    msg = f"RAM usage has reached {vm.percent}%, exceeding threshold of {ram_limit}%."
+                    embed = {
+                        "title": title,
+                        "description": msg,
+                        "color": 0xE67E22,
+                        "fields": [
+                            {"name": "Current Usage", "value": f"{vm.percent}%", "inline": True},
+                            {"name": "Threshold", "value": f"{ram_limit}%", "inline": True},
+                            {"name": "Timestamp", "value": format_timestamp(current_time), "inline": True},
+                        ],
+                    }
+                    alerts.append({
+                        "metric": key,
+                        "title": title,
+                        "message": msg,
+                        "embed": embed,
+                        "value": str(vm.percent),
+                    })
+        except Exception as exc:
+            logging.debug(f"RAM threshold check error: {exc}")
+
+    # CPU
+    cpu_limit = thresholds.get("cpu_percent")
+    if cpu_limit is not None and float(cpu_limit) > 0:
+        try:
+            cpu_pct = psutil.cpu_percent(interval=None)
+            if cpu_pct >= float(cpu_limit):
+                key = "cpu"
+                entry = get_notification_state_entry(f"threshold_{key}")
+                in_cooldown = entry is not None and current_time < entry[1]
+                if not in_cooldown:
+                    title = f"⚠️ Alert: High CPU Usage ({cpu_pct}%)"
+                    msg = f"CPU usage has reached {cpu_pct}%, exceeding threshold of {cpu_limit}%."
+                    embed = {
+                        "title": title,
+                        "description": msg,
+                        "color": 0xE67E22,
+                        "fields": [
+                            {"name": "Current Usage", "value": f"{cpu_pct}%", "inline": True},
+                            {"name": "Threshold", "value": f"{cpu_limit}%", "inline": True},
+                            {"name": "Timestamp", "value": format_timestamp(current_time), "inline": True},
+                        ],
+                    }
+                    alerts.append({
+                        "metric": key,
+                        "title": title,
+                        "message": msg,
+                        "embed": embed,
+                        "value": str(cpu_pct),
+                    })
+        except Exception as exc:
+            logging.debug(f"CPU threshold check error: {exc}")
+
+    # Disk
+    disk_limit = thresholds.get("disk_percent")
+    if disk_limit is not None and float(disk_limit) > 0:
+        try:
+            disks = ["/"]
+            mount_path = get_app_settings().get("mount_path")
+            if mount_path and Path(mount_path).exists() and mount_path not in disks:
+                disks.append(mount_path)
+            for d in disks:
+                st = get_disk_usage_statvfs(d)
+                pct = st.get("percent", 0.0)
+                if pct >= float(disk_limit):
+                    metric_key = f"disk_{abs(hash(d)) % 10000}"
+                    entry = get_notification_state_entry(f"threshold_{metric_key}")
+                    in_cooldown = entry is not None and current_time < entry[1]
+                    if not in_cooldown:
+                        title = f"⚠️ Alert: High Disk Usage on {d} ({pct}%)"
+                        msg = f"Disk {d} usage is at {pct}%, exceeding threshold of {disk_limit}%."
+                        embed = {
+                            "title": title,
+                            "description": msg,
+                            "color": 0xE74C3C,
+                            "fields": [
+                                {"name": "Path", "value": d, "inline": True},
+                                {"name": "Usage", "value": st.get("storage_info", f"{pct}%"), "inline": True},
+                                {"name": "Threshold", "value": f"{disk_limit}%", "inline": True},
+                            ],
+                        }
+                        alerts.append({
+                            "metric": metric_key,
+                            "title": title,
+                            "message": msg,
+                            "embed": embed,
+                            "value": str(pct),
+                        })
+        except Exception as exc:
+            logging.debug(f"Disk threshold check error: {exc}")
+
+    # RAID degraded
+    if thresholds.get("raid_degraded", True):
+        try:
+            status, details = check_raid_status()
+            if status not in ("clean", "active", "none"):
+                key = "raid_degraded"
+                entry = get_notification_state_entry(f"threshold_{key}")
+                in_cooldown = entry is not None and current_time < entry[1]
+                if not in_cooldown:
+                    title = f"🚨 Alert: RAID Array Degraded ({status.upper()})"
+                    msg = f"RAID array is reported as '{status}'. Attention is required!\n{details[:200]}"
+                    embed = {
+                        "title": title,
+                        "description": msg,
+                        "color": 0xC0392B,
+                        "fields": [
+                            {"name": "Status", "value": status.upper(), "inline": True},
+                            {"name": "Details", "value": details[:200], "inline": False},
+                            {"name": "Timestamp", "value": format_timestamp(current_time), "inline": True},
+                        ],
+                    }
+                    alerts.append({
+                        "metric": key,
+                        "title": title,
+                        "message": msg,
+                        "embed": embed,
+                        "value": status,
+                    })
+        except Exception as exc:
+            logging.debug(f"RAID threshold check error: {exc}")
+
+    # Send alerts and record cooldowns
+    if alerts:
+        mgr = NotificationManager(config_dict)
+        for alert in alerts:
+            await mgr.send_all(alert["title"], alert["message"], alert["embed"])
+            set_notification_state_entry(
+                f"threshold_{alert['metric']}",
+                sent_at=current_time,
+                due_at=current_time + cooldown_sec,
+                status=alert["value"],
+            )
+            record_notification(f"alert_{alert['metric']}", current_time, weekly=False)
+
+    return alerts
+
+
+async def evaluate_scheduled_reports(
+    now: Optional[float] = None,
+) -> bool:
+    current_time = time.time() if now is None else float(now)
+    config_dict = get_notification_center_config()
+    schedule_cfg = config_dict.get("schedule", {})
+    if not schedule_cfg.get("enabled", True):
+        return False
+
+    state = get_weekly_notification_state()
+    is_due = False
+    if state is None:
+        is_due = True
+    else:
+        _, due_at, _ = state
+        if current_time >= due_at:
+            is_due = True
+
+    if not is_due:
+        return False
+
+    topics = config_dict.get("topics", {})
+    title, desc, embed_data = build_periodic_report_data(topics)
+    mgr = NotificationManager(config_dict)
+    await mgr.send_all(title, desc, embed_data)
+
+    tz_str = get_app_settings().get("timezone", "UTC")
+    next_due = compute_next_scheduled_run(schedule_cfg, from_time=current_time, timezone_str=tz_str)
+    set_notification_state_entry("raid_summary", current_time, next_due, "scheduled_report")
+    set_notification_state_entry("periodic_report", current_time, next_due, "scheduled_report")
+    record_notification("scheduled_report", current_time, weekly=True, due_at=next_due)
+    return True
+
+
+async def send_test_notification(
+    channel: Optional[str] = "all",
+) -> tuple[bool, str]:
+    global _last_send_error
+    _last_send_error = ""
+
+    effective_channel = (channel or "all").lower().strip()
+    config_dict = get_notification_center_config()
+    mgr = NotificationManager(config_dict)
+
+    embed_data = {
+        "title": "🔔 System Alerts - Test Notification",
+        "description": (
+            "This is a test notification from SystemAlerts Server Manager.\n"
+            "Notifications are configured and functioning properly."
+        ),
+        "color": 0x3498DB,
+        "fields": [
+            {"name": "Status", "value": "Test / Operational", "inline": True},
+            {"name": "Timestamp", "value": format_timestamp(time.time()), "inline": True},
+        ],
+    }
+
+    telegram_cfg = config_dict.get("channels", {}).get("telegram", {})
+    webhook_cfg = config_dict.get("channels", {}).get("webhook", {})
+    telegram_enabled = bool(telegram_cfg.get("enabled", False))
+    webhook_enabled = bool(webhook_cfg.get("enabled", False))
+
+    if effective_channel == "discord" or (
+        effective_channel == "all" and not telegram_enabled and not webhook_enabled
+    ):
+        settings = get_app_settings()
+        discord_cfg = config_dict.get("channels", {}).get("discord", {})
+        if (
+            not discord_cfg.get("enabled")
+            and settings.get("discord_enabled", "false").strip().lower() != "true"
+        ):
+            msg = "Discord notifications are disabled in settings."
+            logging.info(msg)
+            return False, msg
+
+        discord_token = (
+            discord_cfg.get("bot_token", "").strip()
+            or settings.get("discord_token", "").strip()
+            or str(config("DISCORD_TOKEN", default="") or "").strip()
+        )
+        if not discord_token:
+            msg = "Discord token is not configured."
+            logging.error(msg)
+            return False, msg
+
+        effective_channel_id = (
+            CHANNEL_ID
+            or discord_cfg.get("channel_id", "").strip()
+            or settings.get("channel_id", "")
+        ).strip()
+        if not effective_channel_id:
+            msg = "Discord channel ID is not configured."
+            logging.error(msg)
+            return False, msg
+
+        embed = discord.Embed(
+            title="🔔 System Alerts - Test Notification",
+            description=(
+                "This is a test notification from SystemAlerts Server Manager.\n"
+                "Discord notifications are configured and functioning properly."
+            ),
+            color=0x3498DB,
+        )
+        embed.add_field(name="Status", value="Test / Operational", inline=True)
+        embed.add_field(
+            name="Timestamp",
+            value=format_timestamp(time.time()),
+            inline=True,
+        )
+
+        success = await send_message(embed)
+        if success:
+            try:
+                record_notification("test", time.time(), weekly=False)
+            except (OSError, sqlite3.Error) as exc:
+                logging.warning(f"Could not record test notification in SQLite: {exc}")
+            return True, "Test notification sent successfully."
+        else:
+            err = _last_send_error or "Failed to send test notification to Discord."
+            return False, err
+
+    success, message = await mgr.send_channel(
+        effective_channel,
+        "🔔 System Alerts - Test Notification",
+        "This is a test notification from SystemAlerts Server Manager.",
+        embed_data=embed_data,
+    )
     if success:
         try:
             record_notification("test", time.time(), weekly=False)
         except (OSError, sqlite3.Error) as exc:
             logging.warning(f"Could not record test notification in SQLite: {exc}")
-        return True, "Test notification sent successfully."
-    else:
-        err = _last_send_error or "Failed to send test notification to Discord."
-        return False, err
+    return success, message
 
 
 def should_send_weekly_summary(
@@ -3383,6 +4348,7 @@ async def on_ready() -> None:
     logging.info(f"Logged in as {client.user}")
     monitor_raid.start()
     monitor_docker_schedule.start()
+    monitor_notifications.start()
 
 
 @tasks.loop(minutes=1)
@@ -3391,6 +4357,15 @@ async def monitor_docker_schedule() -> None:
         await run_scheduled_docker_updates(force=False)
     except Exception as exc:
         logging.error(f"Error checking docker auto update schedule: {exc}")
+
+
+@tasks.loop(minutes=1)
+async def monitor_notifications() -> None:
+    try:
+        await evaluate_threshold_alerts()
+        await evaluate_scheduled_reports()
+    except Exception as exc:
+        logging.error(f"Error checking notification thresholds and schedule: {exc}")
 
 
 @tasks.loop(hours=2)
