@@ -167,6 +167,57 @@
           </button>
         </div>
 
+        <!-- Section: Host Operations -->
+        <div class="sidebar-nav-section">
+          <span class="sidebar-nav-heading">Host Operations</span>
+          <button
+            id="nav-tab-services"
+            class="nav-tab sidebar-nav-item"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="view-services"
+            title="Systemctl Services"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path>
+            </svg>
+            <span>Services</span>
+            <span id="nav-tab-services-badge" class="nav-tab-badge hidden">0</span>
+          </button>
+          <button
+            id="nav-tab-processes"
+            class="nav-tab sidebar-nav-item"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="view-processes"
+            title="Process Explorer"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+            </svg>
+            <span>Processes</span>
+          </button>
+          <button
+            id="nav-tab-users"
+            class="nav-tab sidebar-nav-item"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="view-users"
+            title="Users &amp; Groups"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+              <circle cx="9" cy="7" r="4"></circle>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+            </svg>
+            <span>Users &amp; Groups</span>
+          </button>
+        </div>
+
         <!-- Section: Alerts & Communication -->
         <div class="sidebar-nav-section">
           <span class="sidebar-nav-heading">Alerts &amp; Communication</span>
@@ -184,6 +235,20 @@
               <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
             </svg>
             <span>Notifications</span>
+          </button>
+          <button
+            id="nav-tab-audit"
+            class="nav-tab sidebar-nav-item"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="view-audit"
+            title="Security &amp; Audit Logs"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            <span>Audit Log</span>
           </button>
         </div>
       </nav>
@@ -354,13 +419,27 @@
                   <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
                 </button>
               </div>
+
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Services</span>
+                  <span id="overview-services-badge" class="status-badge status-ok">OK</span>
+                </div>
+                <span id="overview-services-summary" class="status-ribbon-desc">-- Running, 0 Failed</span>
+                <button id="btn-goto-services" type="button" class="btn-ribbon-nav" title="Jump to Services">
+                  <span>Manage</span>
+                  <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </button>
+              </div>
             </div>
 
             <div class="metrics-grid">
-              <!-- CPU Card -->
+              <!-- Row 1, Card 1: CPU Telemetry -->
               <article class="card metric-card" id="cpu-metric-card">
                 <div class="metric-header">
-                  <span class="metric-title">CPU Usage</span>
+                  <span class="metric-title">CPU Telemetry</span>
                   <div class="metric-header-right">
                     <span id="cpu-cores-badge" class="kind-badge" title="Logical CPU Cores">-- Cores</span>
                     <span id="cpu-percent-value" class="metric-value">--%</span>
@@ -387,10 +466,10 @@
                 </div>
               </article>
 
-              <!-- Memory Card -->
+              <!-- Row 1, Card 2: Memory Telemetry -->
               <article class="card metric-card" id="memory-metric-card">
                 <div class="metric-header">
-                  <span class="metric-title">Memory Usage</span>
+                  <span class="metric-title">Memory Telemetry</span>
                   <span id="memory-percent-value" class="metric-value">--%</span>
                 </div>
                 <div class="progress-track" aria-label="Memory usage bar">
@@ -418,32 +497,54 @@
                 </div>
               </article>
 
-              <!-- Disk Usage Card -->
-              <article class="card metric-card">
+              <!-- Row 2, Card 3: Storage & Filesystems -->
+              <article class="card metric-card" id="storage-metric-card">
                 <div class="metric-header">
-                  <span class="metric-title">Disk Usage</span>
+                  <span class="metric-title">Storage &amp; Filesystems</span>
                   <span id="disk-percent-value" class="metric-value">--%</span>
                 </div>
-                <div class="progress-track" aria-label="Disk usage bar">
-                  <div id="disk-progress-bar" class="progress-fill" style="width: 0%"></div>
+                <div class="root-fs-block">
+                  <div class="root-fs-label-row">
+                    <span class="fs-mountpoint-tag mono-text">/ (root)</span>
+                    <span id="disk-detail" class="metric-subtext">-- / -- used (-- free)</span>
+                  </div>
+                  <div class="progress-track" aria-label="Root disk usage bar">
+                    <div id="disk-progress-bar" class="progress-fill" style="width: 0%"></div>
+                  </div>
                 </div>
-                <div class="metric-footer">
-                  <span id="disk-detail" class="metric-subtext">-- / -- used (-- free)</span>
+                <div class="overview-mounts-container" id="overview-mounts-container">
+                  <div class="overview-mounts-header">
+                    <span class="overview-mounts-title">Mounted Storage Volumes</span>
+                  </div>
+                  <div id="overview-mounts-list" class="overview-mounts-list">
+                    <div class="empty-state-mini">Loading mounted volumes...</div>
+                  </div>
                 </div>
               </article>
 
-              <!-- System Uptime Card -->
-              <article class="card metric-card">
+              <!-- Row 2, Card 4: Host Platform & System Telemetry -->
+              <article class="card metric-card" id="host-platform-card">
                 <div class="metric-header">
-                  <span class="metric-title">System Uptime</span>
+                  <span class="metric-title">Host Platform &amp; Telemetry</span>
                   <span id="uptime-value" class="metric-value metric-value-uptime">--</span>
                 </div>
                 <div class="uptime-badge-row">
                   <span class="uptime-indicator">ONLINE</span>
                   <span id="uptime-load-badge" class="uptime-load-badge">Load: --</span>
                 </div>
-                <div class="metric-footer">
-                  <span id="boot-time-detail" class="metric-subtext">Boot time: --</span>
+                <div class="host-telemetry-grid">
+                  <div class="host-telemetry-item">
+                    <span class="host-telemetry-label">OS Distribution</span>
+                    <span id="host-os-detail" class="host-telemetry-val">Linux</span>
+                  </div>
+                  <div class="host-telemetry-item">
+                    <span class="host-telemetry-label">Kernel Version</span>
+                    <span id="host-kernel-detail" class="host-telemetry-val mono-text">--</span>
+                  </div>
+                  <div class="host-telemetry-item">
+                    <span class="host-telemetry-label">System Boot</span>
+                    <span id="boot-time-detail" class="host-telemetry-val">Boot time: --</span>
+                  </div>
                 </div>
               </article>
             </div>
@@ -1639,6 +1740,477 @@
             </div>
           </section>
         </div>
+
+        <!-- View Panel: Systemctl Services (#view-services) -->
+        <div id="view-services" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-services">
+          <section class="section-block" aria-labelledby="services-heading">
+            <div class="section-header">
+              <div>
+                <h2 id="services-heading" class="section-title">Systemctl Services</h2>
+                <p class="section-subtitle">Systemd service units monitoring, lifecycle controls, and journald log streaming</p>
+              </div>
+              <div class="module-toolbar">
+                <span id="services-last-updated" class="module-last-updated">--</span>
+                <button id="refresh-services-btn" class="btn-module-refresh" type="button" aria-label="Refresh Services" title="Refresh Services">
+                  <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- Summary Ribbon -->
+            <div class="overview-status-ribbon services-status-ribbon" role="region" aria-label="Services Summary">
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Total Services</span>
+                  <span id="services-total-count" class="pill-counter">0</span>
+                </div>
+                <span class="status-ribbon-desc">Registered system units</span>
+              </div>
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Running</span>
+                  <span id="services-running-badge" class="status-badge status-ok"><span id="services-running-count">0</span> Active</span>
+                </div>
+                <span class="status-ribbon-desc">Active daemon units</span>
+              </div>
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Failed</span>
+                  <span id="services-failed-badge" class="status-badge status-ok"><span id="services-failed-count">0</span> Failed</span>
+                </div>
+                <span class="status-ribbon-desc">Units requiring attention</span>
+              </div>
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Inactive</span>
+                  <span id="services-inactive-badge" class="status-badge status-muted"><span id="services-inactive-count">0</span> Inactive</span>
+                </div>
+                <span class="status-ribbon-desc">Stopped or dead services</span>
+              </div>
+            </div>
+
+            <!-- Filter Controls -->
+            <div class="table-controls-bar">
+              <div class="search-box">
+                <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input id="services-search-input" type="search" placeholder="Filter services by unit name or description..." aria-label="Search Services" />
+              </div>
+              <div class="filter-actions">
+                <label for="services-state-filter" class="form-label-inline">State:</label>
+                <select id="services-state-filter" class="module-interval-select" aria-label="Filter by Service State">
+                  <option value="all">All States</option>
+                  <option value="running">Running</option>
+                  <option value="failed">Failed</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Services Table Card -->
+            <div class="card table-card">
+              <div class="table-container">
+                <table class="data-table" id="services-table">
+                  <thead>
+                    <tr>
+                      <th>Unit Name</th>
+                      <th>State</th>
+                      <th>Sub State</th>
+                      <th>Description</th>
+                      <th style="text-align: right;">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="services-table-body">
+                    <tr>
+                      <td colspan="5" class="empty-state">Loading systemd services...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- View Panel: Process Explorer (#view-processes) -->
+        <div id="view-processes" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-processes">
+          <section class="section-block" aria-labelledby="processes-heading">
+            <div class="section-header">
+              <div>
+                <h2 id="processes-heading" class="section-title">Process Explorer</h2>
+                <p class="section-subtitle">Real-time host process telemetry, resource utilization, and lifecycle management</p>
+              </div>
+              <div class="module-toolbar">
+                <span id="processes-last-updated" class="module-last-updated">--</span>
+                <button id="refresh-processes-btn" class="btn-module-refresh" type="button" aria-label="Refresh Processes" title="Refresh Processes">
+                  <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- Summary Ribbon -->
+            <div class="overview-status-ribbon processes-status-ribbon" role="region" aria-label="Process Summary">
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Total Processes</span>
+                  <span id="proc-total-count" class="pill-counter">0</span>
+                </div>
+                <span class="status-ribbon-desc">Total tasks on host</span>
+              </div>
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Running</span>
+                  <span id="proc-running-count" class="count-number count-ok">0</span>
+                </div>
+                <span class="status-ribbon-desc">Active execution threads</span>
+              </div>
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Sleeping</span>
+                  <span id="proc-sleeping-count" class="count-number">0</span>
+                </div>
+                <span class="status-ribbon-desc">Awaiting events/I/O</span>
+              </div>
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Top CPU</span>
+                  <span id="proc-top-cpu" class="status-badge status-info">--</span>
+                </div>
+                <span class="status-ribbon-desc">Highest CPU load</span>
+              </div>
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Top Memory</span>
+                  <span id="proc-top-memory" class="status-badge status-info">--</span>
+                </div>
+                <span class="status-ribbon-desc">Highest RAM footprint</span>
+              </div>
+            </div>
+
+            <!-- Process Controls Bar -->
+            <div class="table-controls-bar">
+              <div class="search-box">
+                <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input id="processes-search-input" type="search" placeholder="Search by name, PID, or user..." aria-label="Search Processes" />
+              </div>
+              <div class="filter-actions">
+                <label for="processes-sort-select" class="form-label-inline">Sort:</label>
+                <select id="processes-sort-select" class="module-interval-select" aria-label="Sort Processes">
+                  <option value="cpu">CPU Usage %</option>
+                  <option value="memory">Memory Usage %</option>
+                  <option value="pid">PID</option>
+                  <option value="name">Process Name</option>
+                </select>
+                <label for="processes-limit-select" class="form-label-inline">Limit:</label>
+                <select id="processes-limit-select" class="module-interval-select" aria-label="Process Count Limit">
+                  <option value="50">Top 50</option>
+                  <option value="100">Top 100</option>
+                  <option value="200">Top 200</option>
+                  <option value="25">Top 25</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Process Table Card -->
+            <div class="card table-card">
+              <div class="table-container">
+                <table class="data-table" id="processes-table">
+                  <thead>
+                    <tr>
+                      <th>PID</th>
+                      <th>Process Name</th>
+                      <th>User</th>
+                      <th>CPU %</th>
+                      <th>Memory %</th>
+                      <th>Status</th>
+                      <th>Threads</th>
+                      <th style="text-align: right;">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="processes-table-body">
+                    <tr>
+                      <td colspan="8" class="empty-state">Loading process explorer...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- View Panel: Users & Groups (#view-users) -->
+        <div id="view-users" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-users">
+          <section class="section-block" aria-labelledby="users-heading">
+            <div class="section-header">
+              <div>
+                <h2 id="users-heading" class="section-title">Linux Users &amp; Groups</h2>
+                <p class="section-subtitle">POSIX account administration, group memberships, and security privileges</p>
+              </div>
+              <div class="module-toolbar">
+                <span id="users-last-updated" class="module-last-updated">--</span>
+                <button id="refresh-users-btn" class="btn-module-refresh" type="button" aria-label="Refresh Users &amp; Groups" title="Refresh Users &amp; Groups">
+                  <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- Subtab Navigation -->
+            <div class="view-subtabs-nav" role="tablist" aria-label="Users and Groups Subtabs">
+              <button id="subtab-users-btn" class="subtab-nav-btn active" type="button" role="tab" aria-selected="true" aria-controls="users-subtab-panel">
+                <span>Users</span>
+                <span id="subtab-users-badge" class="pill-counter">0</span>
+              </button>
+              <button id="subtab-groups-btn" class="subtab-nav-btn" type="button" role="tab" aria-selected="false" aria-controls="groups-subtab-panel">
+                <span>Groups</span>
+                <span id="subtab-groups-badge" class="pill-counter">0</span>
+              </button>
+            </div>
+
+            <!-- Users Subtab Panel -->
+            <div id="users-subtab-panel" class="subtab-panel" role="tabpanel" aria-labelledby="subtab-users-btn">
+              <div class="overview-status-ribbon" role="region" aria-label="Users Summary">
+                <div class="status-ribbon-item">
+                  <div class="status-ribbon-badge-group">
+                    <span class="status-ribbon-label">Total Users</span>
+                    <span id="users-total-count" class="pill-counter">0</span>
+                  </div>
+                  <span class="status-ribbon-desc">Configured system accounts</span>
+                </div>
+                <div class="status-ribbon-divider" aria-hidden="true"></div>
+                <div class="status-ribbon-item">
+                  <div class="status-ribbon-badge-group">
+                    <span class="status-ribbon-label">Regular Users</span>
+                    <span id="users-regular-count" class="count-number count-ok">0</span>
+                  </div>
+                  <span class="status-ribbon-desc">Human accounts (UID &ge; 1000)</span>
+                </div>
+                <div class="status-ribbon-divider" aria-hidden="true"></div>
+                <div class="status-ribbon-item">
+                  <div class="status-ribbon-badge-group">
+                    <span class="status-ribbon-label">System Accounts</span>
+                    <span id="users-system-count" class="count-number">0</span>
+                  </div>
+                  <span class="status-ribbon-desc">Daemons &amp; service logins</span>
+                </div>
+              </div>
+
+              <div class="table-controls-bar">
+                <div class="search-box">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <input id="users-search-input" type="search" placeholder="Filter users by username, shell, or home..." aria-label="Search Users" />
+                </div>
+                <div class="filter-actions">
+                  <label class="checkbox-label" for="users-regular-only-toggle">
+                    <input type="checkbox" id="users-regular-only-toggle" checked />
+                    <span>Regular Users Only</span>
+                  </label>
+                  <button id="btn-open-add-user" class="btn-primary" type="button">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <line x1="12" y1="5" x2="12" y2="19"></line>
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    <span>Add User</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="card table-card">
+                <div class="table-container">
+                  <table class="data-table" id="users-table">
+                    <thead>
+                      <tr>
+                        <th>Username</th>
+                        <th>UID / GID</th>
+                        <th>Full Name (GECOS)</th>
+                        <th>Home Directory</th>
+                        <th>Shell</th>
+                        <th>Groups</th>
+                        <th>Type</th>
+                        <th style="text-align: right;">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="users-table-body">
+                      <tr>
+                        <td colspan="8" class="empty-state">Loading user accounts...</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- Groups Subtab Panel -->
+            <div id="groups-subtab-panel" class="subtab-panel hidden" role="tabpanel" aria-labelledby="subtab-groups-btn">
+              <div class="overview-status-ribbon" role="region" aria-label="Groups Summary">
+                <div class="status-ribbon-item">
+                  <div class="status-ribbon-badge-group">
+                    <span class="status-ribbon-label">Total Groups</span>
+                    <span id="groups-total-count" class="pill-counter">0</span>
+                  </div>
+                  <span class="status-ribbon-desc">Total system groups</span>
+                </div>
+                <div class="status-ribbon-divider" aria-hidden="true"></div>
+                <div class="status-ribbon-item">
+                  <div class="status-ribbon-badge-group">
+                    <span class="status-ribbon-label">Regular Groups</span>
+                    <span id="groups-regular-count" class="count-number count-ok">0</span>
+                  </div>
+                  <span class="status-ribbon-desc">User groups (GID &ge; 1000)</span>
+                </div>
+              </div>
+
+              <div class="table-controls-bar">
+                <div class="search-box">
+                  <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <input id="groups-search-input" type="search" placeholder="Filter groups by name or member..." aria-label="Search Groups" />
+                </div>
+                <div class="filter-actions">
+                  <button id="btn-open-add-group" class="btn-primary" type="button">
+                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <line x1="12" y1="5" x2="12" y2="19"></line>
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    <span>Add Group</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="card table-card">
+                <div class="table-container">
+                  <table class="data-table" id="groups-table">
+                    <thead>
+                      <tr>
+                        <th>Group Name</th>
+                        <th>GID</th>
+                        <th>Members</th>
+                        <th style="text-align: right;">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="groups-table-body">
+                      <tr>
+                        <td colspan="4" class="empty-state">Loading groups...</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- View Panel: Security & Audit Logs (#view-audit) -->
+        <div id="view-audit" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-audit">
+          <section class="section-block" aria-labelledby="audit-heading">
+            <div class="section-header">
+              <div>
+                <h2 id="audit-heading" class="section-title">Security &amp; Audit Logs</h2>
+                <p class="section-subtitle">Immutable security audit trail, authentication logs, and administrator host actions</p>
+              </div>
+              <div class="module-toolbar">
+                <span id="audit-last-updated" class="module-last-updated">--</span>
+                <button id="refresh-audit-btn" class="btn-module-refresh" type="button" aria-label="Refresh Audit Logs" title="Refresh Audit Logs">
+                  <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- Summary Cards -->
+            <div class="overview-status-ribbon audit-status-ribbon" role="region" aria-label="Audit Log Summary">
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Total Events</span>
+                  <span id="audit-total-count" class="pill-counter">0</span>
+                </div>
+                <span class="status-ribbon-desc">Historical logged operations</span>
+              </div>
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Security &amp; Warnings</span>
+                  <span id="audit-security-count" class="status-badge status-ok">0 Events</span>
+                </div>
+                <span class="status-ribbon-desc">Warning or security severity events</span>
+              </div>
+            </div>
+
+            <!-- Filter Controls -->
+            <div class="table-controls-bar">
+              <div class="search-box">
+                <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input id="audit-search-input" type="search" placeholder="Search by description, actor, or event type..." aria-label="Search Audit Logs" />
+              </div>
+              <div class="filter-actions">
+                <label for="audit-severity-filter" class="form-label-inline">Severity:</label>
+                <select id="audit-severity-filter" class="module-interval-select" aria-label="Filter by Severity">
+                  <option value="">All Severities</option>
+                  <option value="info">Info</option>
+                  <option value="warning">Warning</option>
+                  <option value="security">Security</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Audit Table Card -->
+            <div class="card table-card">
+              <div class="table-container">
+                <table class="data-table" id="audit-table">
+                  <thead>
+                    <tr>
+                      <th>Timestamp</th>
+                      <th>Severity</th>
+                      <th>Event Type</th>
+                      <th>Actor</th>
+                      <th>Client IP</th>
+                      <th>Description</th>
+                      <th style="text-align: right;">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody id="audit-table-body">
+                    <tr>
+                      <td colspan="7" class="empty-state">Loading security audit events...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </div>
       </div>
     </main>
   </div>
@@ -1992,6 +2564,214 @@
           <span id="modal-apply-btn-label">Update &amp; Restart Services</span>
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- Service Logs Modal (#service-logs-modal) -->
+  <div id="service-logs-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="service-logs-title">
+    <div class="modal-card terminal-modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="service-logs-title" class="modal-title">Service Logs</h2>
+          <p class="modal-subtitle">Journald logs for systemd service unit</p>
+        </div>
+        <button id="btn-close-service-logs" type="button" class="btn-icon-close" aria-label="Close service logs modal">&times;</button>
+      </div>
+      <div id="service-logs-feedback" class="auth-alert hidden" role="status"></div>
+      <div class="terminal-container">
+        <pre id="service-logs-content" class="service-logs-terminal mono-text">Loading service journal logs...</pre>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-refresh-service-logs" type="button" class="btn-secondary">
+          <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+          <span>Refresh Logs</span>
+        </button>
+        <button id="btn-dismiss-service-logs" type="button" class="btn-primary">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Process Kill Confirmation Modal (#process-kill-modal) -->
+  <div id="process-kill-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="process-kill-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="process-kill-title" class="modal-title">Terminate Process</h2>
+          <p class="modal-subtitle">Dispatch POSIX termination signal to process</p>
+        </div>
+        <button id="btn-close-kill-modal" type="button" class="btn-icon-close" aria-label="Close terminate modal">&times;</button>
+      </div>
+      <div id="kill-process-feedback" class="auth-alert hidden" role="status"></div>
+      <div class="kill-modal-body">
+        <p class="kill-warning-text">Are you sure you want to terminate this process?</p>
+        <div class="target-process-info">
+          <div class="info-row">
+            <span class="info-label">PID:</span>
+            <span id="kill-process-pid" class="mono-text">--</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Process Name:</span>
+            <span id="kill-process-name" class="mono-text font-bold">--</span>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top: 16px;">
+          <label for="kill-signal-select">Signal Strategy</label>
+          <select id="kill-signal-select" class="module-interval-select full-width">
+            <option value="SIGTERM">SIGTERM (Graceful Terminate - Default)</option>
+            <option value="SIGKILL">SIGKILL (Force Kill - Immediate)</option>
+          </select>
+          <small class="form-hint">SIGTERM allows clean shutdown; SIGKILL forcibly terminates execution immediately.</small>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-cancel-kill-process" type="button" class="btn-secondary">Cancel</button>
+        <button id="btn-confirm-kill-process" type="button" class="btn-danger">Terminate Process</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add User Modal (#modal-add-user) -->
+  <div id="modal-add-user" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="add-user-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="add-user-modal-title" class="modal-title">Create Linux User</h2>
+          <p class="modal-subtitle">Provision a new POSIX system account</p>
+        </div>
+        <button id="btn-close-add-user" type="button" class="btn-icon-close" aria-label="Close add user modal">&times;</button>
+      </div>
+      <div id="add-user-feedback" class="auth-alert hidden" role="status"></div>
+      <form id="form-add-user">
+        <div class="form-group">
+          <label for="input-add-user-name">Username *</label>
+          <input id="input-add-user-name" type="text" required placeholder="e.g. devops" pattern="^[a-z_][a-z0-9_-]{0,31}$" autocomplete="off" />
+          <small class="form-hint">Must begin with a letter/underscore and contain up to 32 chars.</small>
+        </div>
+        <div class="form-group">
+          <label for="input-add-user-shell">Default Login Shell</label>
+          <input id="input-add-user-shell" type="text" value="/bin/bash" placeholder="/bin/bash" />
+        </div>
+        <div class="form-group">
+          <label for="input-add-user-groups">Supplementary Groups</label>
+          <input id="input-add-user-groups" type="text" placeholder="e.g. sudo,docker (comma-separated)" />
+        </div>
+        <div class="form-group checkbox-row">
+          <label class="checkbox-label" for="input-add-user-home">
+            <input type="checkbox" id="input-add-user-home" checked />
+            <span>Create Home Directory (/home/&lt;user&gt;)</span>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button id="btn-cancel-add-user" type="button" class="btn-secondary">Cancel</button>
+          <button id="btn-submit-add-user" type="submit" class="btn-primary">Create User</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Edit User Modal (#modal-edit-user) -->
+  <div id="modal-edit-user" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="edit-user-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="edit-user-modal-title" class="modal-title">Edit Linux User</h2>
+          <p class="modal-subtitle">Update account shell, groups, or lock status</p>
+        </div>
+        <button id="btn-close-edit-user" type="button" class="btn-icon-close" aria-label="Close edit user modal">&times;</button>
+      </div>
+      <div id="edit-user-feedback" class="auth-alert hidden" role="status"></div>
+      <form id="form-edit-user">
+        <div class="form-group">
+          <label>Target Username</label>
+          <span id="edit-user-name-display" class="mono-text font-bold">--</span>
+        </div>
+        <div class="form-group">
+          <label for="input-edit-user-shell">Login Shell</label>
+          <input id="input-edit-user-shell" type="text" placeholder="/bin/bash" />
+        </div>
+        <div class="form-group">
+          <label for="input-edit-user-groups">Supplementary Groups</label>
+          <input id="input-edit-user-groups" type="text" placeholder="e.g. sudo,docker (comma-separated)" />
+          <small class="form-hint">Replaces or updates supplementary group memberships.</small>
+        </div>
+        <div class="form-group checkbox-row">
+          <label class="checkbox-label" for="input-edit-user-locked">
+            <input type="checkbox" id="input-edit-user-locked" />
+            <span>Lock Account Password (usermod -L)</span>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button id="btn-cancel-edit-user" type="button" class="btn-secondary">Cancel</button>
+          <button id="btn-submit-edit-user" type="submit" class="btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Add Group Modal (#modal-add-group) -->
+  <div id="modal-add-group" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="add-group-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="add-group-modal-title" class="modal-title">Create Linux Group</h2>
+          <p class="modal-subtitle">Provision a new POSIX system group</p>
+        </div>
+        <button id="btn-close-add-group" type="button" class="btn-icon-close" aria-label="Close add group modal">&times;</button>
+      </div>
+      <div id="add-group-feedback" class="auth-alert hidden" role="status"></div>
+      <form id="form-add-group">
+        <div class="form-group">
+          <label for="input-add-group-name">Group Name *</label>
+          <input id="input-add-group-name" type="text" required placeholder="e.g. developers" pattern="^[a-z_][a-z0-9_-]{0,31}$" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="input-add-group-gid">Custom GID (Optional)</label>
+          <input id="input-add-group-gid" type="number" min="1" placeholder="Leave empty for auto GID" />
+        </div>
+        <div class="modal-actions">
+          <button id="btn-cancel-add-group" type="button" class="btn-secondary">Cancel</button>
+          <button id="btn-submit-add-group" type="submit" class="btn-primary">Create Group</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Group Membership Modal (#modal-group-member) -->
+  <div id="modal-group-member" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="group-member-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="group-member-modal-title" class="modal-title">Manage Group Members</h2>
+          <p class="modal-subtitle">Add or remove user accounts from group</p>
+        </div>
+        <button id="btn-close-group-member" type="button" class="btn-icon-close" aria-label="Close group membership modal">&times;</button>
+      </div>
+      <div id="group-member-feedback" class="auth-alert hidden" role="status"></div>
+      <form id="form-group-member">
+        <div class="form-group">
+          <label>Target Group</label>
+          <span id="member-group-name-display" class="mono-text font-bold">--</span>
+        </div>
+        <div class="form-group">
+          <label for="input-member-action">Action</label>
+          <select id="input-member-action" class="module-interval-select full-width">
+            <option value="add">Add User to Group</option>
+            <option value="remove">Remove User from Group</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="input-member-username">Target Username *</label>
+          <input id="input-member-username" type="text" required placeholder="e.g. devops" autocomplete="off" />
+        </div>
+        <div class="modal-actions">
+          <button id="btn-cancel-group-member" type="button" class="btn-secondary">Cancel</button>
+          <button id="btn-submit-member-action" type="submit" class="btn-primary">Apply Membership</button>
+        </div>
+      </form>
     </div>
   </div>
 

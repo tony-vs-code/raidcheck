@@ -273,6 +273,46 @@ class TestNotificationRequest(BaseModel):
 
 
 NotificationTestRequest = TestNotificationRequest
+
+
+class ServiceActionRequest(BaseModel):
+    action: str
+
+
+class ProcessKillRequest(BaseModel):
+    signal: str = "SIGTERM"
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    shell: Optional[str] = None
+    groups: Optional[list[str]] = None
+    create_home: bool = True
+
+
+class UpdateUserRequest(BaseModel):
+    shell: Optional[str] = None
+    groups: Optional[list[str]] = None
+    locked: Optional[bool] = None
+
+
+class CreateGroupRequest(BaseModel):
+    name: str
+    gid: Optional[int] = None
+
+
+class GroupMembershipRequest(BaseModel):
+    action: str
+    username: str
+
+
+def _get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
+
 def _extract_session_token(request: Request) -> Optional[str]:
     cookie_token = request.cookies.get("session_token")
     if cookie_token:
@@ -355,88 +395,15 @@ def _is_google_email_allowed(email: str, settings: dict[str, str]) -> bool:
 
 def get_storage_metrics() -> list[dict[str, Any]]:
     """Collect mounted partition metrics via psutil."""
-    partitions = psutil.disk_partitions(all=False)
-    seen_mountpoints: set[str] = set()
-    disks: list[dict[str, Any]] = []
-    for p in partitions:
-        if p.mountpoint in seen_mountpoints:
-            continue
-        seen_mountpoints.add(p.mountpoint)
-        try:
-            usage = psutil.disk_usage(p.mountpoint)
-            total = usage.total
-            used = usage.used
-            free = usage.free
-            percent = usage.percent
-        except (PermissionError, OSError):
-            total = 0
-            used = 0
-            free = 0
-            percent = 0.0
-
-        disks.append(
-            {
-                "mountpoint": p.mountpoint,
-                "device": p.device,
-                "fstype": p.fstype,
-                "opts": p.opts,
-                "total": total,
-                "used": used,
-                "free": free,
-                "percent": percent,
-            }
-        )
-    return disks
+    return main.get_storage_metrics()
 
 
 def get_system_metrics() -> dict[str, Any]:
-    """Collect real-time system metrics via psutil."""
-    cpu_percent = psutil.cpu_percent(interval=None)
-    cpu_cores = psutil.cpu_percent(percpu=True)
-    if not isinstance(cpu_cores, list):
-        cpu_cores = [cpu_cores]
-    cpu_count_logical = psutil.cpu_count(logical=True) or 1
-    cpu_count_physical = psutil.cpu_count(logical=False) or 1
+    """Collect real-time system metrics via psutil, mounts, and services summary."""
+    return main.get_system_metrics_data()
 
-    cpu_freq_val: Optional[float] = None
-    try:
-        if hasattr(psutil, "cpu_freq"):
-            freq = psutil.cpu_freq()
-            if freq and getattr(freq, "current", None) is not None:
-                cpu_freq_val = float(freq.current)
-    except Exception:
-        cpu_freq_val = None
 
-    load_avg = list(os.getloadavg()) if hasattr(os, "getloadavg") else []
-    vm = psutil.virtual_memory()
-    disk = psutil.disk_usage("/")
-    boot_time = psutil.boot_time()
-
-    return {
-        "cpu_percent": cpu_percent,
-        "cpu_cores": cpu_cores,
-        "cpu_count_logical": cpu_count_logical,
-        "cpu_count_physical": cpu_count_physical,
-        "cpu_freq": cpu_freq_val,
-        "load_avg": load_avg,
-        "memory": {
-            "total": vm.total,
-            "used": vm.used,
-            "available": vm.available,
-            "percent": vm.percent,
-            "free": getattr(vm, "free", 0),
-            "cached": getattr(vm, "cached", 0),
-            "buffers": getattr(vm, "buffers", 0),
-        },
-        "disk": {
-            "total": disk.total,
-            "used": disk.used,
-            "free": disk.free,
-            "percent": disk.percent,
-        },
-        "disks": get_storage_metrics(),
-        "boot_time": boot_time,
-    }
+get_system_metrics_data = get_system_metrics
 
 
 def _get_formatted_notification_state() -> Optional[dict[str, Any]]:
@@ -507,6 +474,7 @@ def _build_full_snapshot() -> dict[str, Any]:
             "timezone": tz,
         },
         "docker": main.docker_mgr.get_status(),
+        "services_summary": main.get_services_summary(),
     }
 
 
@@ -548,6 +516,29 @@ async def _build_module_update(module_name: str) -> dict[str, Any]:
             "type": "module_update",
             "module": "docker",
             "docker": docker_status,
+        }
+    if mod in ("services", "systemctl"):
+        services_data = await asyncio.to_thread(main.get_system_services)
+        return {
+            "type": "module_update",
+            "module": "services",
+            "services": services_data,
+        }
+    if mod in ("processes", "process"):
+        processes_data = await asyncio.to_thread(main.get_process_list)
+        return {
+            "type": "module_update",
+            "module": "processes",
+            "processes": processes_data,
+        }
+    if mod in ("users", "groups"):
+        users_data = await asyncio.to_thread(main.get_system_users)
+        groups_data = await asyncio.to_thread(main.get_system_groups)
+        return {
+            "type": "module_update",
+            "module": "users",
+            "users": users_data,
+            "groups": groups_data,
         }
     return await asyncio.to_thread(_build_full_snapshot)
 
@@ -607,7 +598,7 @@ def api_auth_status(request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/auth/setup")
-def api_auth_setup(payload: SetupRequest, response: Response) -> dict[str, Any]:
+def api_auth_setup(request: Request, payload: SetupRequest, response: Response) -> dict[str, Any]:
     if main.has_any_user():
         raise HTTPException(
             status_code=400, detail="Initial admin setup has already been completed."
@@ -624,6 +615,13 @@ def api_auth_setup(payload: SetupRequest, response: Response) -> dict[str, Any]:
     main.create_user(username, password, email=payload.email or "")
     token = main.create_session(username)
     _set_session_cookie(response, token)
+    main.record_audit_event(
+        "auth.setup",
+        f"Admin user '{username}' created",
+        actor=username,
+        ip_address=_get_client_ip(request),
+        severity="info",
+    )
     return {
         "authenticated": True,
         "username": username,
@@ -632,13 +630,29 @@ def api_auth_setup(payload: SetupRequest, response: Response) -> dict[str, Any]:
 
 
 @app.post("/api/auth/login")
-def api_auth_login(payload: LoginRequest, response: Response) -> dict[str, Any]:
+def api_auth_login(request: Request, payload: LoginRequest, response: Response) -> dict[str, Any]:
     username = payload.username.strip()
+    client_ip = _get_client_ip(request)
     if not main.verify_user(username, payload.password):
+        main.record_audit_event(
+            "auth.login.failure",
+            f"Failed login attempt for user '{username}'",
+            actor=username or "anonymous",
+            ip_address=client_ip,
+            severity="warning",
+            metadata={"reason": "invalid_credentials"},
+        )
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     token = main.create_session(username)
     _set_session_cookie(response, token)
+    main.record_audit_event(
+        "auth.login.success",
+        f"User '{username}' logged in successfully",
+        actor=username,
+        ip_address=client_ip,
+        severity="info",
+    )
     return {
         "authenticated": True,
         "username": username,
@@ -685,18 +699,36 @@ def api_auth_google(payload: GoogleAuthRequest, response: Response) -> dict[str,
 @app.post("/api/auth/logout")
 def api_auth_logout(request: Request, response: Response) -> dict[str, Any]:
     token = _extract_session_token(request)
+    client_ip = _get_client_ip(request)
+    user = "unknown"
     if token:
         try:
+            verified = main.verify_session(token)
+            if verified:
+                user = verified
             main.delete_session(token)
         except (OSError, sqlite3.Error):
             pass
     response.delete_cookie(key="session_token", path="/")
+    main.record_audit_event(
+        "auth.logout",
+        f"User '{user}' logged out",
+        actor=user,
+        ip_address=client_ip,
+        severity="info",
+    )
     return {"authenticated": False}
 
 
 @app.get("/api/system/storage")
 def api_system_storage(_user: str = Depends(require_auth)) -> dict[str, Any]:
-    return {"disks": get_storage_metrics()}
+    disks = get_storage_metrics()
+    return {"disks": disks, "filesystems": disks, "mounts": disks}
+
+
+@app.get("/api/system/metrics")
+def api_system_metrics(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    return get_system_metrics()
 
 
 @app.get("/api/status")
@@ -712,6 +744,7 @@ def api_status(_user: str = Depends(require_auth)) -> dict[str, Any]:
         "settings": {
             "timezone": tz,
         },
+        "services_summary": main.get_services_summary(),
     }
 
 
@@ -737,6 +770,12 @@ def api_update_notification_center(
 ) -> dict[str, Any]:
     updates = payload.model_dump(exclude_unset=True)
     updated = main.update_notification_center_config(updates)
+    main.record_audit_event(
+        "notifications.update",
+        "Notification center settings updated",
+        actor=_user,
+        severity="info",
+    )
     return main.get_masked_notification_center_config(updated)
 
 
@@ -955,6 +994,13 @@ def api_update_settings(
         updates["timezone"] = payload.timezone.strip()
 
     updated = main.update_app_settings(updates)
+    main.record_audit_event(
+        "settings.update",
+        f"Application settings updated: {', '.join(sorted(updates.keys()))}",
+        actor=_user,
+        metadata={k: ("••••" if "token" in k else v) for k, v in updates.items()},
+        severity="info",
+    )
     result = _format_settings_response(updated)
     result["saved"] = True
     return result
@@ -1297,7 +1343,14 @@ def api_docker_updates_config(
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
-        return main.docker_manager.set_auto_update_config(payload.frequency)
+        res = main.docker_manager.set_auto_update_config(payload.frequency)
+        main.record_audit_event(
+            "docker.config.update",
+            f"Docker auto-update frequency set to '{payload.frequency}'",
+            actor=_user,
+            severity="info",
+        )
+        return res
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1323,6 +1376,12 @@ def api_docker_set_update_schedule(
 ) -> dict[str, Any]:
     try:
         schedule = main.set_docker_auto_update_schedule(payload.model_dump())
+        main.record_audit_event(
+            "docker.config.update",
+            "Docker auto-update schedule updated",
+            actor=_user,
+            severity="info",
+        )
         return {
             "success": True,
             "schedule": schedule,
@@ -1333,6 +1392,291 @@ def api_docker_set_update_schedule(
         }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ============================================================================
+# System Services Routes
+# ============================================================================
+
+
+@app.get("/api/services")
+def api_services(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    return main.get_system_services()
+
+
+@app.post("/api/services/{service_name}/action")
+def api_service_action(
+    service_name: str,
+    payload: ServiceActionRequest,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        res = main.execute_service_action(service_name, payload.action)
+        main.record_audit_event(
+            "service.action",
+            f"Service '{res['service']}' action '{res['action']}' executed",
+            actor=_user,
+            severity="info",
+            metadata={"service": res["service"], "action": res["action"]},
+        )
+        return res
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error executing service action: {exc}")
+
+
+@app.get("/api/services/{service_name}/logs")
+def api_service_logs(
+    service_name: str,
+    lines: int = Query(default=100, ge=1, le=500),
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        log_lines = main.get_service_logs(service_name, lines=lines)
+        clean_name = service_name if service_name.endswith(".service") else f"{service_name}.service"
+        return {
+            "service": clean_name,
+            "logs": log_lines,
+            "lines": len(log_lines),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error fetching service logs: {exc}")
+
+
+# ============================================================================
+# Process Explorer Routes
+# ============================================================================
+
+
+@app.get("/api/processes")
+def api_processes(
+    sort: str = Query(default="cpu"),
+    limit: int = Query(default=50, ge=1, le=200),
+    q: Optional[str] = Query(default=None),
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    if sort.lower() not in {"cpu", "memory", "pid", "name"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid sort parameter. Must be one of: cpu, memory, pid, name",
+        )
+    return main.get_process_list(sort=sort, limit=limit, q=q)
+
+
+@app.post("/api/processes/{pid}/kill")
+def api_kill_process(
+    pid: int,
+    payload: ProcessKillRequest,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        res = main.kill_process(pid, payload.signal)
+        main.record_audit_event(
+            "process.kill",
+            f"Process PID {pid} sent signal {res['signal']}",
+            actor=_user,
+            severity="warning",
+            metadata={"pid": pid, "signal": res["signal"]},
+        )
+        return res
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ProcessLookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ============================================================================
+# Linux User & Group Management Routes
+# ============================================================================
+
+
+@app.get("/api/system/users")
+def api_get_users(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    return main.get_system_users()
+
+
+@app.post("/api/system/users")
+def api_create_user(
+    payload: CreateUserRequest,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        res = main.create_system_user(
+            username=payload.username,
+            shell=payload.shell,
+            groups=payload.groups,
+            create_home=payload.create_home,
+        )
+        main.record_audit_event(
+            "system.user.create",
+            f"System user '{payload.username}' created",
+            actor=_user,
+            metadata={"username": payload.username, "groups": payload.groups},
+        )
+        return res
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.put("/api/system/users/{username}")
+def api_update_user(
+    username: str,
+    payload: UpdateUserRequest,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        res = main.update_system_user(
+            username=username,
+            shell=payload.shell,
+            groups=payload.groups,
+            locked=payload.locked,
+        )
+        main.record_audit_event(
+            "system.user.update",
+            f"System user '{username}' updated",
+            actor=_user,
+            metadata={"username": username, "locked": payload.locked},
+        )
+        return res
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/system/users/{username}")
+def api_delete_user(
+    username: str,
+    remove_home: bool = Query(default=False),
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        res = main.delete_system_user(username=username, remove_home=remove_home)
+        main.record_audit_event(
+            "system.user.delete",
+            f"System user '{username}' deleted",
+            actor=_user,
+            severity="warning",
+            metadata={"username": username, "remove_home": remove_home},
+        )
+        return res
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/system/groups")
+def api_get_groups(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    return main.get_system_groups()
+
+
+@app.post("/api/system/groups")
+def api_create_group(
+    payload: CreateGroupRequest,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        res = main.create_system_group(name=payload.name, gid=payload.gid)
+        main.record_audit_event(
+            "system.group.create",
+            f"System group '{payload.name}' created",
+            actor=_user,
+            metadata={"group": payload.name, "gid": payload.gid},
+        )
+        return res
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/system/groups/{groupname}")
+def api_delete_group(
+    groupname: str,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        res = main.delete_system_group(groupname=groupname)
+        main.record_audit_event(
+            "system.group.delete",
+            f"System group '{groupname}' deleted",
+            actor=_user,
+            severity="warning",
+            metadata={"group": groupname},
+        )
+        return res
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/system/groups/{groupname}/members")
+def api_group_members(
+    groupname: str,
+    payload: GroupMembershipRequest,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        res = main.manage_group_membership(
+            groupname=groupname,
+            action=payload.action,
+            username=payload.username,
+        )
+        main.record_audit_event(
+            "system.group.membership",
+            f"User '{payload.username}' {payload.action}ed to group '{groupname}'",
+            actor=_user,
+            metadata={"group": groupname, "username": payload.username, "action": payload.action},
+        )
+        return res
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ============================================================================
+# Audit Logs Routes
+# ============================================================================
+
+
+@app.get("/api/audit/logs")
+def api_get_audit_logs(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    severity: Optional[str] = Query(default=None),
+    event_type: Optional[str] = Query(default=None),
+    q: Optional[str] = Query(default=None),
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    logs, total = main.get_audit_logs(
+        limit=limit,
+        offset=offset,
+        event_type=event_type,
+        severity=severity,
+        q=q,
+    )
+    return {"logs": logs, "total": total}
+
 
 
 class CacheControlStaticFiles(StaticFiles):
