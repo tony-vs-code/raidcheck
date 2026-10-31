@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
+import hashlib
 import io
 import json
 import os
@@ -3318,6 +3319,186 @@ class TestDockerBackend(unittest.TestCase):
             self.assertFalse(upd["update_available"])
             self.assertEqual(upd["current_id"], "111111111111")
             self.assertEqual(upd["latest_id"], "111111111111")
+
+    def test_docker_check_updates_multiarch_digest_matching(self):
+        dm = main.DockerManager()
+        dm.invalidate_cache()
+
+        # Scenario 1: Multi-arch image up-to-date with parent index in RepoDigests (Portainer bug fix)
+        # Parent raw manifest list hashes to 8166e2376756d1ad3194e336cd1707c28a5764af7acc8bb9f21a5f28d1903566.
+        # Remote buildx returns multi-arch manifest list with child manifests including sha256:a1d45613d38b...
+        # Local inspect has parent index digest in RepoDigests and Id.
+        target_parent_hash = "8166e2376756d1ad3194e336cd1707c28a5764af7acc8bb9f21a5f28d1903566"
+        raw_manifest_list = json.dumps({
+            "manifests": [
+                {
+                    "digest": "sha256:a1d45613d38b14521b6a0d06d735aec5276c2b4f896a7b62ba34b2288a477b38",
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                },
+                {
+                    "digest": "sha256:9636b9f1d55e95ad4c149071e2726340d0646c55f8ed38fa77958f9e10176052",
+                    "platform": {"architecture": "arm64", "os": "linux"},
+                },
+            ]
+        })
+
+        class MockHash8166:
+            def hexdigest(self):
+                return target_parent_hash
+
+        orig_sha256 = hashlib.sha256
+
+        def mock_sha256_portainer(data=b""):
+            if data == raw_manifest_list.encode("utf-8"):
+                return MockHash8166()
+            return orig_sha256(data)
+
+        local_portainer_inspect = json.dumps([
+            {
+                "Id": f"sha256:{target_parent_hash}",
+                "RepoDigests": [f"portainer/portainer-ee@sha256:{target_parent_hash}"],
+            }
+        ])
+
+        container_portainer = [
+            {"id": "p1", "name": "portainer", "image": "portainer/portainer-ee:latest", "stack": ""}
+        ]
+
+        def fake_docker_portainer_match(cmd, *args, **kwargs):
+            if cmd[:2] == ["image", "inspect"]:
+                return local_portainer_inspect
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                return raw_manifest_list
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=container_portainer),
+            patch.object(dm, "_run_docker", side_effect=fake_docker_portainer_match),
+            patch("hashlib.sha256", side_effect=mock_sha256_portainer),
+            patch("platform.machine", return_value="x86_64"),
+        ):
+            dm.invalidate_cache()
+            res = dm.check_updates(force=True)
+            self.assertEqual(len(res["updates"]), 1)
+            upd = res["updates"][0]
+            self.assertFalse(upd["update_available"])
+            self.assertEqual(upd["current_id"], "8166e2376756")
+            self.assertEqual(upd["latest_id"], "8166e2376756")
+
+        # Scenario 2: Multi-arch image with real update available
+        # Remote buildx returns a new index with sha256 starting with deadbeef9999
+        new_manifest_digest = "sha256:deadbeef99991111222233334444555566667777888899990000aaaabbbbcccc"
+        new_raw_manifest_list = json.dumps({
+            "manifests": [
+                {
+                    "digest": new_manifest_digest,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                }
+            ],
+            "nonce": "force_new_hash_9999",
+        })
+
+        def fake_docker_portainer_update(cmd, *args, **kwargs):
+            if cmd[:2] == ["image", "inspect"]:
+                return local_portainer_inspect
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                return new_raw_manifest_list
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=container_portainer),
+            patch.object(dm, "_run_docker", side_effect=fake_docker_portainer_update),
+            patch("platform.machine", return_value="x86_64"),
+        ):
+            dm.invalidate_cache()
+            res = dm.check_updates(force=True)
+            self.assertEqual(len(res["updates"]), 1)
+            upd = res["updates"][0]
+            self.assertTrue(upd["update_available"])
+            self.assertEqual(upd["current_id"], "8166e2376756")
+            self.assertEqual(upd["latest_id"], "deadbeef9999")
+            self.assertTrue(upd["can_update"])
+
+        # Scenario 3: Local RepoDigests matching child manifest digest directly
+        local_child_inspect = json.dumps([
+            {
+                "Id": "sha256:childlayerlocal123456",
+                "RepoDigests": ["portainer/portainer-ee@sha256:a1d45613d38b14521b6a0d06d735aec5276c2b4f896a7b62ba34b2288a477b38"],
+            }
+        ])
+
+        def fake_docker_child_match(cmd, *args, **kwargs):
+            if cmd[:2] == ["image", "inspect"]:
+                return local_child_inspect
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                return raw_manifest_list
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=container_portainer),
+            patch.object(dm, "_run_docker", side_effect=fake_docker_child_match),
+            patch("platform.machine", return_value="x86_64"),
+        ):
+            dm.invalidate_cache()
+            res = dm.check_updates(force=True)
+            self.assertEqual(len(res["updates"]), 1)
+            upd = res["updates"][0]
+            self.assertFalse(upd["update_available"])
+            self.assertEqual(upd["current_id"], "childlayerlo")
+            self.assertEqual(upd["latest_id"], "childlayerlo")
+
+        # Scenario 4: Container running with digest-pinned image string (e.g. my-app:v1.0@sha256:somehash...)
+        pinned_container = [
+            {
+                "id": "p2",
+                "name": "pinned_app",
+                "image": "my-app:v1.0@sha256:somehash1234567890abcdef1234567890abcdef1234567890abcdef12345678",
+                "stack": "",
+            }
+        ]
+        local_pinned_inspect = json.dumps([
+            {
+                "Id": "sha256:localapplayer123456",
+                "RepoDigests": ["my-app@sha256:remote_match_digest_1111111111111111111111111111111111111111"],
+            }
+        ])
+        resolved_docker_calls = []
+
+        def fake_docker_pinned(cmd, *args, **kwargs):
+            resolved_docker_calls.append(list(cmd))
+            if cmd[:2] == ["image", "inspect"]:
+                return local_pinned_inspect
+            if cmd[:3] == ["buildx", "imagetools", "inspect"]:
+                return json.dumps({
+                    "manifests": [
+                        {
+                            "digest": "sha256:remote_match_digest_1111111111111111111111111111111111111111",
+                            "platform": {"architecture": "amd64", "os": "linux"},
+                        }
+                    ]
+                })
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=pinned_container),
+            patch.object(dm, "_run_docker", side_effect=fake_docker_pinned),
+            patch("platform.machine", return_value="x86_64"),
+        ):
+            dm.invalidate_cache()
+            res = dm.check_updates(force=True)
+            self.assertEqual(len(res["updates"]), 1)
+            upd = res["updates"][0]
+            self.assertFalse(upd["update_available"])
+            self.assertEqual(upd["image_repo"], "my-app")
+            self.assertEqual(upd["image_tag"], "v1.0")
+            # Verify buildx imagetools inspect resolved against "my-app:v1.0" with digest stripped
+            inspect_calls = [c for c in resolved_docker_calls if c[:3] == ["buildx", "imagetools", "inspect"]]
+            self.assertTrue(len(inspect_calls) > 0)
+            self.assertEqual(inspect_calls[0][-1], "my-app:v1.0")
 
     def test_docker_check_container_image_tag_repo_and_version(self):
         dm = main.DockerManager()
