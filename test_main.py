@@ -6722,6 +6722,12 @@ class TestPackageManagerBackendAndEndpoints(unittest.TestCase):
         self.assertEqual(resp_upd.status_code, 200)
         self.assertIn("text/html", resp_upd.headers.get("content-type", ""))
 
+    def test_frontend_functions_defined(self):
+        app_js = (Path(__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function formatRelativeTime(", app_js)
+        self.assertIn("function fetchPackageUpdates(", app_js)
+        self.assertIn("function fetchInstalledPackages(", app_js)
+
 
 if __name__ == "__main__":
     unittest.main()

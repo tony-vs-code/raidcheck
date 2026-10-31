@@ -328,6 +328,40 @@ function formatTimestampLocal(unixSeconds) {
 }
 
 /**
+ * Format timestamp into human-readable relative time (e.g. "just now", "5 mins ago", "2 hrs ago", "yesterday").
+ */
+function formatRelativeTime(val) {
+  if (!val) return "--";
+  let date = null;
+  if (val instanceof Date) {
+    date = val;
+  } else if (typeof val === "number") {
+    date = new Date(val > 1e11 ? val : val * 1000);
+  } else if (typeof val === "string") {
+    const parsed = Date.parse(val);
+    if (!isNaN(parsed)) {
+      date = new Date(parsed);
+    }
+  }
+
+  if (!date || isNaN(date.getTime())) {
+    return String(val);
+  }
+
+  const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (diffSec < 0) return "just now";
+  if (diffSec < 45) return "just now";
+  if (diffSec < 90) return "1 min ago";
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)} mins ago`;
+  if (diffSec < 7200) return "1 hr ago";
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} hrs ago`;
+  if (diffSec < 172800) return "yesterday";
+  const days = Math.floor(diffSec / 86400);
+  if (days < 30) return `${days} days ago`;
+  return formatDateTime(date, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+/**
  * Normalize RAID status string to one of the supported states.
  */
 function normalizeRaidState(rawState) {
@@ -6424,8 +6458,13 @@ async function fetchPackageUpdates(force = false) {
     if (secEl) secEl.textContent = data.security_updates || 0;
     if (stdEl) stdEl.textContent = data.standard_updates || 0;
     if (subtabBadge) subtabBadge.textContent = data.total_updates || 0;
-    if (lastUpdatedEl && data.checked_at) {
-      lastUpdatedEl.textContent = `Catalog checked ${formatRelativeTime(data.checked_at)}`;
+    if (lastUpdatedEl) {
+      const stamp = data.checked_at || data.last_checked;
+      if (stamp) {
+        lastUpdatedEl.textContent = `Catalog checked ${formatRelativeTime(stamp)}`;
+      } else {
+        lastUpdatedEl.textContent = `Updated ${formatTimeOnly(new Date())}`;
+      }
     }
 
     // Render reboot banner
