@@ -5121,6 +5121,53 @@ def get_service_logs(service_name: str, lines: int = 100) -> list[str]:
         return []
 
 
+def get_vigil_logs(lines: int = 100) -> list[str]:
+    """Retrieve system journal or file logs for Vigil service."""
+    lines_val = max(1, min(int(lines), 1000))
+    candidate_services = [
+        "vigil.service",
+        "vigil",
+        "systemalerts.service",
+        "raidcheck.service",
+    ]
+
+    if shutil.which("journalctl"):
+        for svc in candidate_services:
+            try:
+                res = subprocess.run(
+                    ["journalctl", "-u", svc, "-n", str(lines_val), "--no-pager"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if res.returncode == 0 and res.stdout:
+                    raw_lines = [l for l in res.stdout.splitlines() if l.strip()]
+                    if raw_lines and not (
+                        len(raw_lines) == 1 and "-- No entries --" in raw_lines[0]
+                    ):
+                        return res.stdout.splitlines()
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+    log_candidates = [
+        Path("/var/log/vigil.log"),
+        Path("/var/log/raid_monitor.log"),
+        Path("vigil.log"),
+        Path("raidcheck.log"),
+    ]
+    for p in log_candidates:
+        try:
+            if p.is_file():
+                content = p.read_text(encoding="utf-8", errors="replace")
+                file_lines = content.splitlines()
+                if file_lines:
+                    return file_lines[-lines_val:]
+        except Exception:
+            pass
+
+    return ["-- No journald or file log entries found for vigil.service --"]
+
+
 def get_process_list(
     sort: str = "cpu",
     limit: int = 50,

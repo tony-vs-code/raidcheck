@@ -1360,9 +1360,25 @@ function updateLiveTickers() {
 /**
  * Show a subtle, non-intrusive toast notification.
  */
-function showToast({ title, message, type = "info", duration = 4500 }) {
+function showToast(options, legacyType = "info") {
   const container = document.getElementById("toast-container");
   if (!container) return;
+
+  let title = "Notification";
+  let message = "";
+  let type = "info";
+  let duration = 4500;
+
+  if (typeof options === "string") {
+    message = options;
+    type = legacyType === "error" ? "danger" : legacyType;
+    title = type === "danger" ? "Error" : (type === "success" ? "Success" : "Notice");
+  } else if (options && typeof options === "object") {
+    title = options.title || "Notification";
+    message = options.message || "";
+    type = options.type || "info";
+    duration = options.duration || 4500;
+  }
 
   while (container.children.length >= 4) {
     const oldest = container.firstChild;
@@ -3350,7 +3366,9 @@ function syncTabFromHash() {
     }
   } else if (route === "audit" || route === "security" || route === "audit-log") {
     switchViewTab("audit", false);
-  } else if (route === "notifications" || route === "logs" || route === "notifications-logs") {
+  } else if (route === "logs" || route === "vigil-logs" || route === "system-logs") {
+    openVigilLogsModal();
+  } else if (route === "notifications" || route === "notifications-logs") {
     switchViewTab("notifications", false);
   } else {
     switchViewTab("overview", false);
@@ -3569,6 +3587,10 @@ async function handleServiceAction(serviceName, action) {
   }
 }
 
+async function openVigilLogsModal() {
+  await openServiceLogsModal("vigil.service");
+}
+
 async function openServiceLogsModal(serviceName) {
   currentViewingService = serviceName;
   const modal = document.getElementById("service-logs-modal");
@@ -3576,7 +3598,8 @@ async function openServiceLogsModal(serviceName) {
   const content = document.getElementById("service-logs-content");
   const feedback = document.getElementById("service-logs-feedback");
 
-  if (title) title.textContent = `Journal Logs: ${serviceName}`;
+  const isVigil = serviceName === "vigil.service" || serviceName === "vigil";
+  if (title) title.textContent = isVigil ? "Vigil System & Service Logs" : `Journal Logs: ${serviceName}`;
   if (content) content.textContent = "Loading journald execution logs...";
   if (feedback) feedback.classList.add("hidden");
   if (modal) modal.classList.remove("hidden");
@@ -3594,8 +3617,16 @@ async function fetchServiceLogs(serviceName) {
   if (!serviceName) return;
   const content = document.getElementById("service-logs-content");
   const feedback = document.getElementById("service-logs-feedback");
+  const linesSelect = document.getElementById("service-logs-lines-select");
+  const linesVal = linesSelect ? linesSelect.value : "100";
+
   try {
-    const resp = await apiFetch("/api/services/" + encodeURIComponent(serviceName) + "/logs?lines=100");
+    const isVigil = serviceName === "vigil.service" || serviceName === "vigil";
+    const endpoint = isVigil
+      ? `/api/vigil/logs?lines=${encodeURIComponent(linesVal)}`
+      : `/api/services/${encodeURIComponent(serviceName)}/logs?lines=${encodeURIComponent(linesVal)}`;
+
+    const resp = await apiFetch(endpoint);
     const data = await resp.json();
     if (!resp.ok) {
       throw new Error(data.detail || `HTTP ${resp.status}`);
@@ -6693,6 +6724,34 @@ function initDashboard() {
     ?.addEventListener("change", (e) => {
       servicesFilterState = e.target.value;
       if (cachedServicesData) renderSystemServices(cachedServicesData);
+    });
+
+  document
+    .getElementById("btn-topbar-vigil-logs")
+    ?.addEventListener("click", openVigilLogsModal);
+
+  document
+    .getElementById("btn-sidebar-vigil-logs")
+    ?.addEventListener("click", openVigilLogsModal);
+
+  document
+    .getElementById("service-logs-lines-select")
+    ?.addEventListener("change", () => {
+      if (currentViewingService) fetchServiceLogs(currentViewingService);
+    });
+
+  document
+    .getElementById("btn-copy-service-logs")
+    ?.addEventListener("click", async () => {
+      const content = document.getElementById("service-logs-content");
+      if (content && content.textContent) {
+        try {
+          await navigator.clipboard.writeText(content.textContent);
+          showToast("Vigil service logs copied to clipboard", "success");
+        } catch {
+          showToast("Failed to copy logs to clipboard", "error");
+        }
+      }
     });
 
   document

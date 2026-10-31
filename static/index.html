@@ -305,6 +305,13 @@
 
         <div id="sidebar-version-display" class="sidebar-version-display">
           <span id="version-badge" class="sidebar-version-text" title="Current installed release version">v0.1.0</span>
+          <button id="btn-sidebar-vigil-logs" class="sidebar-log-link" type="button" title="View Vigil Service &amp; System Logs">
+            <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="4 17 10 11 4 5"></polyline>
+              <line x1="12" y1="19" x2="20" y2="19"></line>
+            </svg>
+            <span>Logs</span>
+          </button>
         </div>
       </div>
     </aside>
@@ -325,6 +332,17 @@
 
         <div class="topbar-right">
           <span id="last-updated" class="last-updated">Never updated</span>
+
+          <button id="btn-topbar-vigil-logs" class="btn-topbar-logs" type="button" title="View Vigil Service &amp; Application Logs">
+            <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+              <polyline points="10 9 9 9 8 9"></polyline>
+            </svg>
+            <span>Vigil Logs</span>
+          </button>
 
           <button id="refresh-btn" class="btn-refresh" type="button" aria-label="Refresh dashboard data">
             <svg class="refresh-icon" viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -577,6 +595,37 @@
                 </button>
               </div>
             </div>
+            <!-- Storage Volumes & Filesystems Card -->
+            <article class="card storage-mounts-card" id="storage-mounts-card">
+              <div class="card-header">
+                <div>
+                  <h3 class="card-title">Storage Volumes &amp; Filesystems</h3>
+                  <p class="card-subtitle">Mounted block partitions and disk usage</p>
+                </div>
+                <span id="storage-mounts-count-badge" class="pill-counter">0 volumes</span>
+              </div>
+
+              <div class="table-container">
+                <table class="data-table" id="storage-mounts-table">
+                  <thead>
+                    <tr>
+                      <th>Device</th>
+                      <th>Mount Point</th>
+                      <th>Filesystem</th>
+                      <th>Usage</th>
+                      <th>Used / Total (Free)</th>
+                      <th>Mount Options</th>
+                    </tr>
+                  </thead>
+                  <tbody id="storage-mounts-tbody">
+                    <tr>
+                      <td colspan="6" class="empty-state">Loading storage volumes...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+
             <div class="raid-grid">
               <!-- RAID Array Details Card -->
               <article class="card raid-details-card">
@@ -698,37 +747,6 @@
                 </div>
               </article>
             </div>
-
-            <!-- Storage Volumes & Filesystems Card -->
-            <article class="card storage-mounts-card" id="storage-mounts-card">
-              <div class="card-header">
-                <div>
-                  <h3 class="card-title">Storage Volumes &amp; Filesystems</h3>
-                  <p class="card-subtitle">Mounted block partitions and disk usage</p>
-                </div>
-                <span id="storage-mounts-count-badge" class="pill-counter">0 volumes</span>
-              </div>
-
-              <div class="table-container">
-                <table class="data-table" id="storage-mounts-table">
-                  <thead>
-                    <tr>
-                      <th>Device</th>
-                      <th>Mount Point</th>
-                      <th>Filesystem</th>
-                      <th>Usage</th>
-                      <th>Used / Total (Free)</th>
-                      <th>Mount Options</th>
-                    </tr>
-                  </thead>
-                  <tbody id="storage-mounts-tbody">
-                    <tr>
-                      <td colspan="6" class="empty-state">Loading storage volumes...</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </article>
           </section>
         </div>
 
@@ -2583,16 +2601,34 @@
       <div class="terminal-container">
         <pre id="service-logs-content" class="service-logs-terminal mono-text">Loading service journal logs...</pre>
       </div>
-      <div class="modal-actions">
-        <button id="btn-refresh-service-logs" type="button" class="btn-secondary">
-          <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="23 4 23 10 17 10"></polyline>
-            <polyline points="1 20 1 14 7 14"></polyline>
-            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-          </svg>
-          <span>Refresh Logs</span>
-        </button>
-        <button id="btn-dismiss-service-logs" type="button" class="btn-primary">Done</button>
+      <div class="modal-actions logs-modal-toolbar">
+        <div class="logs-options-group">
+          <label for="service-logs-lines-select" class="visually-hidden">Lines to retrieve</label>
+          <select id="service-logs-lines-select" class="module-interval-select" aria-label="Lines count">
+            <option value="100" selected>100 lines</option>
+            <option value="250">250 lines</option>
+            <option value="500">500 lines</option>
+            <option value="1000">1000 lines</option>
+          </select>
+          <button id="btn-copy-service-logs" type="button" class="btn-secondary" title="Copy logs to clipboard">
+            <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <span>Copy</span>
+          </button>
+        </div>
+        <div class="logs-actions-right">
+          <button id="btn-refresh-service-logs" type="button" class="btn-secondary">
+            <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            <span>Refresh Logs</span>
+          </button>
+          <button id="btn-dismiss-service-logs" type="button" class="btn-primary">Done</button>
+        </div>
       </div>
     </div>
   </div>

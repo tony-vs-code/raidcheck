@@ -524,6 +524,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   padding: 6px 4px 2px;
   font-size: 0.78rem;
   color: var(--text-muted);
@@ -531,6 +532,28 @@ body {
   letter-spacing: 0.02em;
   text-align: center;
   user-select: none;
+}
+
+.sidebar-log-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1.2;
+}
+
+.sidebar-log-link:hover {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
 }
 
 #sidebar-version-display #version-badge,
@@ -544,6 +567,7 @@ body {
   padding: 0;
   border-radius: 0;
 }
+
 
 /* Main Dashboard Content Area (#app-main-content) */
 .app-main-content {
@@ -1031,6 +1055,7 @@ body {
   color: var(--text-muted);
 }
 
+.btn-topbar-logs,
 .btn-refresh,
 .btn-header-action {
   display: inline-flex;
@@ -1047,12 +1072,14 @@ body {
   transition: all 0.15s ease;
 }
 
+.btn-topbar-logs:hover,
 .btn-refresh:hover,
 .btn-header-action:hover {
   background: #233152;
   border-color: var(--accent-primary);
 }
 
+.btn-topbar-logs:active,
 .btn-refresh:active,
 .btn-header-action:active {
   transform: translateY(1px);
@@ -2075,7 +2102,8 @@ body {
 
 /* Storage Volumes & Filesystems Card */
 .storage-mounts-card {
-  margin-top: 20px;
+  margin-top: 0;
+  margin-bottom: 20px;
 }
 
 .storage-usage-cell {
@@ -2123,6 +2151,7 @@ body {
   display: grid;
   grid-template-columns: 1.25fr 1fr;
   gap: 18px;
+  margin-top: 20px;
 }
 
 /* RAID Sysfs Sync / Rebuild Progress Bar */
@@ -4124,6 +4153,26 @@ body {
   word-break: break-all;
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.logs-modal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.logs-options-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logs-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* Target Process Info in Kill Modal */
