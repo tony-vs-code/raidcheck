@@ -2149,7 +2149,7 @@ body {
 /* RAID Details & Active Disks Grid */
 .raid-grid {
   display: grid;
-  grid-template-columns: 1.25fr 1fr;
+  grid-template-columns: 1fr;
   gap: 18px;
   margin-top: 20px;
 }
@@ -2285,6 +2285,26 @@ body {
   font-size: 0.82rem !important;
 }
 
+/* Unified RAID Member Disks Section */
+.raid-member-disks-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.section-subheading-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.subheading-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
 /* Pill Counter */
 .pill-counter {
   font-size: 0.75rem;
@@ -2373,6 +2393,172 @@ body {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+/* Sleek Modern Notification Center Control Strip / Ribbon */
+.notif-control-ribbon {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  margin-bottom: 24px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+}
+
+.notif-ribbon-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 1024px) {
+  .notif-ribbon-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.notif-ribbon-card {
+  background: var(--bg-card-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.notif-ribbon-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.notif-ribbon-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+}
+
+.notif-ribbon-title-group svg {
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.notif-ribbon-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.notif-channels-status-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.channel-status-pill {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius-sm);
+}
+
+.channel-pill-name {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.notif-schedule-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.82rem;
+}
+
+.schedule-summary-main {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.schedule-countdown-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.countdown-val {
+  color: var(--state-clean);
+}
+
+.schedule-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.thresholds-summary-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.thresh-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.78rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  color: var(--text-secondary);
+}
+
+.thresh-chip strong {
+  color: var(--text-primary);
+}
+
+.thresh-chip-danger {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: var(--state-failed);
+  font-weight: 600;
+}
+
+.notif-ribbon-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+  align-items: center;
+}
+
+.notif-ribbon-actions .btn-secondary,
+.notif-ribbon-actions .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.84rem;
+  padding: 8px 14px;
+}
+
+.notif-modal-card {
+  max-width: 680px;
+  width: 100%;
+  max-height: 88vh;
+  overflow-y: auto;
 }
 
 .notifications-center-grid {
@@ -3934,6 +4120,42 @@ body {
   color: var(--text-primary);
   font-weight: 600;
   text-align: right;
+}
+
+/* Host Network Telemetry */
+.host-network-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.network-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.host-network-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent-primary);
+}
+
+.host-network-grid {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 16px;
+}
+
+@media (max-width: 600px) {
+  .host-network-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Table Controls Bar (Search & Filter Toolbar) */

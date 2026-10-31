@@ -644,6 +644,44 @@ function renderSystemMetrics(system) {
     hostKernelEl.textContent = system.kernel || "--";
   }
 
+  // Network Telemetry
+  const net = system.network || {};
+  const ifaces = Array.isArray(net.interfaces) ? net.interfaces : [];
+  const primaryIface =
+    ifaces.find((i) => i.is_up && i.ip) ||
+    ifaces.find((i) => i.is_up) ||
+    ifaces[0] ||
+    {};
+
+  const ifaceNameEl = document.getElementById("host-network-interface");
+  if (ifaceNameEl) {
+    ifaceNameEl.textContent = primaryIface.interface || (ifaces.length > 0 ? ifaces[0].interface : "--");
+  }
+
+  const ifaceIpEl = document.getElementById("host-network-ip");
+  if (ifaceIpEl) {
+    ifaceIpEl.textContent = primaryIface.ip || (primaryIface.interface ? "No IPv4" : "--");
+  }
+
+  const netRxEl = document.getElementById("host-network-rx");
+  if (netRxEl) {
+    const rxBytes = Number(net.total_bytes_recv ?? primaryIface.bytes_recv) || 0;
+    netRxEl.textContent = formatBytes(rxBytes);
+  }
+
+  const netTxEl = document.getElementById("host-network-tx");
+  if (netTxEl) {
+    const txBytes = Number(net.total_bytes_sent ?? primaryIface.bytes_sent) || 0;
+    netTxEl.textContent = formatBytes(txBytes);
+  }
+
+  const netStatusEl = document.getElementById("host-network-status");
+  if (netStatusEl) {
+    const isOnline = ifaces.some((i) => i.is_up) || (Number(net.total_bytes_recv) > 0);
+    netStatusEl.textContent = isOnline ? "CONNECTED" : "DISCONNECTED";
+    netStatusEl.className = `status-badge ${isOnline ? "status-ok" : "status-failed"}`;
+  }
+
   // Mounted Storage Volumes Mini-List on Overview Card 3 (if present and visible)
   const mountsListEl = document.getElementById("overview-mounts-list");
   if (mountsListEl && !mountsListEl.classList.contains("hidden")) {
@@ -2860,6 +2898,62 @@ function populateNotificationCenter(config) {
   const raidTh = thresholds.raid || {};
   const notifRaidEnable = document.getElementById("notif-threshold-raid-enable");
   if (notifRaidEnable) notifRaidEnable.checked = Boolean(raidTh.enabled ?? true);
+
+  // Update Notification Center ribbon status indicators
+  const telegramStatusBadge = document.getElementById("telegram-status-badge");
+  if (telegramStatusBadge) {
+    const tgActive = Boolean(telegramCh.enabled);
+    telegramStatusBadge.textContent = tgActive ? "ENABLED" : "DISABLED";
+    telegramStatusBadge.className = `status-badge ${tgActive ? "status-clean" : "status-disabled"}`;
+  }
+
+  const webhookStatusBadge = document.getElementById("webhook-status-badge");
+  if (webhookStatusBadge) {
+    const whActive = Boolean(webhookCh.enabled);
+    webhookStatusBadge.textContent = whActive ? "ENABLED" : "DISABLED";
+    webhookStatusBadge.className = `status-badge ${whActive ? "status-clean" : "status-disabled"}`;
+  }
+
+  const ribbonRam = document.getElementById("ribbon-thresh-ram-val");
+  if (ribbonRam) ribbonRam.textContent = `${ramVal}%`;
+  const ribbonCpu = document.getElementById("ribbon-thresh-cpu-val");
+  if (ribbonCpu) ribbonCpu.textContent = `${cpuVal}%`;
+  const ribbonDisk = document.getElementById("ribbon-thresh-disk-val");
+  if (ribbonDisk) ribbonDisk.textContent = `${diskVal}%`;
+}
+
+/* =========================================================================
+ * Notification Center Modal Controllers
+ * ========================================================================= */
+
+function openNotifChannelsModal() {
+  const modal = document.getElementById("modal-notif-channels");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeNotifChannelsModal() {
+  const modal = document.getElementById("modal-notif-channels");
+  if (modal) modal.classList.add("hidden");
+}
+
+function openNotifScheduleModal() {
+  const modal = document.getElementById("modal-notif-schedule");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeNotifScheduleModal() {
+  const modal = document.getElementById("modal-notif-schedule");
+  if (modal) modal.classList.add("hidden");
+}
+
+function openNotifThresholdsModal() {
+  const modal = document.getElementById("modal-notif-thresholds");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeNotifThresholdsModal() {
+  const modal = document.getElementById("modal-notif-thresholds");
+  if (modal) modal.classList.add("hidden");
 }
 
 /**
@@ -3019,6 +3113,8 @@ async function saveNotificationCenterConfig() {
 
     populateNotificationCenter(data);
     showNotificationFeedback("Notification Center configuration saved successfully.", true);
+    closeNotifScheduleModal();
+    closeNotifThresholdsModal();
   } catch (err) {
     showNotificationFeedback(
       err instanceof Error ? err.message : String(err),
@@ -3097,6 +3193,7 @@ async function handleSaveDiscordSettings() {
 
     populateNotificationCenter(data);
     showNotificationFeedback("Delivery channels saved successfully.", true);
+    closeNotifChannelsModal();
   } catch (err) {
     showNotificationFeedback(
       err instanceof Error ? err.message : String(err),
@@ -7105,6 +7202,9 @@ function initDashboard() {
       closeStackEditor();
       closeContainerLogs();
       closeVolumeDetails();
+      closeNotifChannelsModal();
+      closeNotifScheduleModal();
+      closeNotifThresholdsModal();
     }
   });
 
@@ -7127,6 +7227,37 @@ function initDashboard() {
       }
     });
   }
+
+  // Notification Center Modals Opening & Closing
+  document.getElementById("btn-open-notif-channels")?.addEventListener("click", openNotifChannelsModal);
+  document.getElementById("btn-close-notif-channels")?.addEventListener("click", closeNotifChannelsModal);
+  document.getElementById("btn-cancel-notif-channels")?.addEventListener("click", closeNotifChannelsModal);
+
+  document.getElementById("btn-open-notif-schedule")?.addEventListener("click", openNotifScheduleModal);
+  document.getElementById("btn-close-notif-schedule")?.addEventListener("click", closeNotifScheduleModal);
+  document.getElementById("btn-cancel-notif-schedule")?.addEventListener("click", closeNotifScheduleModal);
+  document.getElementById("btn-save-notif-schedule")?.addEventListener("click", async () => {
+    await saveNotificationCenterConfig();
+    closeNotifScheduleModal();
+  });
+
+  document.getElementById("btn-open-notif-thresholds")?.addEventListener("click", openNotifThresholdsModal);
+  document.getElementById("btn-close-notif-thresholds")?.addEventListener("click", closeNotifThresholdsModal);
+  document.getElementById("btn-cancel-notif-thresholds")?.addEventListener("click", closeNotifThresholdsModal);
+  document.getElementById("btn-save-notif-thresholds")?.addEventListener("click", async () => {
+    await saveNotificationCenterConfig();
+    closeNotifThresholdsModal();
+  });
+
+  // Modal backdrop click handlers
+  ["modal-notif-channels", "modal-notif-schedule", "modal-notif-thresholds"].forEach((modalId) => {
+    const modalEl = document.getElementById(modalId);
+    if (modalEl) {
+      modalEl.addEventListener("click", (e) => {
+        if (e.target === modalEl) modalEl.classList.add("hidden");
+      });
+    }
+  });
 
   // Notifications & Notification Center
   document

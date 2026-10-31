@@ -406,6 +406,11 @@ def get_system_metrics() -> dict[str, Any]:
 get_system_metrics_data = get_system_metrics
 
 
+def get_network_metrics() -> dict[str, Any]:
+    """Collect network telemetry via psutil."""
+    return main.get_network_metrics()
+
+
 def _get_formatted_notification_state() -> Optional[dict[str, Any]]:
     try:
         state = main.get_weekly_notification_state()
@@ -757,13 +762,25 @@ def api_system_metrics(_user: str = Depends(require_auth)) -> dict[str, Any]:
         )
 
 
+@app.get("/api/system/network")
+def api_system_network(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    try:
+        return get_network_metrics()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching network metrics: {exc}"
+        )
+
+
 @app.get("/api/status")
 def api_status(_user: str = Depends(require_auth)) -> dict[str, Any]:
     settings = main.get_app_settings()
     tz = settings.get("timezone", "UTC")
+    system_metrics = get_system_metrics()
     return {
         "raid": _get_raid_summary(),
-        "system": get_system_metrics(),
+        "system": system_metrics,
+        "network": system_metrics.get("network", {}),
         "notification_state": _get_formatted_notification_state(),
         "version": main.get_current_version_info(),
         "timezone": tz,
