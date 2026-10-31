@@ -41,13 +41,13 @@
 Run the single-command installer with root privileges:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tony-vs-code/raidcheck/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/tony-vs-code/vigil/main/install.sh | sudo bash
 ```
 
 Or from a local git clone:
 
 ```bash
-git clone https://github.com/tony-vs-code/raidcheck.git vigil
+git clone https://github.com/tony-vs-code/vigil.git
 cd vigil
 sudo ./install.sh
 ```
@@ -101,7 +101,7 @@ If you are developing Vigil or wish to run it in user-space without systemd:
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/tony-vs-code/raidcheck.git vigil
+git clone https://github.com/tony-vs-code/vigil.git
 cd vigil
 
 # 2. Install dependencies with uv

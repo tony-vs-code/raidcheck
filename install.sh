@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Vigil — Automated Installer and Systemd Service Setup
-# https://github.com/tony-vs-code/raidcheck
+# https://github.com/tony-vs-code/vigil
 # ==============================================================================
 set -euo pipefail
 
-REPO_URL="https://github.com/tony-vs-code/raidcheck.git"
+REPO_URL="https://github.com/tony-vs-code/vigil.git"
 DEFAULT_INSTALL_DIR="/opt/vigil"
 DEFAULT_PORT=8000
 IN_PLACE=false
@@ -179,7 +179,7 @@ echo "==> Installing systemd service unit (/etc/systemd/system/vigil.service)...
 cat <<EOF > /etc/systemd/system/vigil.service
 [Unit]
 Description=Vigil — Linux Host Operations & Observability Suite
-Documentation=https://github.com/tony-vs-code/raidcheck
+Documentation=https://github.com/tony-vs-code/vigil
 After=network.target
 
 [Service]
