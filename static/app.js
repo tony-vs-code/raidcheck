@@ -36,6 +36,13 @@ let cachedStorageDisks = null;
 const MEMORY_HISTORY_LIMIT = 30;
 const memoryHistoryBuffer = [];
 
+const CPU_CORE_HISTORY_LIMIT = 45;
+const cpuCoresHistoryBuffers = [];
+let systemUpdatePollTimerId = null;
+let systemUpdateNoticeDismissed = false;
+let lastKnownUpdateSignature = null;
+const SYSTEM_UPDATE_POLL_INTERVAL_MS = 5 * 60 * 1000;
+
 let isFetchingDockerStatus = false;
 let isFetchingDockerStacks = false;
 let isFetchingDockerContainers = false;
@@ -439,6 +446,137 @@ function renderMemoryHistoryChart(history) {
 }
 
 /**
+ * Render Windows Task Manager style rolling time-series graph on a core canvas.
+ * Handles devicePixelRatio for razor-sharp rendering on Retina/HiDPI screens.
+ */
+function drawCpuCoreGraph(canvas, history, currentPercent) {
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.floor(rect.width) || canvas.clientWidth || 140;
+  const h = Math.floor(rect.height) || canvas.clientHeight || 44;
+
+  const targetW = Math.round(w * dpr);
+  const targetH = Math.round(h * dpr);
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  // 1. Subtle dark Task Manager style background
+  ctx.fillStyle = "rgba(4, 9, 20, 0.75)";
+  ctx.fillRect(0, 0, w, h);
+
+  // 2. Grid lines (Task Manager divisions: 25%, 50%, 75%)
+  const padTop = 3;
+  const padBottom = 3;
+  const usableH = h - padTop - padBottom;
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(71, 85, 105, 0.22)";
+  ctx.beginPath();
+  [0.25, 0.5, 0.75].forEach((frac) => {
+    const y = Math.round(padTop + usableH * (1 - frac)) + 0.5;
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+  });
+
+  // Vertical time ticks (4 divisions across width)
+  const numVDivs = 4;
+  for (let d = 1; d < numVDivs; d++) {
+    const x = Math.round((w / numVDivs) * d) + 0.5;
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+  }
+  ctx.stroke();
+
+  if (!history || history.length === 0) {
+    ctx.restore();
+    return;
+  }
+
+  // 3. Stroke & Gradient color based on utilization
+  let strokeColor = "#10b981"; // Emerald/cyan
+  let gradTop = "rgba(16, 185, 129, 0.4)";
+  let gradBottom = "rgba(16, 185, 129, 0.02)";
+  if (currentPercent >= 90) {
+    strokeColor = "#ef4444"; // Danger red
+    gradTop = "rgba(239, 68, 68, 0.45)";
+    gradBottom = "rgba(239, 68, 68, 0.02)";
+  } else if (currentPercent >= 75) {
+    strokeColor = "#f59e0b"; // Warning amber
+    gradTop = "rgba(245, 158, 11, 0.4)";
+    gradBottom = "rgba(245, 158, 11, 0.02)";
+  }
+
+  // 4. Calculate coordinates scrolling right to left
+  const maxSamples = CPU_CORE_HISTORY_LIMIT;
+  const n = history.length;
+  const stepX = w / (maxSamples - 1);
+  const points = [];
+
+  for (let i = 0; i < n; i++) {
+    const sample = Math.max(0, Math.min(100, Number(history[i]) || 0));
+    const x = w - (n - 1 - i) * stepX;
+    const y = padTop + usableH * (1 - sample / 100);
+    points.push({ x, y });
+  }
+
+  if (points.length === 1) {
+    points.unshift({ x: 0, y: points[0].y });
+  }
+
+  // 5. Fill translucent area gradient underneath
+  if (points.length > 1) {
+    const areaGrad = ctx.createLinearGradient(0, 0, 0, h);
+    areaGrad.addColorStop(0, gradTop);
+    areaGrad.addColorStop(1, gradBottom);
+
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, h);
+    points.forEach((pt) => ctx.lineTo(pt.x, pt.y));
+    ctx.lineTo(points[points.length - 1].x, h);
+    ctx.closePath();
+    ctx.fillStyle = areaGrad;
+    ctx.fill();
+  }
+
+  // 6. Glowing stroke line
+  ctx.save();
+  ctx.shadowColor = strokeColor;
+  ctx.shadowBlur = 4;
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  points.forEach((pt, idx) => {
+    if (idx === 0) ctx.moveTo(pt.x, pt.y);
+    else ctx.lineTo(pt.x, pt.y);
+  });
+  ctx.stroke();
+  ctx.restore();
+
+  // Pulse point on the latest reading
+  if (points.length > 0) {
+    const last = points[points.length - 1];
+    ctx.fillStyle = strokeColor;
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+/**
  * Render Storage Volumes & Filesystems table on #view-raid.
  * Populates from system.disks or falls back to /api/system/storage.
  */
@@ -539,7 +677,7 @@ function renderSystemMetrics(system) {
     }
   }
 
-  // CPU per-core drilldown grid
+  // CPU per-core drilldown grid (Task Manager Style Live Rolling Charts)
   const coresGrid = document.getElementById("cpu-cores-grid");
   if (coresGrid) {
     const cores =
@@ -547,26 +685,65 @@ function renderSystemMetrics(system) {
         ? system.cpu_cores
         : [cpuPercent];
 
-    coresGrid.innerHTML = cores
-      .map((coreVal, idx) => {
-        const cPercent = Math.max(0, Math.min(100, Number(coreVal) || 0));
+    while (cpuCoresHistoryBuffers.length < cores.length) {
+      cpuCoresHistoryBuffers.push([]);
+    }
+    if (cpuCoresHistoryBuffers.length > cores.length) {
+      cpuCoresHistoryBuffers.length = cores.length;
+    }
+
+    let items = coresGrid.querySelectorAll(".cpu-core-item");
+    if (items.length !== cores.length) {
+      coresGrid.innerHTML = cores
+        .map(
+          (_, idx) => `
+        <div class="cpu-core-item" data-core-idx="${idx}">
+          <div class="cpu-core-header">
+            <span class="cpu-core-label">Core ${idx}</span>
+            <span class="cpu-core-percent mono-text">0.0%</span>
+          </div>
+          <canvas class="cpu-core-canvas" width="140" height="44"></canvas>
+          <div class="progress-track cpu-core-track">
+            <div class="progress-fill" style="width: 0%"></div>
+          </div>
+        </div>
+      `
+        )
+        .join("");
+      items = coresGrid.querySelectorAll(".cpu-core-item");
+    }
+
+    cores.forEach((coreVal, idx) => {
+      const cPercent = Math.max(0, Math.min(100, Number(coreVal) || 0));
+      const buf = cpuCoresHistoryBuffers[idx];
+      buf.push(cPercent);
+      if (buf.length > CPU_CORE_HISTORY_LIMIT) {
+        buf.shift();
+      }
+
+      const item = items[idx];
+      if (!item) return;
+
+      const labelEl = item.querySelector(".cpu-core-label");
+      if (labelEl) labelEl.textContent = `Core ${idx}`;
+
+      const percentEl = item.querySelector(".cpu-core-percent");
+      if (percentEl) percentEl.textContent = `${cPercent.toFixed(1)}%`;
+
+      const barEl = item.querySelector(".cpu-core-track .progress-fill");
+      if (barEl) {
         let barClass = "progress-fill";
         if (cPercent >= 90) barClass += " danger";
         else if (cPercent >= 75) barClass += " warn";
+        barEl.className = barClass;
+        barEl.style.width = `${cPercent.toFixed(1)}%`;
+      }
 
-        return `
-        <div class="cpu-core-item">
-          <div class="cpu-core-header">
-            <span class="cpu-core-label">Core ${idx}</span>
-            <span class="cpu-core-percent mono-text">${cPercent.toFixed(1)}%</span>
-          </div>
-          <div class="progress-track cpu-core-track">
-            <div class="${barClass}" style="width: ${cPercent.toFixed(1)}%"></div>
-          </div>
-        </div>
-      `;
-      })
-      .join("");
+      const canvasEl = item.querySelector(".cpu-core-canvas");
+      if (canvasEl) {
+        drawCpuCoreGraph(canvasEl, buf, cPercent);
+      }
+    });
   }
 
   // Memory
@@ -995,6 +1172,31 @@ function renderNotificationHistory(historyPayload) {
     countBadge.textContent = `${records.length} ${records.length === 1 ? "record" : "records"}`;
   }
 
+  const drawerCount = document.getElementById("drawer-notif-count");
+  if (drawerCount) {
+    drawerCount.textContent = `${records.length} recent`;
+  }
+
+  const notifBadge = document.getElementById("notif-drawer-badge");
+  if (notifBadge) {
+    const alertCount = records.filter(
+      (r) => r.status === "degraded" || r.status === "critical" || r.status === "failed"
+    ).length;
+    if (alertCount > 0) {
+      notifBadge.textContent = String(alertCount);
+      notifBadge.classList.remove("hidden");
+      notifBadge.classList.add("has-alerts");
+    } else if (records.length > 0) {
+      notifBadge.textContent = String(records.length);
+      notifBadge.classList.remove("hidden");
+      notifBadge.classList.remove("has-alerts");
+    } else {
+      notifBadge.classList.add("hidden");
+    }
+  }
+
+  renderDrawerNotificationList(records);
+
   const tbody = document.getElementById("notification-history-tbody");
   if (!tbody) return;
   tbody.innerHTML = "";
@@ -1055,6 +1257,186 @@ function renderNotificationHistory(historyPayload) {
     tr.appendChild(tdStatus);
     tbody.appendChild(tr);
   });
+}
+
+/**
+ * Render recent dispatches stream in the slide-over notification drawer.
+ */
+function renderDrawerNotificationList(records) {
+  const listEl = document.getElementById("drawer-notification-list");
+  if (!listEl) return;
+
+  if (!records || records.length === 0) {
+    listEl.innerHTML = `
+      <div class="drawer-empty-state">
+        <svg viewBox="0 0 24 24" width="32" height="32" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+        </svg>
+        <p>No notifications dispatched yet</p>
+      </div>
+    `;
+    return;
+  }
+
+  listEl.innerHTML = records
+    .map((entry) => {
+      const timeStr = entry.sent_at_formatted || formatTimestampLocal(entry.sent_at);
+      const isWeekly = Boolean(entry.weekly) || entry.kind === "weekly summary";
+      const isTest = entry.kind === "test notification" || entry.status === "test";
+      const isDegraded =
+        entry.status === "degraded" ||
+        entry.status === "critical" ||
+        entry.status === "failed";
+
+      let kindClass = "kind-alert";
+      let kindText = entry.kind || "Alert";
+      if (isTest) {
+        kindClass = "kind-test";
+        kindText = "Test Dispatch";
+      } else if (isWeekly) {
+        kindClass = "kind-weekly";
+        kindText = "Weekly Summary";
+      }
+
+      let statusBadgeClass = "status-badge";
+      if (isDegraded) statusBadgeClass += " status-failed";
+      else if (isTest) statusBadgeClass += " status-test";
+      else statusBadgeClass += " status-ok";
+
+      const statusText = (entry.status || "OK").toUpperCase();
+      const details =
+        entry.message ||
+        entry.details ||
+        entry.raid_status ||
+        (isWeekly
+          ? "Scheduled system health summary report"
+          : isTest
+          ? "Manual channel delivery test"
+          : "System telemetry status check");
+
+      return `
+      <div class="drawer-item ${isDegraded ? "drawer-item-alert" : ""}">
+        <div class="drawer-item-top">
+          <div class="drawer-item-badges">
+            <span class="kind-badge ${kindClass}">${escapeHtml(kindText)}</span>
+            <span class="${statusBadgeClass}">${escapeHtml(statusText)}</span>
+          </div>
+          <time class="drawer-item-time mono-text">${escapeHtml(timeStr)}</time>
+        </div>
+        <div class="drawer-item-message">${escapeHtml(details)}</div>
+      </div>
+    `;
+    })
+    .join("");
+}
+
+/**
+ * Slide-over notification drawer controllers.
+ */
+function openNotificationDrawer() {
+  const drawer = document.getElementById("notification-drawer");
+  const backdrop = document.getElementById("notification-drawer-backdrop");
+  if (!drawer) return;
+
+  drawer.classList.remove("hidden");
+  void drawer.offsetWidth;
+  drawer.classList.add("open");
+  drawer.setAttribute("aria-hidden", "false");
+
+  if (backdrop) {
+    backdrop.classList.remove("hidden");
+    void backdrop.offsetWidth;
+    backdrop.classList.add("open");
+  }
+
+  fetchNotificationHistoryDrawer();
+}
+
+function closeNotificationDrawer() {
+  const drawer = document.getElementById("notification-drawer");
+  const backdrop = document.getElementById("notification-drawer-backdrop");
+  if (!drawer) return;
+
+  drawer.classList.remove("open");
+  drawer.setAttribute("aria-hidden", "true");
+
+  if (backdrop) {
+    backdrop.classList.remove("open");
+  }
+
+  setTimeout(() => {
+    if (!drawer.classList.contains("open")) {
+      drawer.classList.add("hidden");
+    }
+    if (backdrop && !backdrop.classList.contains("open")) {
+      backdrop.classList.add("hidden");
+    }
+  }, 280);
+}
+
+async function fetchNotificationHistoryDrawer() {
+  const refreshBtn = document.getElementById("btn-drawer-refresh-history");
+  if (refreshBtn) refreshBtn.classList.add("loading");
+  try {
+    const resp = await apiFetch("/api/history?limit=20");
+    if (resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      renderNotificationHistory(data);
+      setModuleLastUpdated("notifications");
+    }
+  } catch (err) {
+    console.debug("Failed to refresh drawer history:", err);
+  } finally {
+    if (refreshBtn) refreshBtn.classList.remove("loading");
+  }
+}
+
+async function handleDrawerSendTest() {
+  const btn = document.getElementById("btn-drawer-send-test");
+  if (!btn || btn.disabled) return;
+  const originalHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.classList.add("loading");
+
+  showToast({
+    title: "Sending Test Notification",
+    message: "Dispatching test message to configured delivery channels...",
+    type: "info",
+  });
+
+  try {
+    const testSelect = document.getElementById("notif-test-channel-select");
+    const selectedChannel = testSelect ? testSelect.value : "all";
+    const resp = await apiFetch("/api/notifications/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel: selectedChannel }),
+    });
+    const data = await resp.json().catch(() => ({}));
+
+    if (!resp.ok) {
+      throw new Error(data.detail || `Test notification failed (${resp.status})`);
+    }
+
+    showToast({
+      title: "Test Alert Dispatched",
+      message: data.message || "Test notification successfully sent.",
+      type: "success",
+    });
+
+    await fetchNotificationHistoryDrawer();
+  } catch (err) {
+    showToast({
+      title: "Test Alert Failed",
+      message: err.message,
+      type: "error",
+    });
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("loading");
+    btn.innerHTML = originalHtml;
+  }
 }
 
 /**
@@ -1897,6 +2279,7 @@ function openAuthOverlay({ setupRequired = false, googleClientId = "" } = {}) {
   isAuthenticated = false;
   closeWebSocket();
   stopPolling();
+  stopSystemUpdatePolling();
 
   const viewLogin = document.getElementById("view-login");
   const appShell = document.getElementById("app-shell");
@@ -1957,6 +2340,7 @@ function onAuthenticatedSuccess(username) {
   fetchDockerUpdates({ background: true });
   fetchPackageUpdates();
   fetchInstalledPackages("", 1);
+  startSystemUpdatePolling();
 }
 
 async function handleUnauthorized() {
@@ -2920,6 +3304,35 @@ function populateNotificationCenter(config) {
   if (ribbonCpu) ribbonCpu.textContent = `${cpuVal}%`;
   const ribbonDisk = document.getElementById("ribbon-thresh-disk-val");
   if (ribbonDisk) ribbonDisk.textContent = `${diskVal}%`;
+
+  // Update Notification Drawer Status Overview Strip
+  const drawerDiscordEl = document.getElementById("drawer-discord-status");
+  if (drawerDiscordEl) {
+    if (discordEnabled && isTokenConfigured) {
+      drawerDiscordEl.innerHTML = `<span class="status-dot status-dot-active"></span><span>Connected</span>`;
+    } else if (discordEnabled) {
+      drawerDiscordEl.innerHTML = `<span class="status-dot status-dot-active"></span><span>Enabled</span>`;
+    } else {
+      drawerDiscordEl.innerHTML = `<span class="status-dot status-dot-inactive"></span><span>Disabled</span>`;
+    }
+  }
+
+  const drawerThresholdEl = document.getElementById("drawer-threshold-summary");
+  if (drawerThresholdEl) {
+    drawerThresholdEl.textContent = `CPU ${cpuVal}% | RAM ${ramVal}% | Disk ${diskVal}%`;
+  }
+
+  const drawerScheduleEl = document.getElementById("drawer-schedule-summary");
+  if (drawerScheduleEl) {
+    const isSchedOn = schedule.enabled !== undefined ? Boolean(schedule.enabled) : true;
+    if (isSchedOn) {
+      const day = schedule.day || "Sunday";
+      const time = schedule.time || "09:00";
+      drawerScheduleEl.textContent = `${day} ${time}`;
+    } else {
+      drawerScheduleEl.textContent = "Disabled";
+    }
+  }
 }
 
 /* =========================================================================
@@ -6494,25 +6907,27 @@ function renderPackagesOverviewRibbon(rebootStatus, updatesData) {
   const badge = document.getElementById("overview-packages-badge");
   const summary = document.getElementById("overview-packages-summary");
   const navBadge = document.getElementById("nav-tab-packages-badge");
+  const navBadgePackages = document.getElementById("nav-badge-packages");
 
   const rebootRequired = Boolean(rebootStatus && rebootStatus.reboot_required);
   const totalUpdates = updatesData ? (Number(updatesData.total_updates) || 0) : 0;
   const securityUpdates = updatesData ? (Number(updatesData.security_updates) || 0) : 0;
   const standardUpdates = updatesData ? (Number(updatesData.standard_updates) || 0) : 0;
 
-  if (navBadge) {
-    if (totalUpdates > 0) {
-      navBadge.textContent = totalUpdates > 99 ? "99+" : String(totalUpdates);
-      navBadge.classList.remove("hidden");
-      if (securityUpdates > 0) {
-        navBadge.className = "nav-tab-badge badge-crit";
+  [navBadge, navBadgePackages].forEach((nb) => {
+    if (!nb) return;
+    if (totalUpdates > 0 || rebootRequired) {
+      nb.textContent = totalUpdates > 99 ? "99+" : (totalUpdates > 0 ? String(totalUpdates) : "!");
+      nb.classList.remove("hidden");
+      if (securityUpdates > 0 || rebootRequired) {
+        nb.className = "nav-tab-badge badge-crit";
       } else {
-        navBadge.className = "nav-tab-badge";
+        nb.className = "nav-tab-badge";
       }
     } else {
-      navBadge.classList.add("hidden");
+      nb.classList.add("hidden");
     }
-  }
+  });
 
   if (badge && summary) {
     if (rebootRequired) {
@@ -6535,6 +6950,131 @@ function renderPackagesOverviewRibbon(rebootStatus, updatesData) {
       badge.className = "status-badge status-ok";
       summary.textContent = "0 updates, system clean";
     }
+  }
+
+  renderSystemUpdateNotice({
+    total: totalUpdates,
+    security: securityUpdates,
+    standard: standardUpdates,
+    rebootRequired,
+  });
+}
+
+/**
+ * Render or update the dismissible system update notice bar (#system-update-notice-bar).
+ */
+function renderSystemUpdateNotice({ total, security, standard, rebootRequired }) {
+  const bar = document.getElementById("system-update-notice-bar");
+  const msgEl = document.getElementById("system-update-notice-message");
+  const badgeEl = document.getElementById("update-indicator-badge");
+  const navBadge1 = document.getElementById("nav-tab-packages-badge");
+  const navBadge2 = document.getElementById("nav-badge-packages");
+
+  [navBadge1, navBadge2].forEach((nb) => {
+    if (!nb) return;
+    if (total > 0 || rebootRequired) {
+      nb.textContent = total > 99 ? "99+" : (total > 0 ? String(total) : "!");
+      nb.classList.remove("hidden");
+      if (security > 0 || rebootRequired) {
+        nb.className = "nav-tab-badge badge-crit";
+      } else {
+        nb.className = "nav-tab-badge";
+      }
+    } else {
+      nb.classList.add("hidden");
+    }
+  });
+
+  const stateSignature = `${total}:${security}:${rebootRequired}`;
+  if (lastKnownUpdateSignature !== null && lastKnownUpdateSignature !== stateSignature) {
+    systemUpdateNoticeDismissed = false;
+  }
+  lastKnownUpdateSignature = stateSignature;
+
+  if (!bar) return;
+
+  if ((total === 0 && !rebootRequired) || systemUpdateNoticeDismissed) {
+    bar.classList.add("hidden");
+    return;
+  }
+
+  bar.classList.remove("notice-reboot", "notice-security", "notice-updates");
+
+  if (rebootRequired) {
+    bar.classList.add("notice-reboot");
+    if (badgeEl) {
+      badgeEl.textContent = "Reboot Required";
+      badgeEl.className = "update-indicator-badge badge-danger";
+    }
+    if (msgEl) {
+      if (total > 0) {
+        msgEl.textContent = `Reboot Required: A system restart is required to apply kernel or core updates (${total} packages available, ${security} security).`;
+      } else {
+        msgEl.textContent = "Reboot Required: A system restart is required to apply kernel or core updates.";
+      }
+    }
+  } else if (total > 0) {
+    if (security > 0) {
+      bar.classList.add("notice-security");
+      if (badgeEl) {
+        badgeEl.textContent = "Security Updates";
+        badgeEl.className = "update-indicator-badge badge-danger";
+      }
+    } else {
+      bar.classList.add("notice-updates");
+      if (badgeEl) {
+        badgeEl.textContent = "Updates Available";
+        badgeEl.className = "update-indicator-badge";
+      }
+    }
+    if (msgEl) {
+      msgEl.textContent = `System Updates Available: ${total} package${total === 1 ? "" : "s"} available${security > 0 ? ` (${security} security)` : ""}.`;
+    }
+  }
+
+  bar.classList.remove("hidden");
+}
+
+/**
+ * Background polling for system package and container updates.
+ * Periodically polls /api/packages/summary every 5 minutes.
+ */
+async function pollSystemUpdates() {
+  if (!isAuthenticated) return;
+  try {
+    const resp = await apiFetch("/api/packages/summary");
+    if (!resp.ok) return;
+    const summary = await resp.json();
+    if (!summary || !summary.supported) return;
+
+    const total = Number(summary.total) || 0;
+    const security = Number(summary.security_count) || 0;
+    const standard = Math.max(0, total - security);
+    const rebootRequired = Boolean(summary.reboot_required);
+
+    renderSystemUpdateNotice({
+      total,
+      security,
+      standard,
+      rebootRequired,
+    });
+
+    fetchDockerUpdates({ background: true }).catch(() => {});
+  } catch (err) {
+    console.debug("pollSystemUpdates silent error:", err);
+  }
+}
+
+function startSystemUpdatePolling() {
+  stopSystemUpdatePolling();
+  pollSystemUpdates();
+  systemUpdatePollTimerId = window.setInterval(pollSystemUpdates, SYSTEM_UPDATE_POLL_INTERVAL_MS);
+}
+
+function stopSystemUpdatePolling() {
+  if (systemUpdatePollTimerId) {
+    window.clearInterval(systemUpdatePollTimerId);
+    systemUpdatePollTimerId = null;
   }
 }
 
@@ -6884,7 +7424,10 @@ function initDashboard() {
 
   document
     .getElementById("nav-tab-notifications")
-    ?.addEventListener("click", () => switchViewTab("notifications", true));
+    ?.addEventListener("click", () => {
+      switchViewTab("notifications", true);
+      openNotificationDrawer();
+    });
 
   document
     .getElementById("nav-tab-audit")
@@ -7664,6 +8207,75 @@ function initDashboard() {
   document
     .getElementById("settings-form")
     ?.addEventListener("submit", handleSettingsSubmit);
+
+  // Notification Drawer Handlers
+  document
+    .getElementById("btn-topbar-notifications")
+    ?.addEventListener("click", openNotificationDrawer);
+
+  document
+    .getElementById("btn-close-notification-drawer")
+    ?.addEventListener("click", closeNotificationDrawer);
+
+  document
+    .getElementById("notification-drawer-backdrop")
+    ?.addEventListener("click", closeNotificationDrawer);
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      const drawer = document.getElementById("notification-drawer");
+      if (drawer && drawer.classList.contains("open")) {
+        closeNotificationDrawer();
+      }
+    }
+  });
+
+  document
+    .getElementById("btn-drawer-refresh-history")
+    ?.addEventListener("click", fetchNotificationHistoryDrawer);
+
+  document
+    .getElementById("btn-drawer-channels")
+    ?.addEventListener("click", openNotifChannelsModal);
+
+  document
+    .getElementById("btn-drawer-schedule")
+    ?.addEventListener("click", openNotifScheduleModal);
+
+  document
+    .getElementById("btn-drawer-thresholds")
+    ?.addEventListener("click", openNotifThresholdsModal);
+
+  document
+    .getElementById("btn-drawer-send-test")
+    ?.addEventListener("click", handleDrawerSendTest);
+
+  // System Update Notice Bar Handlers
+  document
+    .getElementById("btn-notice-view-updates")
+    ?.addEventListener("click", () => switchViewTab("packages", true));
+
+  document
+    .getElementById("btn-dismiss-update-notice")
+    ?.addEventListener("click", () => {
+      systemUpdateNoticeDismissed = true;
+      const bar = document.getElementById("system-update-notice-bar");
+      if (bar) bar.classList.add("hidden");
+    });
+
+  // HiDPI / Window Resize Listener for Per-Core CPU Canvases
+  window.addEventListener("resize", () => {
+    const coresGrid = document.getElementById("cpu-cores-grid");
+    if (!coresGrid) return;
+    const items = coresGrid.querySelectorAll(".cpu-core-item");
+    items.forEach((item, idx) => {
+      const canvasEl = item.querySelector(".cpu-core-canvas");
+      const buf = cpuCoresHistoryBuffers[idx];
+      if (canvasEl && buf && buf.length > 0) {
+        drawCpuCoreGraph(canvasEl, buf, buf[buf.length - 1]);
+      }
+    });
+  });
 
   if (!localTickerTimerId) {
     localTickerTimerId = window.setInterval(updateLiveTickers, 1000);

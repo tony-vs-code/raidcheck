@@ -5233,6 +5233,89 @@ class PackageManager:
             "packages": reboot_packages,
         }
 
+    def get_updates_summary(self) -> dict[str, Any]:
+        """Fast, lightweight, non-blocking summary of pending updates and reboot status.
+
+        Returns:
+            {
+                "supported": bool,
+                "total": int,
+                "security_count": int,
+                "reboot_required": bool,
+            }
+        """
+        if not self.is_supported():
+            return {
+                "supported": False,
+                "total": 0,
+                "security_count": 0,
+                "reboot_required": False,
+            }
+
+        reboot_status = self.get_reboot_status()
+        reboot_required = bool(reboot_status.get("reboot_required", False))
+
+        with self._cache_lock:
+            if self._updates_cache is not None:
+                cached_ts, cached_res = self._updates_cache
+                if (time.time() - cached_ts) < self._updates_cache_ttl:
+                    return {
+                        "supported": True,
+                        "total": int(cached_res.get("total_updates", len(cached_res.get("updates", [])))),
+                        "security_count": int(cached_res.get("security_updates", 0)),
+                        "reboot_required": reboot_required,
+                    }
+
+        # Fast inspection without blocking: check update-notifier cache files
+        notifier_candidates = [
+            Path("/var/lib/update-notifier/updates-available"),
+            Path("/var/run/motd.dynamic"),
+            Path("/run/motd.dynamic"),
+        ]
+        for notifier_file in notifier_candidates:
+            if notifier_file.is_file():
+                try:
+                    content = notifier_file.read_text(encoding="utf-8", errors="replace")
+                    total_m = re.search(
+                        r"(\d+)\s+updates?\s+can\s+be\s+(?:applied|installed|updated)",
+                        content,
+                        re.IGNORECASE,
+                    )
+                    sec_m = re.search(
+                        r"(\d+)\s+(?:of these\s+updates\s+are\s+(?:standard\s+)?security\s+updates|security\s+updates?)",
+                        content,
+                        re.IGNORECASE,
+                    )
+                    if total_m:
+                        total = int(total_m.group(1))
+                        sec = int(sec_m.group(1)) if sec_m else 0
+                        return {
+                            "supported": True,
+                            "total": total,
+                            "security_count": sec,
+                            "reboot_required": reboot_required,
+                        }
+                except Exception:
+                    pass
+
+        # Fallback to expired cache if available rather than blocking
+        with self._cache_lock:
+            if self._updates_cache is not None:
+                _, cached_res = self._updates_cache
+                return {
+                    "supported": True,
+                    "total": int(cached_res.get("total_updates", len(cached_res.get("updates", [])))),
+                    "security_count": int(cached_res.get("security_updates", 0)),
+                    "reboot_required": reboot_required,
+                }
+
+        return {
+            "supported": True,
+            "total": 0,
+            "security_count": 0,
+            "reboot_required": reboot_required,
+        }
+
     def _load_installed_packages(self) -> list[dict[str, Any]]:
         with self._cache_lock:
             if self._installed_cache is not None:
@@ -5367,7 +5450,9 @@ class PackageManager:
                     cached_ts, cached_res = self._updates_cache
                     if (time.time() - cached_ts) < self._updates_cache_ttl:
                         res = copy.deepcopy(cached_res)
-                        res["reboot"] = self.get_reboot_status()
+                        reboot_info = self.get_reboot_status()
+                        res["reboot"] = reboot_info
+                        res["reboot_status"] = reboot_info
                         return res
 
         reboot_info = self.get_reboot_status()

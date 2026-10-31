@@ -6742,6 +6742,83 @@ class TestPackageManagerBackendAndEndpoints(unittest.TestCase):
             ssl_up = next(u for u in res["updates"] if u["package"] == "libssl3")
             self.assertTrue(ssl_up["is_security"])
 
+    def test_get_available_updates_caching(self):
+        pm = main.PackageManager()
+        apt_dist_output = (
+            "Reading package lists... Done\n"
+            "Inst curl [7.81.0-1ubuntu1.15] (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-updates [amd64])\n"
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=apt_dist_output)
+            # First call populates cache
+            res1 = pm.get_available_updates(force=False)
+            self.assertEqual(res1["total_updates"], 1)
+            self.assertEqual(mock_run.call_count, 1)
+
+            # Second call should use cache, no subprocess.run call
+            res2 = pm.get_available_updates(force=False)
+            self.assertEqual(res2["total_updates"], 1)
+            self.assertEqual(mock_run.call_count, 1)
+
+            # Force=True should bypass cache and invoke subprocess.run
+            res3 = pm.get_available_updates(force=True)
+            self.assertEqual(res3["total_updates"], 1)
+            self.assertEqual(mock_run.call_count, 2)
+
+            # Invalidate cache
+            pm.invalidate_cache()
+            res4 = pm.get_available_updates(force=False)
+            self.assertEqual(mock_run.call_count, 3)
+
+    def test_get_updates_summary_caching_and_inspection(self):
+        pm = main.PackageManager()
+
+        # 1. Unsupported system
+        with patch.object(pm, "is_supported", return_value=False):
+            summary = pm.get_updates_summary()
+            self.assertFalse(summary["supported"])
+            self.assertEqual(summary["total"], 0)
+            self.assertEqual(summary["security_count"], 0)
+            self.assertFalse(summary["reboot_required"])
+
+        # 2. Uses cache if available
+        with patch.object(pm, "is_supported", return_value=True), \
+             patch.object(pm, "get_reboot_status", return_value={"reboot_required": False, "packages": []}):
+            with pm._cache_lock:
+                pm._updates_cache = (
+                    time.time(),
+                    {"total_updates": 7, "security_updates": 3, "updates": []},
+                )
+            cached_sum = pm.get_updates_summary()
+            self.assertTrue(cached_sum["supported"])
+            self.assertEqual(cached_sum["total"], 7)
+            self.assertEqual(cached_sum["security_count"], 3)
+            self.assertFalse(cached_sum["reboot_required"])
+
+        # 3. Fast inspection from notifier file if cache is None
+        pm.invalidate_cache()
+        notifier_data = "12 updates can be applied immediately.\n4 of these updates are standard security updates.\n"
+        with patch.object(pm, "is_supported", return_value=True), \
+             patch.object(pm, "get_reboot_status", return_value={"reboot_required": True, "packages": ["linux-image"]}), \
+             patch("pathlib.Path.is_file", return_value=True), \
+             patch("pathlib.Path.read_text", return_value=notifier_data):
+            file_sum = pm.get_updates_summary()
+            self.assertTrue(file_sum["supported"])
+            self.assertEqual(file_sum["total"], 12)
+            self.assertEqual(file_sum["security_count"], 4)
+            self.assertTrue(file_sum["reboot_required"])
+
+        # 4. Fallback when no cache and no notifier file
+        pm.invalidate_cache()
+        with patch.object(pm, "is_supported", return_value=True), \
+             patch.object(pm, "get_reboot_status", return_value={"reboot_required": False, "packages": []}), \
+             patch("pathlib.Path.is_file", return_value=False):
+            empty_sum = pm.get_updates_summary()
+            self.assertTrue(empty_sum["supported"])
+            self.assertEqual(empty_sum["total"], 0)
+            self.assertEqual(empty_sum["security_count"], 0)
+            self.assertFalse(empty_sum["reboot_required"])
+
     def test_run_upgrade_dry_run_and_sanitization(self):
         pm = main.PackageManager()
         with patch("subprocess.run") as mock_run:
@@ -6761,18 +6838,42 @@ class TestPackageManagerBackendAndEndpoints(unittest.TestCase):
         self.assertIn("Invalid package name", api_bad.json()["detail"])
 
     def test_api_package_endpoints_and_status(self):
-        # 1. Status includes reboot_status
+        # 1. Status includes reboot_status and updates_summary
         status_resp = asgi_get(api.app, "/api/status", cookies=self.auth_cookies)
         self.assertEqual(status_resp.status_code, 200)
         status_data = status_resp.json()
         self.assertIn("reboot_status", status_data)
+        self.assertIn("updates_summary", status_data)
+        self.assertIn("supported", status_data["updates_summary"])
+        self.assertIn("total", status_data["updates_summary"])
+        self.assertIn("security_count", status_data["updates_summary"])
+        self.assertIn("reboot_required", status_data["updates_summary"])
 
-        # 2. GET /api/packages/reboot
+        # 2. GET /api/packages/summary
+        with patch.object(main.package_manager, "get_updates_summary", return_value={
+            "supported": True,
+            "total": 3,
+            "security_count": 1,
+            "reboot_required": False,
+        }):
+            summary_resp = asgi_get(api.app, "/api/packages/summary", cookies=self.auth_cookies)
+            self.assertEqual(summary_resp.status_code, 200)
+            sum_data = summary_resp.json()
+            self.assertTrue(sum_data["supported"])
+            self.assertEqual(sum_data["total"], 3)
+            self.assertEqual(sum_data["security_count"], 1)
+            self.assertFalse(sum_data["reboot_required"])
+
+        # 2b. GET /api/packages/summary requires auth
+        unauth_resp = asgi_get(api.app, "/api/packages/summary")
+        self.assertEqual(unauth_resp.status_code, 401)
+
+        # 3. GET /api/packages/reboot
         reboot_resp = asgi_get(api.app, "/api/packages/reboot", cookies=self.auth_cookies)
         self.assertEqual(reboot_resp.status_code, 200)
         self.assertIn("reboot_required", reboot_resp.json())
 
-        # 3. GET /api/packages/updates
+        # 4. GET /api/packages/updates
         with patch.object(main.package_manager, "get_available_updates", return_value={
             "supported": True,
             "total_updates": 1,
@@ -6845,8 +6946,21 @@ class TestModernizedUIContractsAndTelemetry(unittest.TestCase):
     """Test invariants for modern UI contracts, unified cards, and network telemetry."""
 
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "raid_state.db"
+        self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
+        self.db_patcher.start()
+
+        main.create_user("admin", "adminpass", email="admin@example.com")
+        self.session_token = main.create_session("admin")
+        self.auth_cookies = {"session_token": self.session_token}
+
         self.index_html = (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
         self.app_js = (Path(__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+
+    def tearDown(self):
+        self.db_patcher.stop()
+        self.temp_dir.cleanup()
 
     def test_notifications_tab_modernization_contracts(self):
         # 1. Modals exist
@@ -6942,6 +7056,99 @@ class TestModernizedUIContractsAndTelemetry(unittest.TestCase):
         ]
         for elem in net_elements:
             self.assertIn(elem, self.index_html)
+
+    def test_windows_task_manager_style_cpu_per_core_charts(self):
+        """Verify Windows Task Manager style rolling time-series graph for CPU cores."""
+        css_text = (Path(__file__).parent / "static" / "styles.css").read_text(encoding="utf-8")
+        
+        # JS Invariants: buffer, limit, drawing function, canvas creation, HiDPI devicePixelRatio handling
+        self.assertIn("CPU_CORE_HISTORY_LIMIT", self.app_js)
+        self.assertIn("cpuCoresHistoryBuffers", self.app_js)
+        self.assertIn("function drawCpuCoreGraph(", self.app_js)
+        self.assertIn("cpu-core-canvas", self.app_js)
+        self.assertIn("cpu-core-label", self.app_js)
+        self.assertIn("cpu-core-percent", self.app_js)
+        self.assertIn("cpu-core-track", self.app_js)
+        self.assertIn("devicePixelRatio", self.app_js)
+
+        # CSS Invariants
+        self.assertIn(".cpu-core-canvas", css_text)
+        self.assertIn(".cpu-core-item", css_text)
+        self.assertIn(".cpu-core-header", css_text)
+        self.assertIn(".cpu-core-track", css_text)
+
+    def test_slide_over_notification_drawer_contracts(self):
+        """Verify Slide-Over Notification Drawer markup, topbar trigger, and handlers."""
+        # Topbar trigger & badge
+        self.assertIn('id="btn-topbar-notifications"', self.index_html)
+        self.assertIn('id="notif-drawer-badge"', self.index_html)
+
+        # Drawer container & backdrop
+        self.assertIn('id="notification-drawer"', self.index_html)
+        self.assertIn('id="notification-drawer-backdrop"', self.index_html)
+
+        # Drawer header & controls
+        self.assertIn('id="drawer-notif-count"', self.index_html)
+        self.assertIn('id="btn-drawer-refresh-history"', self.index_html)
+        self.assertIn('id="btn-close-notification-drawer"', self.index_html)
+
+        # Quick action bar modal launch buttons
+        self.assertIn('id="btn-drawer-channels"', self.index_html)
+        self.assertIn('id="btn-drawer-schedule"', self.index_html)
+        self.assertIn('id="btn-drawer-thresholds"', self.index_html)
+        self.assertIn('id="btn-drawer-send-test"', self.index_html)
+
+        # Status overview strip
+        self.assertIn('id="drawer-discord-status"', self.index_html)
+        self.assertIn('id="drawer-threshold-summary"', self.index_html)
+        self.assertIn('id="drawer-schedule-summary"', self.index_html)
+
+        # Live scrollable stream list
+        self.assertIn('id="drawer-notification-list"', self.index_html)
+
+        # JS handlers & functions
+        self.assertIn("openNotificationDrawer", self.app_js)
+        self.assertIn("closeNotificationDrawer", self.app_js)
+        self.assertIn("renderDrawerNotificationList", self.app_js)
+        self.assertIn("fetchNotificationHistoryDrawer", self.app_js)
+        self.assertIn("handleDrawerSendTest", self.app_js)
+
+        # Sidebar nav-tab-notifications interaction
+        self.assertIn('document.getElementById("nav-tab-notifications")', self.app_js)
+        self.assertIn("openNotificationDrawer()", self.app_js)
+
+    def test_system_update_notice_bar_and_polling_contracts(self):
+        """Verify dismissible system update notice bar, package nav badges, and background polling."""
+        # HTML Elements
+        self.assertIn('id="system-update-notice-bar"', self.index_html)
+        self.assertIn('id="update-indicator-badge"', self.index_html)
+        self.assertIn('id="update-notice-text"', self.index_html)
+        self.assertIn('id="system-update-notice-message"', self.index_html)
+        self.assertIn('id="btn-notice-view-updates"', self.index_html)
+        self.assertIn('id="btn-dismiss-update-notice"', self.index_html)
+        self.assertIn('id="nav-badge-packages"', self.index_html)
+
+        # JS Polling & Logic
+        self.assertIn("/api/packages/summary", self.app_js)
+        self.assertIn("pollSystemUpdates", self.app_js)
+        self.assertIn("SYSTEM_UPDATE_POLL_INTERVAL_MS", self.app_js)
+        self.assertIn("renderSystemUpdateNotice", self.app_js)
+
+        # Backend endpoints contract: /api/packages/summary and /api/status updates_summary
+        status_resp = asgi_get(api.app, "/api/status", cookies=self.auth_cookies)
+        self.assertEqual(status_resp.status_code, 200)
+        status_data = status_resp.json()
+        self.assertIn("updates_summary", status_data)
+        self.assertIn("total", status_data["updates_summary"])
+        self.assertIn("security_count", status_data["updates_summary"])
+        self.assertIn("reboot_required", status_data["updates_summary"])
+
+        summary_resp = asgi_get(api.app, "/api/packages/summary", cookies=self.auth_cookies)
+        self.assertEqual(summary_resp.status_code, 200)
+        summary_data = summary_resp.json()
+        self.assertIn("total", summary_data)
+        self.assertIn("security_count", summary_data)
+        self.assertIn("reboot_required", summary_data)
 
 
 if __name__ == "__main__":
