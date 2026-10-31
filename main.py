@@ -971,7 +971,7 @@ def apply_release_update() -> dict[str, Any]:
 
     try:
         subprocess.Popen(
-            ["bash", "-c", "sleep 2 && systemctl restart raidcheck raidcheck-web"],
+            ["bash", "-c", "sleep 2 && (systemctl restart vigil 2>/dev/null || systemctl restart raidcheck raidcheck-web)"],
             cwd=str(REPO_DIR),
             start_new_session=True,
             stdout=subprocess.DEVNULL,

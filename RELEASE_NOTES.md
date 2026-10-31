@@ -16,7 +16,7 @@ Vigil v0.9.7 introduces a visual overhaul for Discord notifications—featuring 
 ### 2. Zero-Friction Automated Installer (`install.sh`)
 - **Single-Line Quickstart**:
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/tony-vs-code/raidcheck/main/install.sh | sudo bash
+  curl -fsSL https://raw.githubusercontent.com/tony-vs-code/vigil/main/install.sh | sudo bash
   ```
 - **Universal Linux Support**: Automated package detection and prerequisite installation across Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`/`yum`), and Arch (`pacman`).
 - **Astral `uv` Virtual Environment**: High-speed, reproducible dependency isolation with automatic fallback to standard Python `venv`.

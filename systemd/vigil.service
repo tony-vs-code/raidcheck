@@ -1,6 +1,6 @@
 [Unit]
 Description=Vigil — Linux Host Operations & Observability Suite
-Documentation=https://github.com/tony-vs-code/raidcheck
+Documentation=https://github.com/tony-vs-code/vigil
 After=network.target
 
 [Service]
