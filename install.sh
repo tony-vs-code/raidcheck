@@ -269,6 +269,23 @@ esac
 EOF
 chmod +x /usr/local/bin/vigil
 
+# Clean up legacy services from previous versions (SystemAlerts / RaidCheck)
+echo "==> Checking for legacy service units..."
+for legacy_svc in raidcheck.service raidcheck-web.service systemalerts.service systemalerts-web.service; do
+    if systemctl is-active --quiet "$legacy_svc" 2>/dev/null; then
+        echo "==> Stopping legacy service: $legacy_svc..."
+        systemctl stop "$legacy_svc" 2>/dev/null || true
+    fi
+    if systemctl is-enabled --quiet "$legacy_svc" 2>/dev/null; then
+        echo "==> Disabling legacy service: $legacy_svc..."
+        systemctl disable "$legacy_svc" 2>/dev/null || true
+    fi
+    if [ -f "/etc/systemd/system/$legacy_svc" ]; then
+        echo "==> Removing legacy unit file: /etc/systemd/system/$legacy_svc..."
+        rm -f "/etc/systemd/system/$legacy_svc"
+    fi
+done
+
 # Reload and Enable Service
 echo "==> Reloading systemd daemon and enabling vigil.service..."
 systemctl daemon-reload
