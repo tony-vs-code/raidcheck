@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 from subprocess import CalledProcessError
 import tempfile
@@ -1968,6 +1969,105 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn(f"/static/styles.css?v={current_ver}", response.text)
         self.assertIn(f"/static/app.js?v={current_ver}", response.text)
 
+    def test_spa_fallback_routes_and_api_static_404(self):
+        """Test full SPA fallback routing for client-side navigation and proper 404s for API/static paths."""
+        spa_paths = [
+            "/audit",
+            "/services",
+            "/processes",
+            "/users",
+            "/storage",
+            "/disks",
+            "/overview",
+            "/notifications",
+            "/containers/stacks",
+            "/raid",
+            "/containers",
+            "/containers/logs/web-service",
+            "/users/manage/admin",
+            "/login",
+            "/deep/nested/view",
+        ]
+        for path in spa_paths:
+            resp = asgi_get(api.app, path)
+            self.assertEqual(
+                resp.status_code,
+                200,
+                f"SPA route {path} should serve dashboard HTML with status 200",
+            )
+            self.assertIn("text/html", resp.headers.get("content-type", ""))
+            self.assertIn("<html", resp.text.lower())
+            self.assertIn("vigil", resp.text.lower())
+
+        # Unknown API endpoints must return 404 (JSON {"detail": "Not Found"}), not fallback to HTML
+        for api_path in ["/api/unknown_endpoint", "/api/nonexistent", "/api", "/api/unknown/subroute"]:
+            api_resp = asgi_get(api.app, api_path, cookies=self.auth_cookies)
+            self.assertEqual(api_resp.status_code, 404)
+            self.assertIn("application/json", api_resp.headers.get("content-type", ""))
+            self.assertEqual(api_resp.json(), {"detail": "Not Found"})
+
+        # Non-existent static files must return 404, not HTML
+        for static_path in ["/static/unknown_file.xyz", "/static/does_not_exist.css"]:
+            static_resp = asgi_get(api.app, static_path)
+            self.assertEqual(static_resp.status_code, 404)
+
+        # Favicon routes must serve icon assets
+        fav_ico_resp = asgi_get(api.app, "/favicon.ico")
+        self.assertEqual(fav_ico_resp.status_code, 200)
+        self.assertIn("image/x-icon", fav_ico_resp.headers.get("content-type", ""))
+
+        fav_svg_resp = asgi_get(api.app, "/static/favicon.svg")
+        self.assertEqual(fav_svg_resp.status_code, 200)
+        self.assertIn("image/svg+xml", fav_svg_resp.headers.get("content-type", ""))
+
+    def test_storage_ui_renaming_and_overview_card_simplification(self):
+        """Verify storage UI renaming in sidebar and view heading, plus overview storage metric card simplification."""
+        resp = asgi_get(api.app, "/")
+        self.assertEqual(resp.status_code, 200)
+        html = resp.text
+
+        # 1. Sidebar tab #nav-tab-raid has title "Storage" and text "Storage"
+        self.assertRegex(
+            html,
+            r'<button[^>]*id="nav-tab-raid"[^>]*title="Storage"[^>]*>[\s\S]*?<span>Storage</span>[\s\S]*?</button>',
+            "Sidebar tab #nav-tab-raid must have title 'Storage' and display 'Storage'",
+        )
+
+        # 2. #view-raid section heading is "Storage"
+        view_raid_start = html.find('id="view-raid"')
+        self.assertGreater(view_raid_start, -1)
+        view_containers_start = html.find('id="view-containers"')
+        self.assertGreater(view_containers_start, view_raid_start)
+        view_raid_html = html[view_raid_start:view_containers_start]
+
+        self.assertRegex(
+            view_raid_html,
+            r'<h2[^>]*id="raid-details-heading"[^>]*>\s*Storage\s*</h2>',
+            "#view-raid section heading must be 'Storage'",
+        )
+
+        # 3. #storage-metric-card on overview page includes required elements
+        overview_start = html.find('id="view-overview"')
+        self.assertGreater(overview_start, -1)
+        overview_end = html.find('id="view-raid"')
+        self.assertGreater(overview_end, overview_start)
+        overview_html = html[overview_start:overview_end]
+
+        card_match = re.search(r'<article[^>]*id="storage-metric-card"[^>]*>([\s\S]*?)</article>', overview_html)
+        self.assertIsNotNone(card_match, "#storage-metric-card not found in overview panel")
+        card_html = card_match.group(0)
+        self.assertIn('id="btn-goto-storage"', card_html)
+        self.assertIn('id="disk-progress-bar"', card_html)
+        self.assertIn('id="disk-percent-value"', card_html)
+        self.assertIn('id="disk-detail"', card_html)
+
+        # 4. #overview-mounts-container has class "hidden"
+        self.assertRegex(
+            card_html,
+            r'<div[^>]*id="overview-mounts-container"[^>]*class="[^"]*\bhidden\b[^"]*"',
+            "#overview-mounts-container must have 'hidden' class",
+        )
+
     def test_static_assets_and_dashboard_elements_served(self):
         index_resp = asgi_get(api.app, "/")
         self.assertEqual(index_resp.status_code, 200)
@@ -1987,7 +2087,7 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertIn('id="nav-tab-containers"', index_resp.text)
         self.assertIn('id="nav-tab-notifications"', index_resp.text)
         self.assertIn(">Overview</span>", index_resp.text)
-        self.assertIn(">RAID &amp; Storage</span>", index_resp.text)
+        self.assertTrue(">Storage</span>" in index_resp.text or ">RAID &amp; Storage</span>" in index_resp.text)
         self.assertIn(">Containers</span>", index_resp.text)
         self.assertIn(">Notifications</span>", index_resp.text)
         self.assertIn('id="view-overview"', index_resp.text)
@@ -2244,7 +2344,7 @@ class FastAPIEndpointTests(unittest.TestCase):
 
         self.assertIn('id="app-sidebar"', html)
         self.assertIn('class="app-sidebar"', html)
-        self.assertIn("System Level", html)
+        self.assertTrue("System &amp; Storage" in html or "System Level" in html)
         self.assertIn("Container Management", html)
         self.assertIn("Alerts &amp; Communication", html)
 
@@ -5674,6 +5774,12 @@ class TestSystemServicesEndpoints(unittest.TestCase):
         resp = asgi_get(api.app, "/api/services")
         self.assertEqual(resp.status_code, 401)
 
+    def test_get_services_error_handling(self):
+        with patch.object(main, "get_system_services", side_effect=RuntimeError("systemctl failed")):
+            resp = asgi_get(api.app, "/api/services", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 500)
+            self.assertIn("Error fetching system services", resp.json()["detail"])
+
     def test_get_services_systemctl_unavailable(self):
         with patch("shutil.which", return_value=None):
             resp = asgi_get(api.app, "/api/services", cookies=self.auth_cookies)
@@ -5817,6 +5923,12 @@ class TestProcessExplorerEndpoints(unittest.TestCase):
             self.assertIn(key, summary)
         self.assertGreater(summary["total_processes"], 0)
 
+    def test_get_processes_error_handling(self):
+        with patch.object(main, "get_process_list", side_effect=RuntimeError("psutil error")):
+            resp = asgi_get(api.app, "/api/processes", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 500)
+            self.assertIn("Error fetching processes", resp.json()["detail"])
+
     def test_get_processes_sorting_and_filtering(self):
         class DummyProc:
             def __init__(self, info):
@@ -5940,6 +6052,17 @@ class TestStorageAndFilesystemMetricsEndpoints(unittest.TestCase):
         self.assertIn("filesystems", data["system"])
         self.assertIn("mounts", data["system"])
 
+    def test_storage_and_metrics_error_handling(self):
+        with patch.object(api, "get_storage_metrics", side_effect=RuntimeError("storage error")):
+            resp = asgi_get(api.app, "/api/system/storage", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 500)
+            self.assertIn("Error fetching storage metrics", resp.json()["detail"])
+
+        with patch.object(api, "get_system_metrics", side_effect=RuntimeError("metrics error")):
+            resp = asgi_get(api.app, "/api/system/metrics", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 500)
+            self.assertIn("Error fetching system metrics", resp.json()["detail"])
+
 
 class TestSystemUserGroupEndpoints(unittest.TestCase):
     def setUp(self):
@@ -5977,6 +6100,17 @@ class TestSystemUserGroupEndpoints(unittest.TestCase):
         self.assertIn("groups", data_g)
         self.assertIn("summary", data_g)
         self.assertIn("total_groups", data_g["summary"])
+
+    def test_get_users_and_groups_error_handling(self):
+        with patch.object(main, "get_system_users", side_effect=RuntimeError("user error")):
+            resp = asgi_get(api.app, "/api/system/users", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 500)
+            self.assertIn("Error fetching system users", resp.json()["detail"])
+
+        with patch.object(main, "get_system_groups", side_effect=RuntimeError("group error")):
+            resp = asgi_get(api.app, "/api/system/groups", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 500)
+            self.assertIn("Error fetching system groups", resp.json()["detail"])
 
     def test_user_create_validation_and_execution(self):
         # Invalid username
@@ -6137,6 +6271,12 @@ class TestAuditLoggingEndpoints(unittest.TestCase):
         self.assertGreaterEqual(total, 1)
         self.assertIn("channel_id", logs[0]["description"])
         self.assertEqual(logs[0]["actor"], "admin")
+
+    def test_get_audit_logs_error_handling(self):
+        with patch.object(main, "get_audit_logs", side_effect=RuntimeError("audit db error")):
+            resp = asgi_get(api.app, "/api/audit/logs", cookies=self.auth_cookies)
+            self.assertEqual(resp.status_code, 500)
+            self.assertIn("Error fetching audit logs", resp.json()["detail"])
 
 
 if __name__ == "__main__":

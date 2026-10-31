@@ -610,9 +610,9 @@ function renderSystemMetrics(system) {
     hostKernelEl.textContent = system.kernel || "--";
   }
 
-  // Mounted Storage Volumes Mini-List on Overview Card 3
+  // Mounted Storage Volumes Mini-List on Overview Card 3 (if present and visible)
   const mountsListEl = document.getElementById("overview-mounts-list");
-  if (mountsListEl) {
+  if (mountsListEl && !mountsListEl.classList.contains("hidden")) {
     const disks = Array.isArray(system.disks) ? system.disks : (Array.isArray(system.filesystems) ? system.filesystems : []);
     if (disks.length > 0) {
       mountsListEl.innerHTML = disks.map((d) => {
@@ -3160,14 +3160,15 @@ function escapeHtml(str) {
  * Switch view panel between 'overview', 'raid', 'notifications', 'containers', 'services', 'processes', 'users', and 'audit'.
  */
 function switchViewTab(tabName, updateHash = true) {
-  currentViewTab = tabName;
-  const isNotifications = tabName === "notifications";
-  const isContainers = tabName === "containers";
-  const isRaid = tabName === "raid";
-  const isServices = tabName === "services";
-  const isProcesses = tabName === "processes";
-  const isUsers = tabName === "users";
-  const isAudit = tabName === "audit";
+  const normTab = (tabName || "").toLowerCase();
+  const isNotifications = normTab === "notifications";
+  const isContainers = normTab === "containers";
+  const isRaid = normTab === "raid" || normTab === "storage" || normTab === "disks";
+  const isServices = normTab === "services";
+  const isProcesses = normTab === "processes";
+  const isUsers = normTab === "users";
+  const isAudit = normTab === "audit";
+  currentViewTab = isRaid ? "raid" : (normTab || "overview");
 
   const overviewTab = document.getElementById("nav-tab-overview");
   const raidTab = document.getElementById("nav-tab-raid");
@@ -3237,10 +3238,10 @@ function switchViewTab(tabName, updateHash = true) {
     raidTab?.classList.add("active");
     raidTab?.setAttribute("aria-selected", "true");
     raidView?.classList.remove("hidden");
-    if (pageTitle) pageTitle.textContent = "RAID & Storage";
+    if (pageTitle) pageTitle.textContent = "Storage";
 
-    if (updateHash && window.location.hash !== "#raid") {
-      history.replaceState(null, "", "#raid");
+    if (updateHash && window.location.hash !== "#storage" && window.location.hash !== "#raid" && window.location.hash !== "#disks") {
+      history.replaceState(null, "", "#storage");
     }
 
     renderStorageMounts(cachedStorageDisks);
@@ -3322,31 +3323,34 @@ function switchViewTab(tabName, updateHash = true) {
 }
 
 /**
- * Synchronize view tab state from location.hash.
+ * Synchronize view tab state from location.hash or location.pathname.
  */
 function syncTabFromHash() {
-  const hash = (window.location.hash || "").replace("#", "").toLowerCase();
-  if (hash.startsWith("containers")) {
-    const parts = hash.split("/");
+  const hash = (window.location.hash || "").replace("#", "").toLowerCase().trim();
+  const path = (window.location.pathname || "").toLowerCase().replace(/^\/+|\/+$/g, "").trim();
+  const route = hash || path;
+
+  if (route.startsWith("containers")) {
+    const parts = route.split("/");
     const subtab = parts[1] || currentDockerSubtab || "stacks";
     switchViewTab("containers", false);
     switchDockerSubtab(subtab, false);
-  } else if (hash === "raid" || hash === "storage" || hash === "disks") {
+  } else if (route === "raid" || route === "storage" || route === "disks") {
     switchViewTab("raid", false);
-  } else if (hash === "services" || hash === "systemctl") {
+  } else if (route === "services" || route === "systemctl") {
     switchViewTab("services", false);
-  } else if (hash === "processes" || hash === "proc" || hash === "tasks") {
+  } else if (route === "processes" || route === "proc" || route === "tasks") {
     switchViewTab("processes", false);
-  } else if (hash.startsWith("users") || hash.startsWith("groups")) {
+  } else if (route.startsWith("users") || route.startsWith("groups")) {
     switchViewTab("users", false);
-    if (hash.includes("groups")) {
+    if (route.includes("groups")) {
       switchUsersSubtab("groups");
     } else {
       switchUsersSubtab("users");
     }
-  } else if (hash === "audit" || hash === "security" || hash === "audit-log") {
+  } else if (route === "audit" || route === "security" || route === "audit-log") {
     switchViewTab("audit", false);
-  } else if (hash === "notifications" || hash === "logs" || hash === "notifications-logs") {
+  } else if (route === "notifications" || route === "logs" || route === "notifications-logs") {
     switchViewTab("notifications", false);
   } else {
     switchViewTab("overview", false);
@@ -3393,6 +3397,11 @@ async function fetchSystemServices() {
   try {
     const resp = await apiFetch("/api/services");
     if (!resp.ok) {
+      if (resp.status === 404) {
+        throw new Error(
+          "Endpoint not found (HTTP 404). If you just updated Vigil, please restart the Vigil service ('sudo systemctl restart vigil' or 'vigil restart') to load backend endpoints."
+        );
+      }
       throw new Error(`Failed to fetch services (HTTP ${resp.status})`);
     }
     const data = await resp.json();
@@ -3620,6 +3629,11 @@ async function fetchProcesses() {
     const query = "?sort=" + encodeURIComponent(processesSort) + "&limit=" + encodeURIComponent(processesLimit) + (processesSearchTerm ? "&q=" + encodeURIComponent(processesSearchTerm) : "");
     const resp = await apiFetch("/api/processes" + query);
     if (!resp.ok) {
+      if (resp.status === 404) {
+        throw new Error(
+          "Endpoint not found (HTTP 404). If you just updated Vigil, please restart the Vigil service ('sudo systemctl restart vigil' or 'vigil restart') to load backend endpoints."
+        );
+      }
       throw new Error(`Failed to fetch processes (HTTP ${resp.status})`);
     }
     const data = await resp.json();
@@ -3827,6 +3841,11 @@ async function fetchSystemUsers() {
   try {
     const resp = await apiFetch("/api/system/users");
     if (!resp.ok) {
+      if (resp.status === 404) {
+        throw new Error(
+          "Endpoint not found (HTTP 404). If you just updated Vigil, please restart the Vigil service ('sudo systemctl restart vigil' or 'vigil restart') to load backend endpoints."
+        );
+      }
       throw new Error(`Failed to fetch users (HTTP ${resp.status})`);
     }
     const data = await resp.json();
@@ -3947,6 +3966,11 @@ async function fetchSystemGroups() {
   try {
     const resp = await apiFetch("/api/system/groups");
     if (!resp.ok) {
+      if (resp.status === 404) {
+        throw new Error(
+          "Endpoint not found (HTTP 404). If you just updated Vigil, please restart the Vigil service ('sudo systemctl restart vigil' or 'vigil restart') to load backend endpoints."
+        );
+      }
       throw new Error(`Failed to fetch groups (HTTP ${resp.status})`);
     }
     const data = await resp.json();
@@ -4326,6 +4350,11 @@ async function fetchAuditLogs() {
     const query = "?limit=" + encodeURIComponent(auditLimit) + "&offset=" + encodeURIComponent(auditOffset) + (auditSeverityFilter ? "&severity=" + encodeURIComponent(auditSeverityFilter) : "") + (auditSearchTerm ? "&q=" + encodeURIComponent(auditSearchTerm) : "");
     const resp = await apiFetch("/api/audit/logs" + query);
     if (!resp.ok) {
+      if (resp.status === 404) {
+        throw new Error(
+          "Endpoint not found (HTTP 404). If you just updated Vigil, please restart the Vigil service ('sudo systemctl restart vigil' or 'vigil restart') to load backend endpoints."
+        );
+      }
       throw new Error(`Failed to fetch audit logs (HTTP ${resp.status})`);
     }
     const data = await resp.json();
@@ -6263,6 +6292,10 @@ function initDashboard() {
   // Overview Quick Link Actions
   document
     .getElementById("btn-goto-raid")
+    ?.addEventListener("click", () => switchViewTab("raid", true));
+
+  document
+    .getElementById("btn-goto-storage")
     ?.addEventListener("click", () => switchViewTab("raid", true));
 
   document

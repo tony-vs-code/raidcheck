@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="vigil-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="50%" stop-color="#090d16" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+    <linearGradient id="vigil-accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="50%" stop-color="#0ea5e9" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+    <linearGradient id="vigil-core" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+    <filter id="vigil-glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Squircle Canvas Badge -->
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#vigil-bg)" stroke="#1e293b" stroke-width="6" />
+  <rect x="30" y="30" width="452" height="452" rx="106" fill="none" stroke="url(#vigil-accent)" stroke-width="2" stroke-opacity="0.35" />
+
+  <!-- Background Telemetry Grid Subtlety -->
+  <circle cx="256" cy="256" r="168" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="4 8" stroke-opacity="0.2" />
+  <circle cx="256" cy="256" r="120" fill="none" stroke="#10b981" stroke-width="1.5" stroke-dasharray="6 6" stroke-opacity="0.25" />
+
+  <!-- Sentinel Eye & Shield Aperture -->
+  <g filter="url(#vigil-glow)">
+    <!-- Outer Sentinel Arch -->
+    <path d="M 104 256 C 140 160, 212 120, 256 120 C 300 120, 372 160, 408 256 C 372 352, 300 392, 256 392 C 212 392, 140 352, 104 256 Z"
+          fill="none" stroke="url(#vigil-accent)" stroke-width="22" stroke-linejoin="round" />
+
+    <!-- Core Observatory Iris Ring -->
+    <circle cx="256" cy="256" r="68" fill="#070d19" stroke="url(#vigil-core)" stroke-width="14" />
+
+    <!-- Living Status Pulse Center -->
+    <circle cx="256" cy="256" r="32" fill="url(#vigil-accent)" />
+    <circle cx="256" cy="256" r="12" fill="#f8fafc" />
+  </g>
+
+  <!-- Hardware Node Status Pips -->
+  <circle cx="148" cy="256" r="7" fill="#38bdf8" />
+  <circle cx="364" cy="256" r="7" fill="#10b981" />
+
+  <!-- Bottom Hardware Telemetry Bar -->
+  <g opacity="0.75">
+    <line x1="170" y1="424" x2="342" y2="424" stroke="#334155" stroke-width="5" stroke-linecap="round" />
+    <line x1="220" y1="424" x2="292" y2="424" stroke="url(#vigil-accent)" stroke-width="5" stroke-linecap="round" />
+  </g>
+</svg>

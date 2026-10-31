@@ -7,6 +7,8 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>Vigil — Host Operations &amp; Observability</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="alternate icon" type="image/x-icon" href="/favicon.ico" />
   <link rel="stylesheet" href="/static/styles.css?v=0.5.0" />
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
@@ -17,10 +19,9 @@
       <div class="auth-brand">
         <div class="brand-icon auth-brand-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="30" height="30" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
-            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
-            <line x1="6" y1="6" x2="6.01" y2="6"></line>
-            <line x1="6" y1="18" x2="6.01" y2="18"></line>
+            <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+            <circle cx="12" cy="12" r="1" fill="currentColor"></circle>
           </svg>
         </div>
         <div class="auth-brand-text">
@@ -86,10 +87,9 @@
       <div class="sidebar-header">
         <div class="brand-icon sidebar-brand-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
-            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
-            <line x1="6" y1="6" x2="6.01" y2="6"></line>
-            <line x1="6" y1="18" x2="6.01" y2="18"></line>
+            <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+            <circle cx="12" cy="12" r="1" fill="currentColor"></circle>
           </svg>
         </div>
         <div class="sidebar-brand-info">
@@ -107,9 +107,9 @@
       </div>
 
       <nav class="sidebar-nav" aria-label="Main Navigation">
-        <!-- Section: System Level -->
+        <!-- Section: System & Storage -->
         <div class="sidebar-nav-section">
-          <span class="sidebar-nav-heading">System Level</span>
+          <span class="sidebar-nav-heading">System &amp; Storage</span>
           <button
             id="nav-tab-overview"
             class="nav-tab sidebar-nav-item active"
@@ -134,7 +134,7 @@
             role="tab"
             aria-selected="false"
             aria-controls="view-raid"
-            title="RAID &amp; Storage"
+            title="Storage"
           >
             <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="22" y1="12" x2="2" y2="12"></line>
@@ -142,7 +142,7 @@
               <line x1="6" y1="16" x2="6.01" y2="16"></line>
               <line x1="10" y1="16" x2="10.01" y2="16"></line>
             </svg>
-            <span>RAID &amp; Storage</span>
+            <span>Storage</span>
           </button>
         </div>
 
@@ -386,7 +386,7 @@
                   <span id="overview-raid-status-badge" class="status-badge status-unknown">UNKNOWN</span>
                 </div>
                 <span id="overview-raid-summary" class="status-ribbon-desc">Monitoring active array and storage pools</span>
-                <button id="btn-goto-raid" type="button" class="btn-ribbon-nav" title="Jump to RAID &amp; Storage">
+                <button id="btn-goto-raid" type="button" class="btn-ribbon-nav" title="Jump to Storage">
                   <span>Manage</span>
                   <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
                 </button>
@@ -497,10 +497,10 @@
                 </div>
               </article>
 
-              <!-- Row 2, Card 3: Storage & Filesystems -->
+              <!-- Row 2, Card 3: Storage -->
               <article class="card metric-card" id="storage-metric-card">
                 <div class="metric-header">
-                  <span class="metric-title">Storage &amp; Filesystems</span>
+                  <span class="metric-title">Storage</span>
                   <span id="disk-percent-value" class="metric-value">--%</span>
                 </div>
                 <div class="root-fs-block">
@@ -512,13 +512,12 @@
                     <div id="disk-progress-bar" class="progress-fill" style="width: 0%"></div>
                   </div>
                 </div>
-                <div class="overview-mounts-container" id="overview-mounts-container">
-                  <div class="overview-mounts-header">
-                    <span class="overview-mounts-title">Mounted Storage Volumes</span>
-                  </div>
-                  <div id="overview-mounts-list" class="overview-mounts-list">
-                    <div class="empty-state-mini">Loading mounted volumes...</div>
-                  </div>
+                <div class="storage-card-footer">
+                  <span class="metric-subtext">Manage RAID arrays, block disks, and filesystem mounts</span>
+                  <button id="btn-goto-storage" type="button" class="btn-sm btn-secondary">Open Storage</button>
+                </div>
+                <div id="overview-mounts-container" class="hidden" aria-hidden="true">
+                  <div id="overview-mounts-list" class="hidden"></div>
                 </div>
               </article>
 
@@ -551,14 +550,17 @@
           </section>
         </div>
 
-        <!-- View Panel: RAID & Storage (#view-raid) -->
+        <!-- View Panel: Storage (#view-raid) -->
         <div id="view-raid" class="view-panel hidden" role="tabpanel" aria-labelledby="nav-tab-raid">
           <section class="section-block" aria-labelledby="raid-details-heading">
             <div class="section-header">
-              <h2 id="raid-details-heading" class="section-title">RAID Array &amp; Storage</h2>
+              <div>
+                <h2 id="raid-details-heading" class="section-title">Storage</h2>
+                <p class="section-subtitle">RAID Arrays, Block Disks &amp; Filesystems</p>
+              </div>
               <div class="module-toolbar">
                 <span id="raid-adaptive-badge" class="adaptive-badge hidden">5s Rebuild Boost</span>
-                <select id="raid-interval-select" class="module-interval-select" aria-label="RAID refresh rate">
+                <select id="raid-interval-select" class="module-interval-select" aria-label="Storage refresh rate">
                   <option value="5">5s</option>
                   <option value="15">15s (Adaptive)</option>
                   <option value="30">30s</option>
@@ -566,7 +568,7 @@
                   <option value="0">Paused</option>
                 </select>
                 <span id="raid-last-updated" class="module-last-updated">--</span>
-                <button id="refresh-raid-btn" class="btn-module-refresh" type="button" aria-label="Refresh RAID Array" title="Refresh RAID Array">
+                <button id="refresh-raid-btn" class="btn-module-refresh" type="button" aria-label="Refresh Storage" title="Refresh Storage">
                   <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="23 4 23 10 17 10"></polyline>
                     <polyline points="1 20 1 14 7 14"></polyline>
