@@ -1915,6 +1915,10 @@ function onAuthenticatedSuccess(username) {
   fetchNotificationCenterConfig();
   checkForUpdates({ silent: true });
   fetchDockerUpdatesConfig();
+  // Preload container updates, package updates, and installed packages in background
+  fetchDockerUpdates({ background: true });
+  fetchPackageUpdates();
+  fetchInstalledPackages("", 1);
 }
 
 async function handleUnauthorized() {
@@ -3294,6 +3298,9 @@ function switchViewTab(tabName, updateHash = true) {
     if (isAuthenticated) {
       fetchDockerStatus();
       refreshDockerSubtab(currentDockerSubtab);
+      if (!cachedDockerUpdates || cachedDockerUpdates.length === 0) {
+        fetchDockerUpdates({ background: true });
+      }
     }
   } else if (isRaid) {
     raidTab?.classList.add("active");
@@ -6028,7 +6035,7 @@ function renderDockerUpdates(updates) {
   lastDockerUpdatesRenderKey = renderKey;
 }
 
-async function fetchDockerUpdates({ force = false } = {}) {
+async function fetchDockerUpdates({ force = false, background = false } = {}) {
   const tbody = document.getElementById("docker-updates-tbody");
   if (!tbody) return;
   if (isFetchingDockerUpdates) return;
@@ -6036,7 +6043,9 @@ async function fetchDockerUpdates({ force = false } = {}) {
 
   const btnCheckUpdates = document.getElementById("btn-check-docker-updates");
   let originalBtnHtml = "";
-  if (btnCheckUpdates) {
+  const isViewingUpdatesTab = currentDockerSubtab === "updates";
+
+  if (btnCheckUpdates && !background && isViewingUpdatesTab) {
     originalBtnHtml = btnCheckUpdates.innerHTML;
     btnCheckUpdates.disabled = true;
     btnCheckUpdates.classList.add("loading");
@@ -6052,7 +6061,7 @@ async function fetchDockerUpdates({ force = false } = {}) {
 
   // Only show an initial loading placeholder if tbody is completely empty on initial load
   const hasExistingRows = tbody.querySelectorAll("tr[data-container-id]").length > 0;
-  if (!hasExistingRows && (tbody.children.length === 0 || (!cachedDockerUpdates && tbody.querySelector(".empty-state")))) {
+  if (!background && isViewingUpdatesTab && !hasExistingRows && (tbody.children.length === 0 || (!cachedDockerUpdates && tbody.querySelector(".empty-state")))) {
     tbody.innerHTML = `<tr><td colspan="8" class="loading-state" style="text-align:center; padding: 24px; color: var(--text-muted);"><span class="spinner" style="display:inline-block; margin-right:8px;"></span> Checking container images for updates...</td></tr>`;
   }
 
@@ -6572,7 +6581,7 @@ async function fetchInstalledPackages(query = "", page = 1) {
   currentPkgSearchQuery = query || "";
   currentPkgPage = page < 1 ? 1 : page;
   const tbody = document.getElementById("pkg-installed-tbody");
-  if (tbody) {
+  if (tbody && currentPackagesSubtab === "installed" && !cachedInstalledPackages) {
     tbody.innerHTML = `<tr><td colspan="5" class="empty-state">Loading installed packages...</td></tr>`;
   }
 
@@ -6738,11 +6747,9 @@ function closePackageUpgradeModal() {
 }
 
 function refreshPackagesView() {
-  if (currentPackagesSubtab === "installed") {
-    fetchInstalledPackages(currentPkgSearchQuery, currentPkgPage);
-  } else {
-    fetchPackageUpdates();
-  }
+  fetchPackageUpdates();
+  // Preload installed packages in background so its badge and list are preloaded
+  fetchInstalledPackages(currentPkgSearchQuery, currentPkgPage);
 }
 
 /**
