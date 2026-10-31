@@ -1547,7 +1547,7 @@ def build_periodic_report_data(
         cfg = get_notification_center_config()
         topics = cfg.get("topics", {})
 
-    title = "SystemAlerts - Periodic Report"
+    title = "Vigil - Periodic Report"
     description = "Scheduled system health and status summary report."
     fields: list[dict[str, Any]] = []
 
@@ -1835,18 +1835,19 @@ async def send_test_notification(
     config_dict = get_notification_center_config()
     mgr = NotificationManager(config_dict)
 
-    embed_data = {
-        "title": "Vigil - Test Notification",
-        "description": (
-            "This is a test notification from Vigil Host Manager.\n"
-            "Notifications are configured and functioning properly."
-        ),
-        "color": 0x3498DB,
-        "fields": [
-            {"name": "Status", "value": "Test / Operational", "inline": True},
-            {"name": "Timestamp", "value": format_timestamp(time.time()), "inline": True},
-        ],
-    }
+    topics = config_dict.get("topics", {})
+    _, _, real_embed = build_periodic_report_data(topics)
+
+    test_title = "Vigil - Test Notification"
+    test_desc = "Test notification dispatch including live system metrics, storage health, and RAID state."
+
+    embed_data = copy.deepcopy(real_embed)
+    embed_data["title"] = test_title
+    embed_data["description"] = test_desc
+    embed_data["fields"].insert(
+        0,
+        {"name": "Dispatch Mode", "value": "Test Notification (Operational)", "inline": True},
+    )
 
     telegram_cfg = config_dict.get("channels", {}).get("telegram", {})
     webhook_cfg = config_dict.get("channels", {}).get("webhook", {})
@@ -1887,19 +1888,16 @@ async def send_test_notification(
             return False, msg
 
         embed = discord.Embed(
-            title="Vigil - Test Notification",
-            description=(
-                "This is a test notification from Vigil Host Manager.\n"
-                "Discord notifications are configured and functioning properly."
-            ),
-            color=0x3498DB,
+            title=embed_data.get("title") or test_title,
+            description=embed_data.get("description") or test_desc,
+            color=embed_data.get("color", 0x3498DB),
         )
-        embed.add_field(name="Status", value="Test / Operational", inline=True)
-        embed.add_field(
-            name="Timestamp",
-            value=format_timestamp(time.time()),
-            inline=True,
-        )
+        for f in embed_data.get("fields", []):
+            embed.add_field(
+                name=f.get("name", ""),
+                value=f.get("value", ""),
+                inline=f.get("inline", False),
+            )
 
         success = await send_message(embed)
         if success:
@@ -1914,8 +1912,8 @@ async def send_test_notification(
 
     success, message = await mgr.send_channel(
         effective_channel,
-        "Vigil - Test Notification",
-        "This is a test notification from Vigil Host Manager.",
+        test_title,
+        test_desc,
         embed_data=embed_data,
     )
     if success:
@@ -3128,9 +3126,11 @@ class DockerManager:
                 for item in items:
                     p_name = item.get("Name") or item.get("name")
                     if p_name:
+                        raw_status = str(item.get("Status") or item.get("status") or "running").strip()
+                        clean_status = re.sub(r"\s*\(\d+(?:/\d+)?\)", "", raw_status).strip() or "running"
                         compose_projects[p_name] = {
                             "name": p_name,
-                            "status": item.get("Status") or item.get("status") or "running",
+                            "status": clean_status,
                             "config_files": item.get("ConfigFiles") or item.get("configFiles") or "",
                         }
             except Exception as exc:
@@ -3155,9 +3155,10 @@ class DockerManager:
                 status = "running" if run_cnt > 0 else "exited"
             elif name in compose_projects:
                 status = compose_projects[name]["status"]
+            clean_status = re.sub(r"\s*\(\d+(?:/\d+)?\)", "", str(status)).strip() or "running"
             combined[name] = {
                 "name": name,
-                "status": status,
+                "status": clean_status,
                 "managed": True,
                 "containers_count": cnt,
                 "running_count": run_cnt,
@@ -3169,9 +3170,11 @@ class DockerManager:
             if name not in combined:
                 cnt = stack_containers_count.get(name, 0)
                 run_cnt = stack_running_count.get(name, 0)
+                p_status = p_info["status"]
+                clean_p_status = re.sub(r"\s*\(\d+(?:/\d+)?\)", "", str(p_status)).strip() or "running"
                 combined[name] = {
                     "name": name,
-                    "status": p_info["status"],
+                    "status": clean_p_status,
                     "managed": False,
                     "containers_count": cnt,
                     "running_count": run_cnt,
