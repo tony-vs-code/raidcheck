@@ -99,6 +99,11 @@
           <span class="sidebar-brand-desc">Host Operations</span>
         </div>
         <span class="sidebar-status-dot" title="System operational"></span>
+        <button id="btn-toggle-sidebar" class="btn-toggle-sidebar" type="button" aria-label="Toggle Sidebar" title="Collapse Sidebar">
+          <svg class="sidebar-toggle-chevron" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
       </div>
 
       <nav class="sidebar-nav" aria-label="Main Navigation">
@@ -112,6 +117,7 @@
             role="tab"
             aria-selected="true"
             aria-controls="view-overview"
+            title="Overview"
           >
             <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <rect x="3" y="3" width="7" height="7"></rect>
@@ -128,6 +134,7 @@
             role="tab"
             aria-selected="false"
             aria-controls="view-raid"
+            title="RAID &amp; Storage"
           >
             <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="22" y1="12" x2="2" y2="12"></line>
@@ -149,6 +156,7 @@
             role="tab"
             aria-selected="false"
             aria-controls="view-containers"
+            title="Containers &amp; Stacks"
           >
             <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
@@ -169,6 +177,7 @@
             role="tab"
             aria-selected="false"
             aria-controls="view-notifications"
+            title="Notification Center"
           >
             <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
@@ -287,7 +296,7 @@
 
         <!-- View Panel: Overview (#view-overview) -->
         <div id="view-overview" class="view-panel" role="tabpanel" aria-labelledby="nav-tab-overview">
-          <!-- System Metrics Cards -->
+          <!-- System Metrics Section -->
           <section class="section-block" aria-labelledby="system-metrics-heading">
             <div class="section-header">
               <h2 id="system-metrics-heading" class="section-title">System Metrics</h2>
@@ -303,6 +312,50 @@
                 </button>
               </div>
             </div>
+
+            <!-- Health Status Ribbon: Compact, visual overview bar integrated directly above metrics -->
+            <div class="overview-status-ribbon overview-cockpit-grid" role="region" aria-label="Quick System Health">
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Storage</span>
+                  <span id="overview-raid-status-badge" class="status-badge status-unknown">UNKNOWN</span>
+                </div>
+                <span id="overview-raid-summary" class="status-ribbon-desc">Monitoring active array and storage pools</span>
+                <button id="btn-goto-raid" type="button" class="btn-ribbon-nav" title="Jump to RAID &amp; Storage">
+                  <span>Manage</span>
+                  <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </button>
+              </div>
+
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Containers</span>
+                  <span id="overview-docker-badge" class="status-badge status-unknown">UNKNOWN</span>
+                </div>
+                <span id="overview-docker-summary" class="status-ribbon-desc">0 containers running</span>
+                <button id="btn-goto-containers" type="button" class="btn-ribbon-nav" title="Jump to Containers">
+                  <span>Manage</span>
+                  <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </button>
+              </div>
+
+              <div class="status-ribbon-divider" aria-hidden="true"></div>
+
+              <div class="status-ribbon-item">
+                <div class="status-ribbon-badge-group">
+                  <span class="status-ribbon-label">Alerts</span>
+                  <span id="overview-discord-badge" class="status-badge status-unknown">UNKNOWN</span>
+                </div>
+                <span id="overview-discord-summary" class="status-ribbon-desc">Discord webhook and alerts</span>
+                <button id="btn-goto-notifications" type="button" class="btn-ribbon-nav" title="Jump to Notifications">
+                  <span>Alerts</span>
+                  <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </button>
+              </div>
+            </div>
+
             <div class="metrics-grid">
               <!-- CPU Card -->
               <article class="card metric-card" id="cpu-metric-card">
@@ -391,74 +444,6 @@
                 </div>
                 <div class="metric-footer">
                   <span id="boot-time-detail" class="metric-subtext">Boot time: --</span>
-                </div>
-              </article>
-            </div>
-          </section>
-
-          <!-- Overview Summary Cockpit Cards -->
-          <section class="section-block" aria-labelledby="overview-summary-heading">
-            <div class="section-header">
-              <h2 id="overview-summary-heading" class="section-title">Status Summary</h2>
-            </div>
-            <div class="overview-cockpit-grid">
-              <!-- RAID & Storage Summary -->
-              <article class="card overview-summary-card">
-                <div class="cockpit-card-header">
-                  <div class="cockpit-title-group">
-                    <span class="cockpit-card-title">RAID &amp; Storage</span>
-                    <span id="overview-raid-status-badge" class="status-badge status-unknown">UNKNOWN</span>
-                  </div>
-                </div>
-                <p id="overview-raid-summary" class="cockpit-card-desc">Monitoring active array and storage pools</p>
-                <div class="cockpit-card-action">
-                  <button id="btn-goto-raid" type="button" class="btn-secondary btn-sm">
-                    <span>Manage Storage</span>
-                    <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <line x1="5" y1="12" x2="19" y2="12"></line>
-                      <polyline points="12 5 19 12 12 19"></polyline>
-                    </svg>
-                  </button>
-                </div>
-              </article>
-
-              <!-- Containers Summary -->
-              <article class="card overview-summary-card">
-                <div class="cockpit-card-header">
-                  <div class="cockpit-title-group">
-                    <span class="cockpit-card-title">Container Management</span>
-                    <span id="overview-docker-badge" class="status-badge status-unknown">UNKNOWN</span>
-                  </div>
-                </div>
-                <p id="overview-docker-summary" class="cockpit-card-desc">0 containers running</p>
-                <div class="cockpit-card-action">
-                  <button id="btn-goto-containers" type="button" class="btn-secondary btn-sm">
-                    <span>Manage Containers</span>
-                    <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <line x1="5" y1="12" x2="19" y2="12"></line>
-                      <polyline points="12 5 19 12 12 19"></polyline>
-                    </svg>
-                  </button>
-                </div>
-              </article>
-
-              <!-- Discord Notifications Summary -->
-              <article class="card overview-summary-card">
-                <div class="cockpit-card-header">
-                  <div class="cockpit-title-group">
-                    <span class="cockpit-card-title">Notifications &amp; Alerts</span>
-                    <span id="overview-discord-badge" class="status-badge status-unknown">UNKNOWN</span>
-                  </div>
-                </div>
-                <p id="overview-discord-summary" class="cockpit-card-desc">Discord webhook and weekly summaries</p>
-                <div class="cockpit-card-action">
-                  <button id="btn-goto-notifications" type="button" class="btn-secondary btn-sm">
-                    <span>View Alerts</span>
-                    <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <line x1="5" y1="12" x2="19" y2="12"></line>
-                      <polyline points="12 5 19 12 12 19"></polyline>
-                    </svg>
-                  </button>
                 </div>
               </article>
             </div>
@@ -1351,12 +1336,12 @@
                 </div>
               </article>
 
-              <!-- B. AUTOMATED SCHEDULE & CRON CARD -->
-              <article class="card schedule-config-card">
+              <!-- B. AUTOMATED REPORT SCHEDULE & CONTENT CARD (Combined) -->
+              <article class="card schedule-config-card topics-config-card">
                 <div class="card-header">
                   <div>
-                    <h3 class="card-title">Automated Report Schedule</h3>
-                    <p class="card-subtitle">Periodic system summaries and health digests</p>
+                    <h3 class="card-title">Report Schedule &amp; Content</h3>
+                    <p class="card-subtitle">Configure periodic summary cadence, delivery timing, and telemetry topics</p>
                   </div>
                   <label class="toggle-switch" for="notif-schedule-enable">
                     <input
@@ -1369,95 +1354,91 @@
                   </label>
                 </div>
 
-                <div class="card-body">
-                  <div class="schedule-form-grid">
-                    <div class="form-group">
-                      <label for="notif-schedule-freq">Frequency</label>
-                      <select id="notif-schedule-freq" class="module-interval-select notif-select full-width">
-                        <option value="daily">Daily</option>
-                        <option value="weekly">Weekly</option>
-                        <option value="hourly">Hourly</option>
-                        <option value="6h">Every 6 Hours</option>
-                        <option value="12h">Every 12 Hours</option>
-                      </select>
-                      <small class="form-hint">Cadence for dispatching summary digests.</small>
+                <div class="card-body schedule-topics-combined-body">
+                  <div class="schedule-topics-section">
+                    <h4 class="subcard-heading">Schedule Cadence</h4>
+                    <div class="schedule-form-grid">
+                      <div class="form-group">
+                        <label for="notif-schedule-freq">Frequency</label>
+                        <select id="notif-schedule-freq" class="module-interval-select notif-select full-width">
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                          <option value="hourly">Hourly</option>
+                          <option value="6h">Every 6 Hours</option>
+                          <option value="12h">Every 12 Hours</option>
+                        </select>
+                        <small class="form-hint">Cadence for dispatching summary digests.</small>
+                      </div>
+
+                      <div id="notif-schedule-day-group" class="form-group hidden">
+                        <label for="notif-schedule-day">Day of Week</label>
+                        <select id="notif-schedule-day" class="module-interval-select notif-select full-width">
+                          <option value="monday">Monday</option>
+                          <option value="tuesday">Tuesday</option>
+                          <option value="wednesday">Wednesday</option>
+                          <option value="thursday">Thursday</option>
+                          <option value="friday">Friday</option>
+                          <option value="saturday">Saturday</option>
+                          <option value="sunday">Sunday</option>
+                        </select>
+                        <small class="form-hint">Selected day for weekly report.</small>
+                      </div>
+
+                      <div class="form-group">
+                        <label for="notif-schedule-time">Dispatch Time</label>
+                        <input
+                          id="notif-schedule-time"
+                          type="time"
+                          value="09:00"
+                          class="notif-time-input"
+                        />
+                        <small class="form-hint">Scheduled local execution time (HH:MM).</small>
+                      </div>
                     </div>
 
-                    <div id="notif-schedule-day-group" class="form-group hidden">
-                      <label for="notif-schedule-day">Day of Week</label>
-                      <select id="notif-schedule-day" class="module-interval-select notif-select full-width">
-                        <option value="monday">Monday</option>
-                        <option value="tuesday">Tuesday</option>
-                        <option value="wednesday">Wednesday</option>
-                        <option value="thursday">Thursday</option>
-                        <option value="friday">Friday</option>
-                        <option value="saturday">Saturday</option>
-                        <option value="sunday">Sunday</option>
-                      </select>
-                      <small class="form-hint">Selected day for weekly report.</small>
-                    </div>
-
-                    <div class="form-group">
-                      <label for="notif-schedule-time">Dispatch Time</label>
-                      <input
-                        id="notif-schedule-time"
-                        type="time"
-                        value="09:00"
-                        class="notif-time-input"
-                      />
-                      <small class="form-hint">Scheduled local execution time (HH:MM).</small>
+                    <div class="schedule-next-run-box">
+                      <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12 6 12 12 16 14"></polyline>
+                      </svg>
+                      <span id="notif-schedule-next-run" class="mono-text">Next report scheduled: Daily at 09:00</span>
                     </div>
                   </div>
 
-                  <div class="schedule-next-run-box">
-                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <circle cx="12" cy="12" r="10"></circle>
-                      <polyline points="12 6 12 12 16 14"></polyline>
-                    </svg>
-                    <span id="notif-schedule-next-run" class="mono-text">Next report scheduled: Daily at 09:00</span>
+                  <div class="schedule-topics-divider" aria-hidden="true"></div>
+
+                  <div class="schedule-topics-section">
+                    <h4 class="subcard-heading">Report Topics &amp; Telemetry</h4>
+                    <div class="topics-list">
+                      <label class="topic-checkbox-row" for="notif-topic-system">
+                        <input type="checkbox" id="notif-topic-system" class="topic-checkbox" checked />
+                        <div class="topic-info">
+                          <span class="topic-title">System Resources</span>
+                          <span class="topic-desc">CPU load average, RAM memory consumption, and host uptime.</span>
+                        </div>
+                      </label>
+
+                      <label class="topic-checkbox-row" for="notif-topic-disks">
+                        <input type="checkbox" id="notif-topic-disks" class="topic-checkbox" checked />
+                        <div class="topic-info">
+                          <span class="topic-title">Disk Health &amp; Storage Breakdown</span>
+                          <span class="topic-desc">Mount path capacities, direct filesystem usage, and available gigabytes.</span>
+                        </div>
+                      </label>
+
+                      <label class="topic-checkbox-row" for="notif-topic-raid">
+                        <input type="checkbox" id="notif-topic-raid" class="topic-checkbox" checked />
+                        <div class="topic-info">
+                          <span class="topic-title">RAID Array Status &amp; Health</span>
+                          <span class="topic-desc">Array consistency state, active member disks, spare drives, and rebuild sync progress.</span>
+                        </div>
+                      </label>
+                    </div>
                   </div>
                 </div>
               </article>
 
-              <!-- C. REPORT TOPICS & RULES CARD -->
-              <article class="card topics-config-card">
-                <div class="card-header">
-                  <div>
-                    <h3 class="card-title">Report Content &amp; Topics</h3>
-                    <p class="card-subtitle">Choose which system details are compiled into the scheduled summary</p>
-                  </div>
-                </div>
-
-                <div class="card-body">
-                  <div class="topics-list">
-                    <label class="topic-checkbox-row" for="notif-topic-system">
-                      <input type="checkbox" id="notif-topic-system" class="topic-checkbox" checked />
-                      <div class="topic-info">
-                        <span class="topic-title">System Resources</span>
-                        <span class="topic-desc">CPU load average, RAM memory consumption, and host uptime.</span>
-                      </div>
-                    </label>
-
-                    <label class="topic-checkbox-row" for="notif-topic-disks">
-                      <input type="checkbox" id="notif-topic-disks" class="topic-checkbox" checked />
-                      <div class="topic-info">
-                        <span class="topic-title">Disk Health &amp; Storage Breakdown</span>
-                        <span class="topic-desc">Mount path capacities, direct filesystem usage, and available gigabytes.</span>
-                      </div>
-                    </label>
-
-                    <label class="topic-checkbox-row" for="notif-topic-raid">
-                      <input type="checkbox" id="notif-topic-raid" class="topic-checkbox" checked />
-                      <div class="topic-info">
-                        <span class="topic-title">RAID Array Status &amp; Health</span>
-                        <span class="topic-desc">Array consistency state, active member disks, spare drives, and rebuild sync progress.</span>
-                      </div>
-                    </label>
-                  </div>
-                </div>
-              </article>
-
-              <!-- D. REAL-TIME ALERT THRESHOLDS CARD -->
+              <!-- C. REAL-TIME ALERT THRESHOLDS CARD -->
               <article class="card thresholds-config-card">
                 <div class="card-header">
                   <div>
@@ -1593,11 +1574,8 @@
                   </div>
                 </div>
               </article>
-            </div>
 
-            <!-- E. NOTIFICATION AUDIT LOGS & WEEKLY STATE -->
-            <div class="notifications-audit-grid">
-              <!-- Weekly Notification State Card -->
+              <!-- D. WEEKLY SUMMARY THROTTLING CARD -->
               <article class="card weekly-state-card" id="weekly-state-card">
                 <div class="card-header">
                   <div>
@@ -1628,8 +1606,10 @@
                   </dl>
                 </div>
               </article>
+            </div>
 
-              <!-- Notification History Card -->
+            <!-- E. FULL-WIDTH NOTIFICATION AUDIT HISTORY -->
+            <div class="notifications-history-fullwidth">
               <article class="card history-card" id="history-card">
                 <div class="card-header">
                   <div>

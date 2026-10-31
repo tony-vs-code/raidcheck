@@ -3554,7 +3554,7 @@ async function fetchDockerStacks() {
         <td>
           <span class="status-badge ${statusClass}">
             <span class="status-dot"></span>
-            ${escapeHtml(s.status || "unknown")}
+            ${escapeHtml((s.status || "unknown").replace(/\s*\(\d+(?:\/\d+)?\)/g, "").trim())}
           </span>
         </td>
         <td>${Number(s.running_count || 0)} / ${Number(s.containers_count || 0)} running</td>
@@ -5037,6 +5037,25 @@ function initDashboard() {
       btnToggleCpuCores.setAttribute("aria-expanded", String(!isHidden));
       btnToggleCpuCores.classList.toggle("expanded", !isHidden);
       cpuCoresDrilldown.setAttribute("aria-hidden", String(isHidden));
+    });
+  }
+
+  // Desktop Collapsible Sidebar Toggle & Persistence
+  const appShell = document.getElementById("app-shell");
+  const btnToggleSidebar = document.getElementById("btn-toggle-sidebar");
+  if (btnToggleSidebar && appShell) {
+    const savedState = localStorage.getItem("vigil_sidebar_collapsed");
+    if (savedState === "1") {
+      appShell.classList.add("sidebar-collapsed");
+      btnToggleSidebar.setAttribute("title", "Expand Sidebar");
+      btnToggleSidebar.setAttribute("aria-label", "Expand Sidebar");
+    }
+
+    btnToggleSidebar.addEventListener("click", () => {
+      const isCollapsed = appShell.classList.toggle("sidebar-collapsed");
+      btnToggleSidebar.setAttribute("title", isCollapsed ? "Expand Sidebar" : "Collapse Sidebar");
+      btnToggleSidebar.setAttribute("aria-label", isCollapsed ? "Expand Sidebar" : "Collapse Sidebar");
+      localStorage.setItem("vigil_sidebar_collapsed", isCollapsed ? "1" : "0");
     });
   }
 

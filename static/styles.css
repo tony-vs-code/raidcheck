@@ -152,7 +152,123 @@ body {
   top: 0;
   height: 100vh;
   z-index: 100;
-  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.btn-toggle-sidebar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.btn-toggle-sidebar:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  border-color: var(--accent-primary);
+}
+
+.sidebar-toggle-chevron {
+  transition: transform 0.22s ease;
+}
+
+/* Collapsed Sidebar State */
+.app-layout.sidebar-collapsed .app-sidebar {
+  width: 68px;
+}
+
+.app-layout.sidebar-collapsed .sidebar-header {
+  padding: 14px 6px;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+
+.app-layout.sidebar-collapsed .sidebar-brand-icon {
+  width: 36px;
+  height: 36px;
+}
+
+.app-layout.sidebar-collapsed .sidebar-brand-info,
+.app-layout.sidebar-collapsed .sidebar-status-dot {
+  display: none !important;
+}
+
+.app-layout.sidebar-collapsed .btn-toggle-sidebar {
+  margin-left: 0;
+  width: 24px;
+  height: 24px;
+}
+
+.app-layout.sidebar-collapsed .btn-toggle-sidebar .sidebar-toggle-chevron {
+  transform: rotate(180deg);
+}
+
+.app-layout.sidebar-collapsed .sidebar-nav {
+  padding: 14px 6px;
+  gap: 12px;
+}
+
+.app-layout.sidebar-collapsed .sidebar-nav-heading {
+  display: none !important;
+}
+
+.app-layout.sidebar-collapsed .sidebar-nav-item {
+  justify-content: center;
+  padding: 10px 0;
+  gap: 0;
+  position: relative;
+}
+
+.app-layout.sidebar-collapsed .sidebar-nav-item span:not(.nav-tab-badge) {
+  display: none !important;
+}
+
+.app-layout.sidebar-collapsed .sidebar-nav-item .nav-tab-badge {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 0.62rem;
+  padding: 1px 4px;
+  min-width: 15px;
+  text-align: center;
+}
+
+.app-layout.sidebar-collapsed .sidebar-footer {
+  padding: 12px 6px;
+  align-items: center;
+}
+
+.app-layout.sidebar-collapsed .sidebar-footer-btn,
+.app-layout.sidebar-collapsed .btn-sidebar-footer {
+  justify-content: center;
+  padding: 10px 0;
+  gap: 0;
+}
+
+.app-layout.sidebar-collapsed .sidebar-footer-btn span,
+.app-layout.sidebar-collapsed .btn-sidebar-footer span {
+  display: none !important;
+}
+
+.app-layout.sidebar-collapsed .user-session-box {
+  padding: 6px;
+  justify-content: center;
+  width: 100%;
+}
+
+.app-layout.sidebar-collapsed .user-info,
+.app-layout.sidebar-collapsed .sidebar-version-display {
+  display: none !important;
 }
 
 .sidebar-header {
@@ -1571,11 +1687,97 @@ body {
   margin-top: 2px;
 }
 
-/* System Metrics Grid */
+/* Overview Health Status Ribbon */
+.overview-status-ribbon {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 14px 20px;
+  margin-bottom: 24px;
+}
+
+.status-ribbon-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.status-ribbon-badge-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.status-ribbon-label {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.status-ribbon-desc {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.status-ribbon-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.btn-ribbon-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.btn-ribbon-nav:hover {
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.35);
+  color: var(--accent-primary);
+}
+
+@media (max-width: 900px) {
+  .overview-status-ribbon {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .status-ribbon-divider {
+    width: 100%;
+    height: 1px;
+  }
+}
+
+/* Decondensed System Metrics Grid */
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
   align-items: start;
 }
 
@@ -2146,6 +2348,38 @@ body {
   .notifications-audit-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Combined Schedule & Topics Body */
+.schedule-topics-combined-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.subcard-heading {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent-primary);
+  margin-bottom: 12px;
+}
+
+.schedule-topics-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 2px 0;
+}
+
+/* Full Width Notification Audit History */
+.notifications-history-fullwidth {
+  width: 100%;
+  margin-top: 24px;
+}
+
+.notifications-history-fullwidth .history-card {
+  width: 100%;
 }
 
 /* Channel Configuration Cards */

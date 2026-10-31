@@ -3126,9 +3126,11 @@ class DockerManager:
                 for item in items:
                     p_name = item.get("Name") or item.get("name")
                     if p_name:
+                        raw_status = str(item.get("Status") or item.get("status") or "running").strip()
+                        clean_status = re.sub(r"\s*\(\d+(?:/\d+)?\)", "", raw_status).strip() or "running"
                         compose_projects[p_name] = {
                             "name": p_name,
-                            "status": item.get("Status") or item.get("status") or "running",
+                            "status": clean_status,
                             "config_files": item.get("ConfigFiles") or item.get("configFiles") or "",
                         }
             except Exception as exc:
@@ -3153,9 +3155,10 @@ class DockerManager:
                 status = "running" if run_cnt > 0 else "exited"
             elif name in compose_projects:
                 status = compose_projects[name]["status"]
+            clean_status = re.sub(r"\s*\(\d+(?:/\d+)?\)", "", str(status)).strip() or "running"
             combined[name] = {
                 "name": name,
-                "status": status,
+                "status": clean_status,
                 "managed": True,
                 "containers_count": cnt,
                 "running_count": run_cnt,
@@ -3167,9 +3170,11 @@ class DockerManager:
             if name not in combined:
                 cnt = stack_containers_count.get(name, 0)
                 run_cnt = stack_running_count.get(name, 0)
+                p_status = p_info["status"]
+                clean_p_status = re.sub(r"\s*\(\d+(?:/\d+)?\)", "", str(p_status)).strip() or "running"
                 combined[name] = {
                     "name": name,
-                    "status": p_info["status"],
+                    "status": clean_p_status,
                     "managed": False,
                     "containers_count": cnt,
                     "running_count": run_cnt,
