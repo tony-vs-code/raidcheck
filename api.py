@@ -234,6 +234,17 @@ class UpdateScheduleRequest(BaseModel):
     notify_discord: Optional[bool] = True
 
 
+class NotificationTestRequest(BaseModel):
+    channel: Optional[str] = "all"
+
+
+class NotificationCenterUpdateRequest(BaseModel):
+    channels: Optional[dict[str, Any]] = None
+    schedule: Optional[dict[str, Any]] = None
+    topics: Optional[dict[str, Any]] = None
+    thresholds: Optional[dict[str, Any]] = None
+
+
 def _extract_session_token(request: Request) -> Optional[str]:
     cookie_token = request.cookies.get("session_token")
     if cookie_token:
@@ -616,8 +627,129 @@ def api_history(
     return {"history": _get_formatted_history(limit)}
 
 
+def _get_notification_center_data() -> dict[str, Any]:
+    settings = main.get_app_settings()
+    raw_cfg = settings.get("notification_center_config")
+    cfg: dict[str, Any] = {}
+    if raw_cfg:
+        try:
+            cfg = json.loads(raw_cfg)
+        except Exception:
+            cfg = {}
+
+    discord_token = settings.get("discord_token", "")
+    token_configured = bool(discord_token)
+    token_masked = (
+        f"••••{discord_token[-4:]}"
+        if len(discord_token) > 4
+        else ("••••" if discord_token else "")
+    )
+    discord_enabled = settings.get("discord_enabled", "false").strip().lower() == "true"
+    channel_id = settings.get("channel_id", "")
+
+    # Channels
+    channels = cfg.get("channels", {}) if isinstance(cfg.get("channels"), dict) else {}
+    discord_ch = channels.get("discord", {}) if isinstance(channels.get("discord"), dict) else {}
+    discord_ch["enabled"] = discord_ch.get("enabled", discord_enabled)
+    discord_ch["token_configured"] = token_configured
+    discord_ch["token_masked"] = token_masked
+    discord_ch["channel_id"] = discord_ch.get("channel_id", channel_id)
+
+    telegram_ch = channels.get("telegram", {}) if isinstance(channels.get("telegram"), dict) else {}
+    telegram_ch.setdefault("enabled", False)
+    telegram_ch.setdefault("token_configured", False)
+    telegram_ch.setdefault("token_masked", "")
+    telegram_ch.setdefault("chat_id", "")
+
+    webhook_ch = channels.get("webhook", {}) if isinstance(channels.get("webhook"), dict) else {}
+    webhook_ch.setdefault("enabled", False)
+    webhook_ch.setdefault("url", "")
+
+    # Schedule
+    schedule = cfg.get("schedule", {}) if isinstance(cfg.get("schedule"), dict) else {}
+    schedule.setdefault("enabled", True)
+    schedule.setdefault("frequency", "daily")
+    schedule.setdefault("day", "monday")
+    schedule.setdefault("time", "09:00")
+    schedule.setdefault("next_run", "Tomorrow at 09:00")
+
+    # Topics
+    topics = cfg.get("topics", {}) if isinstance(cfg.get("topics"), dict) else {}
+    topics.setdefault("system", True)
+    topics.setdefault("disks", True)
+    topics.setdefault("raid", True)
+
+    # Thresholds
+    thresholds = cfg.get("thresholds", {}) if isinstance(cfg.get("thresholds"), dict) else {}
+    thresholds.setdefault("ram", {"enabled": True, "value": 90})
+    thresholds.setdefault("cpu", {"enabled": True, "value": 90})
+    thresholds.setdefault("disk", {"enabled": True, "value": 85})
+    thresholds.setdefault("raid", {"enabled": True})
+
+    return {
+        "channels": {
+            "discord": discord_ch,
+            "telegram": telegram_ch,
+            "webhook": webhook_ch,
+        },
+        "schedule": schedule,
+        "topics": topics,
+        "thresholds": thresholds,
+    }
+
+
+@app.get("/api/notifications/center")
+def api_get_notification_center(
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    return _get_notification_center_data()
+
+
+@app.post("/api/notifications/center")
+def api_update_notification_center(
+    payload: NotificationCenterUpdateRequest,
+    _user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    current_data = _get_notification_center_data()
+    payload_dict = payload.model_dump(exclude_unset=True)
+
+    if "channels" in payload_dict and isinstance(payload_dict["channels"], dict):
+        for ch_key, ch_val in payload_dict["channels"].items():
+            if isinstance(ch_val, dict):
+                current_data["channels"].setdefault(ch_key, {}).update(ch_val)
+
+    if "schedule" in payload_dict and isinstance(payload_dict["schedule"], dict):
+        current_data["schedule"].update(payload_dict["schedule"])
+
+    if "topics" in payload_dict and isinstance(payload_dict["topics"], dict):
+        current_data["topics"].update(payload_dict["topics"])
+
+    if "thresholds" in payload_dict and isinstance(payload_dict["thresholds"], dict):
+        current_data["thresholds"].update(payload_dict["thresholds"])
+
+    discord_data = current_data["channels"].get("discord", {})
+    setting_updates: dict[str, Any] = {
+        "notification_center_config": json.dumps(current_data),
+    }
+    if "enabled" in discord_data:
+        setting_updates["discord_enabled"] = (
+            "true" if discord_data["enabled"] else "false"
+        )
+    if "channel_id" in discord_data and str(discord_data["channel_id"]).strip():
+        setting_updates["channel_id"] = str(discord_data["channel_id"]).strip()
+    if discord_data.get("token") and str(discord_data["token"]).strip():
+        setting_updates["discord_token"] = str(discord_data["token"]).strip()
+
+    main.update_app_settings(setting_updates)
+    result = _get_notification_center_data()
+    result["saved"] = True
+    result["success"] = True
+    return result
+
+
 @app.post("/api/notifications/test")
 async def api_send_test_notification(
+    payload: Optional[NotificationTestRequest] = None,
     _user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     success, message = await main.send_test_notification()

@@ -85,6 +85,7 @@ APP_SETTING_KEYS = (
     "docker_auto_update_frequency",
     "docker_auto_update_schedule",
     "timezone",
+    "notification_center_config",
 )
 
 client = discord.Client(intents=discord.Intents.default())
