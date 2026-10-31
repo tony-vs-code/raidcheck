@@ -1836,9 +1836,9 @@ async def send_test_notification(
     mgr = NotificationManager(config_dict)
 
     embed_data = {
-        "title": "System Alerts - Test Notification",
+        "title": "Vigil - Test Notification",
         "description": (
-            "This is a test notification from SystemAlerts Server Manager.\n"
+            "This is a test notification from Vigil Host Manager.\n"
             "Notifications are configured and functioning properly."
         ),
         "color": 0x3498DB,
@@ -1887,9 +1887,9 @@ async def send_test_notification(
             return False, msg
 
         embed = discord.Embed(
-            title="System Alerts - Test Notification",
+            title="Vigil - Test Notification",
             description=(
-                "This is a test notification from SystemAlerts Server Manager.\n"
+                "This is a test notification from Vigil Host Manager.\n"
                 "Discord notifications are configured and functioning properly."
             ),
             color=0x3498DB,
@@ -1914,8 +1914,8 @@ async def send_test_notification(
 
     success, message = await mgr.send_channel(
         effective_channel,
-        "System Alerts - Test Notification",
-        "This is a test notification from SystemAlerts Server Manager.",
+        "Vigil - Test Notification",
+        "This is a test notification from Vigil Host Manager.",
         embed_data=embed_data,
     )
     if success:
@@ -4027,6 +4027,52 @@ class DockerManager:
             except Exception:
                 pass
 
+            img_ref = img.split("@", 1)[0]
+            if "/" in img_ref:
+                prefix, last_part = img_ref.rsplit("/", 1)
+                if ":" in last_part:
+                    repo_suffix, tag_part = last_part.rsplit(":", 1)
+                    image_repo = f"{prefix}/{repo_suffix}"
+                    image_tag = tag_part or "latest"
+                else:
+                    image_repo = img_ref
+                    image_tag = "latest"
+            else:
+                if ":" in img_ref:
+                    repo_part, tag_part = img_ref.rsplit(":", 1)
+                    image_repo = repo_part
+                    image_tag = tag_part or "latest"
+                else:
+                    image_repo = img_ref
+                    image_tag = "latest"
+
+            inspect_labels: dict[str, Any] = {}
+            if isinstance(local_data, dict):
+                config_data = local_data.get("Config")
+                if isinstance(config_data, dict):
+                    inspect_labels = config_data.get("Labels") or {}
+                if not inspect_labels:
+                    inspect_labels = local_data.get("Labels") or {}
+            if not inspect_labels and isinstance(c, dict):
+                inspect_labels = c.get("labels") or c.get("Labels") or {}
+            if not isinstance(inspect_labels, dict):
+                inspect_labels = {}
+
+            label_version = str(
+                inspect_labels.get("org.opencontainers.image.version")
+                or inspect_labels.get("version")
+                or ""
+            ).strip()
+
+            if label_version:
+                image_version = label_version
+            else:
+                m = re.search(r"v?\d+(?:\.\d+)*", image_tag)
+                if m:
+                    image_version = m.group(0)
+                else:
+                    image_version = image_tag
+
             repo_digests = local_data.get("RepoDigests") or []
             local_id = str(local_data.get("Id", "") or "")
             current_id = local_id.replace("sha256:", "")[:12] if local_id else ""
@@ -4063,6 +4109,9 @@ class DockerManager:
                 "container_id": c.get("id"),
                 "container_name": c.get("name"),
                 "image": img,
+                "image_repo": image_repo,
+                "image_tag": image_tag,
+                "image_version": image_version,
                 "stack": stack_name,
                 "update_available": update_available,
                 "managed_stack": managed_stack,

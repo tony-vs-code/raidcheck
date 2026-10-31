@@ -1237,6 +1237,7 @@ class FastAPIEndpointTests(unittest.TestCase):
     def test_protected_endpoints_enforce_authentication(self):
         protected_get_paths = [
             "/api/status",
+            "/api/system/storage",
             "/api/history",
             "/api/settings",
             "/api/update/check",
@@ -1854,6 +1855,39 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertEqual(payload["raid"]["status"], "degraded")
         self.assertIsNone(payload["notification_state"])
 
+    def test_get_system_metrics_and_storage_endpoint(self):
+        metrics = api.get_system_metrics()
+        self.assertIn("cpu_cores", metrics)
+        self.assertIsInstance(metrics["cpu_cores"], list)
+        self.assertIn("cpu_count_logical", metrics)
+        self.assertGreaterEqual(metrics["cpu_count_logical"], 1)
+        self.assertIn("cpu_count_physical", metrics)
+        self.assertGreaterEqual(metrics["cpu_count_physical"], 1)
+        self.assertIn("load_avg", metrics)
+        self.assertIsInstance(metrics["load_avg"], list)
+        self.assertIn("memory", metrics)
+        mem = metrics["memory"]
+        self.assertIn("total", mem)
+        self.assertIn("used", mem)
+        self.assertIn("available", mem)
+        self.assertIn("percent", mem)
+        self.assertIn("free", mem)
+        self.assertIn("cached", mem)
+        self.assertIn("buffers", mem)
+        self.assertIn("disks", metrics)
+        self.assertIsInstance(metrics["disks"], list)
+
+        # GET /api/system/storage
+        resp = asgi_get(api.app, "/api/system/storage", cookies=self.auth_cookies)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("disks", data)
+        self.assertIsInstance(data["disks"], list)
+        if data["disks"]:
+            disk_item = data["disks"][0]
+            for key in ["mountpoint", "device", "fstype", "opts", "total", "used", "free", "percent"]:
+                self.assertIn(key, disk_item)
+
     def test_get_api_history_returns_formatted_notifications_and_respects_limit(self):
         main.record_notification("clean", 1700000100.0, weekly=True)
         main.record_notification("degraded", 1700000200.0, weekly=False)
@@ -1917,7 +1951,7 @@ class FastAPIEndpointTests(unittest.TestCase):
         with patch.object(api, "STATIC_DIR", empty_static_dir):
             fallback_resp = asgi_get(api.app, "/")
             self.assertEqual(fallback_resp.status_code, 200)
-            self.assertIn("<h1>SystemAlerts Server Manager</h1>", fallback_resp.text)
+            self.assertIn("<h1>Vigil</h1>", fallback_resp.text)
 
     def test_get_root_serves_dashboard_html(self):
         response = asgi_get(api.app, "/")
@@ -2217,6 +2251,109 @@ class FastAPIEndpointTests(unittest.TestCase):
 
         # Ensure active-disks-table is NOT placed in the high-level overview
         self.assertNotIn('id="active-disks-table"', overview_view_html)
+
+    def test_system_overview_drilldowns_storage_mounts_and_update_tags(self):
+        """Verify CPU drilldowns, memory SVG trend chart, storage mounts table, and docker tag badges."""
+        import subprocess
+        index_resp = asgi_get(api.app, "/")
+        self.assertEqual(index_resp.status_code, 200)
+        html = index_resp.text
+
+        # 1. CPU Card & Drill-downs
+        self.assertIn('id="btn-toggle-cpu-cores"', html)
+        self.assertIn('id="cpu-cores-drilldown"', html)
+        self.assertIn('id="cpu-cores-grid"', html)
+        self.assertIn('id="cpu-cores-badge"', html)
+        self.assertIn('id="cpu-load-detail"', html)
+
+        # 2. Memory Card Trend Chart & Breakdown Chips
+        self.assertIn('id="memory-chart-container"', html)
+        self.assertIn('id="memory-history-chart"', html)
+        self.assertIn('id="memory-chart-area"', html)
+        self.assertIn('id="memory-chart-line"', html)
+        self.assertIn('id="memory-breakdown-chips"', html)
+        self.assertIn('id="memory-chip-used"', html)
+        self.assertIn('id="memory-chip-cached"', html)
+        self.assertIn('id="memory-chip-free"', html)
+
+        # 3. System Uptime Card Load Average Badge
+        self.assertIn('id="uptime-load-badge"', html)
+
+        # 4. Storage Volumes & Filesystems Card in RAID view
+        raid_start = html.find('id="view-raid"')
+        self.assertGreater(raid_start, -1)
+        raid_end = html.find('id="view-containers"')
+        raid_view_html = html[raid_start:raid_end]
+        self.assertIn('id="storage-mounts-card"', raid_view_html)
+        self.assertIn('id="storage-mounts-table"', raid_view_html)
+        self.assertIn('id="storage-mounts-tbody"', raid_view_html)
+        self.assertIn('id="storage-mounts-count-badge"', raid_view_html)
+        self.assertIn("Device", raid_view_html)
+        self.assertIn("Mount Point", raid_view_html)
+        self.assertIn("Filesystem", raid_view_html)
+        self.assertIn("Mount Options", raid_view_html)
+
+        # 5. Docker Updates Table Tag / Version column
+        self.assertIn("<th>Tag / Version</th>", html)
+        self.assertIn('colspan="8"', html)
+
+        # 6. CSS styles verification
+        css_text = Path("static/styles.css").read_text(encoding="utf-8")
+        self.assertIn(".cpu-cores-grid", css_text)
+        self.assertIn(".memory-chart-container", css_text)
+        self.assertIn(".storage-mounts-card", css_text)
+        self.assertIn(".kind-tag", css_text)
+
+        # 7. Node unit test for generateUpdateRowHtml tag/version output
+        node_script = """
+        const fs = require('fs');
+        const vm = require('vm');
+        const code = fs.readFileSync('static/app.js', 'utf8');
+
+        const context = vm.createContext({
+          document: {},
+          window: {},
+          console: console,
+          escapeHtml: (s) => String(s || ''),
+          lastDockerUpdatesRenderKey: ''
+        });
+
+        const start = code.indexOf('function generateUpdateRowHtml');
+        let depth = 0;
+        let end = start;
+        let foundBrace = false;
+        for (let i = start; i < code.length; i++) {
+          if (code[i] === '{') {
+            depth++;
+            foundBrace = true;
+          } else if (code[i] === '}') {
+            depth--;
+            if (foundBrace && depth === 0) {
+              end = i + 1;
+              break;
+            }
+          }
+        }
+        vm.runInContext(code.slice(start, end), context);
+
+        const html1 = context.generateUpdateRowHtml({
+          container_id: 'c1',
+          container_name: 'webapp',
+          image: 'webapp:v1.2.0',
+          image_tag: 'v1.2.0',
+          image_version: '1.2.0',
+          update_available: true
+        });
+
+        if (!html1.includes('kind-tag')) throw new Error('Missing kind-tag in row HTML');
+        if (!html1.includes('v1.2.0')) throw new Error('Missing tag text');
+        if (!html1.includes('1.2.0')) throw new Error('Missing version text');
+
+        console.log('SUCCESS');
+        """
+        proc = subprocess.run(["node", "-e", node_script], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"Node test failed: {proc.stderr}")
+        self.assertIn("SUCCESS", proc.stdout)
 
     def test_ci_workflow_packaging_and_systemd_services(self):
         repo_root = Path(__file__).resolve().parent
@@ -3031,6 +3168,68 @@ class TestDockerBackend(unittest.TestCase):
             self.assertFalse(upd["update_available"])
             self.assertEqual(upd["current_id"], "111111111111")
             self.assertEqual(upd["latest_id"], "111111111111")
+
+    def test_docker_check_container_image_tag_repo_and_version(self):
+        dm = main.DockerManager()
+        dm.invalidate_cache()
+
+        sample_containers = [
+            {"id": "c1", "name": "grafana", "image": "grafana/grafana:10.1.0", "stack": "monitoring"},
+            {"id": "c2", "name": "web", "image": "library/nginx", "stack": ""},
+            {"id": "c3", "name": "app", "image": "localhost:5000/app:v2.0.1", "stack": "custom"},
+            {"id": "c4", "name": "oci_labeled", "image": "myregistry.local:8080/service:latest", "stack": ""},
+            {"id": "c5", "name": "ver_labeled", "image": "db:latest", "stack": "database"},
+        ]
+
+        def fake_run_docker(cmd, *args, **kwargs):
+            if cmd[:2] == ["image", "inspect"]:
+                target_img = cmd[2] if len(cmd) > 2 else ""
+                if "myregistry.local:8080/service:latest" in target_img:
+                    return json.dumps([{"Id": "sha256:444444444444", "Config": {"Labels": {"org.opencontainers.image.version": "3.8.4"}}}])
+                if "db:latest" in target_img:
+                    return json.dumps([{"Id": "sha256:555555555555", "Config": {"Labels": {"version": "15.2"}}}])
+                return json.dumps([{"Id": "sha256:000000000000"}])
+            return ""
+
+        with (
+            patch.object(dm, "is_running", return_value=True),
+            patch.object(dm, "list_containers", return_value=sample_containers),
+            patch.object(dm, "_run_docker", side_effect=fake_run_docker),
+            patch.object(dm, "_get_remote_image_digest", return_value=None),
+        ):
+            res = dm.check_updates(force=True)
+            updates_by_id = {u["container_id"]: u for u in res["updates"]}
+            self.assertEqual(len(updates_by_id), 5)
+
+            # c1: grafana/grafana:10.1.0
+            c1 = updates_by_id["c1"]
+            self.assertEqual(c1["image_repo"], "grafana/grafana")
+            self.assertEqual(c1["image_tag"], "10.1.0")
+            self.assertEqual(c1["image_version"], "10.1.0")
+
+            # c2: library/nginx (no tag -> latest)
+            c2 = updates_by_id["c2"]
+            self.assertEqual(c2["image_repo"], "library/nginx")
+            self.assertEqual(c2["image_tag"], "latest")
+            self.assertEqual(c2["image_version"], "latest")
+
+            # c3: localhost:5000/app:v2.0.1
+            c3 = updates_by_id["c3"]
+            self.assertEqual(c3["image_repo"], "localhost:5000/app")
+            self.assertEqual(c3["image_tag"], "v2.0.1")
+            self.assertEqual(c3["image_version"], "v2.0.1")
+
+            # c4: myregistry.local:8080/service:latest with org.opencontainers.image.version
+            c4 = updates_by_id["c4"]
+            self.assertEqual(c4["image_repo"], "myregistry.local:8080/service")
+            self.assertEqual(c4["image_tag"], "latest")
+            self.assertEqual(c4["image_version"], "3.8.4")
+
+            # c5: db:latest with version label
+            c5 = updates_by_id["c5"]
+            self.assertEqual(c5["image_repo"], "db")
+            self.assertEqual(c5["image_tag"], "latest")
+            self.assertEqual(c5["image_version"], "15.2")
 
     def test_docker_get_remote_image_digest_fallback_chain(self):
         dm = main.DockerManager()

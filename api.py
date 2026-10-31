@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -159,7 +160,7 @@ async def lifespan(app: FastAPI):
                 pass
 
 
-app = FastAPI(title="SystemAlerts Server Manager", lifespan=lifespan)
+app = FastAPI(title="Vigil", lifespan=lifespan)
 
 
 class ConnectionManager:
@@ -352,20 +353,80 @@ def _is_google_email_allowed(email: str, settings: dict[str, str]) -> bool:
     return False
 
 
+def get_storage_metrics() -> list[dict[str, Any]]:
+    """Collect mounted partition metrics via psutil."""
+    partitions = psutil.disk_partitions(all=False)
+    seen_mountpoints: set[str] = set()
+    disks: list[dict[str, Any]] = []
+    for p in partitions:
+        if p.mountpoint in seen_mountpoints:
+            continue
+        seen_mountpoints.add(p.mountpoint)
+        try:
+            usage = psutil.disk_usage(p.mountpoint)
+            total = usage.total
+            used = usage.used
+            free = usage.free
+            percent = usage.percent
+        except (PermissionError, OSError):
+            total = 0
+            used = 0
+            free = 0
+            percent = 0.0
+
+        disks.append(
+            {
+                "mountpoint": p.mountpoint,
+                "device": p.device,
+                "fstype": p.fstype,
+                "opts": p.opts,
+                "total": total,
+                "used": used,
+                "free": free,
+                "percent": percent,
+            }
+        )
+    return disks
+
+
 def get_system_metrics() -> dict[str, Any]:
     """Collect real-time system metrics via psutil."""
     cpu_percent = psutil.cpu_percent(interval=None)
+    cpu_cores = psutil.cpu_percent(percpu=True)
+    if not isinstance(cpu_cores, list):
+        cpu_cores = [cpu_cores]
+    cpu_count_logical = psutil.cpu_count(logical=True) or 1
+    cpu_count_physical = psutil.cpu_count(logical=False) or 1
+
+    cpu_freq_val: Optional[float] = None
+    try:
+        if hasattr(psutil, "cpu_freq"):
+            freq = psutil.cpu_freq()
+            if freq and getattr(freq, "current", None) is not None:
+                cpu_freq_val = float(freq.current)
+    except Exception:
+        cpu_freq_val = None
+
+    load_avg = list(os.getloadavg()) if hasattr(os, "getloadavg") else []
     vm = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     boot_time = psutil.boot_time()
 
     return {
         "cpu_percent": cpu_percent,
+        "cpu_cores": cpu_cores,
+        "cpu_count_logical": cpu_count_logical,
+        "cpu_count_physical": cpu_count_physical,
+        "cpu_freq": cpu_freq_val,
+        "load_avg": load_avg,
         "memory": {
             "total": vm.total,
             "used": vm.used,
             "available": vm.available,
             "percent": vm.percent,
+            "free": getattr(vm, "free", 0),
+            "cached": getattr(vm, "cached", 0),
+            "buffers": getattr(vm, "buffers", 0),
         },
         "disk": {
             "total": disk.total,
@@ -373,6 +434,7 @@ def get_system_metrics() -> dict[str, Any]:
             "free": disk.free,
             "percent": disk.percent,
         },
+        "disks": get_storage_metrics(),
         "boot_time": boot_time,
     }
 
@@ -630,6 +692,11 @@ def api_auth_logout(request: Request, response: Response) -> dict[str, Any]:
             pass
     response.delete_cookie(key="session_token", path="/")
     return {"authenticated": False}
+
+
+@app.get("/api/system/storage")
+def api_system_storage(_user: str = Depends(require_auth)) -> dict[str, Any]:
+    return {"disks": get_storage_metrics()}
 
 
 @app.get("/api/status")
@@ -1306,8 +1373,8 @@ def serve_index():
         )
         return HTMLResponse(content=content, status_code=200, headers=headers)
     return HTMLResponse(
-        content="<!DOCTYPE html><html><head><title>SystemAlerts Server Manager</title></head>"
-        "<body><h1>SystemAlerts Server Manager</h1></body></html>",
+        content="<!DOCTYPE html><html><head><title>Vigil</title></head>"
+        "<body><h1>Vigil</h1></body></html>",
         status_code=200,
         headers=headers,
     )

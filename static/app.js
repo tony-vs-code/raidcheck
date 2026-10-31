@@ -31,6 +31,10 @@ let logsTimerId = null;
 let cachedDockerContainers = [];
 let cachedDockerVolumes = [];
 let cachedDockerUpdates = null;
+let cachedStorageDisks = null;
+
+const MEMORY_HISTORY_LIMIT = 30;
+const memoryHistoryBuffer = [];
 
 let isFetchingDockerStatus = false;
 let isFetchingDockerStacks = false;
@@ -366,6 +370,111 @@ function updateProgressBar(barEl, percent) {
 }
 
 /**
+ * Render rolling historical SVG trend line & area chart for memory usage.
+ */
+function renderMemoryHistoryChart(history) {
+  const chartEl = document.getElementById("memory-history-chart");
+  if (!chartEl) return;
+  if (!Array.isArray(history) || history.length === 0) return;
+
+  const width = 240;
+  const height = 44;
+  const padTop = 3;
+  const padBottom = 3;
+  const usableHeight = height - padTop - padBottom;
+  const n = history.length;
+
+  const points = history.map((val, idx) => {
+    const x = n > 1 ? (idx / (n - 1)) * width : width;
+    const clamped = Math.max(0, Math.min(100, Number(val) || 0));
+    const y = height - padBottom - (clamped / 100) * usableHeight;
+    return { x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) };
+  });
+
+  const pathLine = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+  const firstP = points[0];
+  const lastP = points[points.length - 1];
+  const pathArea = `${pathLine} L ${lastP.x} ${height} L ${firstP.x} ${height} Z`;
+
+  const areaEl = document.getElementById("memory-chart-area");
+  const lineEl = document.getElementById("memory-chart-line");
+  if (areaEl && lineEl) {
+    areaEl.setAttribute("d", pathArea);
+    lineEl.setAttribute("d", pathLine);
+  }
+}
+
+/**
+ * Render Storage Volumes & Filesystems table on #view-raid.
+ * Populates from system.disks or falls back to /api/system/storage.
+ */
+async function renderStorageMounts(disks) {
+  const tbody = document.getElementById("storage-mounts-tbody");
+  if (!tbody) return;
+
+  if (Array.isArray(disks) && disks.length > 0) {
+    cachedStorageDisks = disks;
+  } else if (!cachedStorageDisks) {
+    try {
+      const resp = await apiFetch("/api/system/storage");
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && Array.isArray(data.disks) && data.disks.length > 0) {
+          cachedStorageDisks = data.disks;
+          disks = data.disks;
+        }
+      }
+    } catch (err) {
+      console.debug("Failed to fetch storage mounts fallback:", err);
+    }
+  } else {
+    disks = cachedStorageDisks;
+  }
+
+  const countBadge = document.getElementById("storage-mounts-count-badge");
+  if (!disks || !Array.isArray(disks) || disks.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No storage volumes detected.</td></tr>`;
+    if (countBadge) countBadge.textContent = "0 volumes";
+    return;
+  }
+
+  if (countBadge) {
+    countBadge.textContent = `${disks.length} ${disks.length === 1 ? "volume" : "volumes"}`;
+  }
+
+  tbody.innerHTML = disks
+    .map((d) => {
+      const percent = Math.max(0, Math.min(100, Number(d.percent) || 0));
+      let barClass = "progress-fill";
+      if (percent >= 90) barClass += " danger";
+      else if (percent >= 75) barClass += " warn";
+
+      const usedFormatted = formatBytes(d.used);
+      const totalFormatted = formatBytes(d.total);
+      const freeFormatted = formatBytes(d.free);
+
+      return `
+      <tr>
+        <td><strong class="mono-text">${escapeHtml(d.device || "-")}</strong></td>
+        <td><span class="mono-text mount-point">${escapeHtml(d.mountpoint || "-")}</span></td>
+        <td><span class="kind-badge kind-network">${escapeHtml(d.fstype || "-")}</span></td>
+        <td>
+          <div class="storage-usage-cell">
+            <div class="progress-track">
+              <div class="${barClass}" style="width: ${percent.toFixed(1)}%"></div>
+            </div>
+            <span class="mono-text storage-usage-val">${percent.toFixed(1)}%</span>
+          </div>
+        </td>
+        <td class="mono-text storage-capacity-cell">${usedFormatted} / ${totalFormatted} <span class="text-muted">(${freeFormatted} free)</span></td>
+        <td><span class="mono-text opts-text" title="${escapeHtml(d.opts || "")}">${escapeHtml(d.opts || "-")}</span></td>
+      </tr>
+    `;
+    })
+    .join("");
+}
+
+/**
  * Render System Metrics section from /api/status system payload.
  */
 function renderSystemMetrics(system) {
@@ -378,6 +487,54 @@ function renderSystemMetrics(system) {
   if (cpuValEl) cpuValEl.textContent = `${cpuPercent.toFixed(1)}%`;
   updateProgressBar(cpuBarEl, cpuPercent);
 
+  // CPU Cores Badge and Load Average
+  const cpuCoresBadge = document.getElementById("cpu-cores-badge");
+  if (cpuCoresBadge) {
+    const logicalCores =
+      system.cpu_count_logical ||
+      (Array.isArray(system.cpu_cores) ? system.cpu_cores.length : 1);
+    cpuCoresBadge.textContent = `${logicalCores} ${logicalCores === 1 ? "Core" : "Cores"}`;
+  }
+
+  const cpuLoadEl = document.getElementById("cpu-load-detail");
+  if (cpuLoadEl) {
+    if (Array.isArray(system.load_avg) && system.load_avg.length > 0) {
+      cpuLoadEl.textContent = `Load avg: ${system.load_avg.map((v) => Number(v).toFixed(2)).join(", ")}`;
+    } else {
+      cpuLoadEl.textContent = "Load avg: --";
+    }
+  }
+
+  // CPU per-core drilldown grid
+  const coresGrid = document.getElementById("cpu-cores-grid");
+  if (coresGrid) {
+    const cores =
+      Array.isArray(system.cpu_cores) && system.cpu_cores.length > 0
+        ? system.cpu_cores
+        : [cpuPercent];
+
+    coresGrid.innerHTML = cores
+      .map((coreVal, idx) => {
+        const cPercent = Math.max(0, Math.min(100, Number(coreVal) || 0));
+        let barClass = "progress-fill";
+        if (cPercent >= 90) barClass += " danger";
+        else if (cPercent >= 75) barClass += " warn";
+
+        return `
+        <div class="cpu-core-item">
+          <div class="cpu-core-header">
+            <span class="cpu-core-label">Core ${idx}</span>
+            <span class="cpu-core-percent mono-text">${cPercent.toFixed(1)}%</span>
+          </div>
+          <div class="progress-track cpu-core-track">
+            <div class="${barClass}" style="width: ${cPercent.toFixed(1)}%"></div>
+          </div>
+        </div>
+      `;
+      })
+      .join("");
+  }
+
   // Memory
   const mem = system.memory || {};
   const memPercent = Number(mem.percent) || 0;
@@ -389,6 +546,21 @@ function renderSystemMetrics(system) {
   if (memDetailEl) {
     memDetailEl.textContent = `${formatBytes(mem.used)} / ${formatBytes(mem.total)} used (${formatBytes(mem.available)} avail)`;
   }
+
+  // Memory breakdown chips
+  const chipUsed = document.getElementById("memory-chip-used");
+  const chipCached = document.getElementById("memory-chip-cached");
+  const chipFree = document.getElementById("memory-chip-free");
+  if (chipUsed) chipUsed.textContent = `Used: ${formatBytes(mem.used)}`;
+  if (chipCached) chipCached.textContent = `Cached: ${formatBytes(mem.cached || 0)}`;
+  if (chipFree) chipFree.textContent = `Free: ${formatBytes(mem.free || 0)}`;
+
+  // Memory rolling historical trend chart
+  memoryHistoryBuffer.push(memPercent);
+  if (memoryHistoryBuffer.length > MEMORY_HISTORY_LIMIT) {
+    memoryHistoryBuffer.shift();
+  }
+  renderMemoryHistoryChart(memoryHistoryBuffer);
 
   // Disk / Direct Storage (POSIX statvfs / psutil)
   const disk = system.disk || system.storage || {};
@@ -418,6 +590,21 @@ function renderSystemMetrics(system) {
   }
   if (bootDetailEl) {
     bootDetailEl.textContent = `Booted: ${formatTimestampLocal(system.boot_time)}`;
+  }
+  const uptimeLoadBadge = document.getElementById("uptime-load-badge");
+  if (uptimeLoadBadge) {
+    if (Array.isArray(system.load_avg) && system.load_avg.length > 0) {
+      uptimeLoadBadge.textContent = `Load: ${system.load_avg.map((v) => Number(v).toFixed(2)).join(", ")}`;
+      uptimeLoadBadge.style.display = "";
+    } else {
+      uptimeLoadBadge.textContent = "Load: --";
+    }
+  }
+
+  // Storage Volumes breakdown table
+  if (Array.isArray(system.disks) && system.disks.length > 0) {
+    cachedStorageDisks = system.disks;
+    renderStorageMounts(system.disks);
   }
 }
 
@@ -2947,6 +3134,8 @@ function switchViewTab(tabName, updateHash = true) {
     if (updateHash && window.location.hash !== "#raid") {
       history.replaceState(null, "", "#raid");
     }
+
+    renderStorageMounts(cachedStorageDisks);
   } else if (isNotifications) {
     notificationsTab?.classList.add("active");
     notificationsTab?.setAttribute("aria-selected", "true");
@@ -4373,6 +4562,8 @@ async function fetchDockerUpdatesConfig() {
 function generateUpdateRowHtml(u) {
   const safeName = escapeHtml(u.container_name || u.container_id);
   const safeImg = escapeHtml(u.image);
+  const safeTag = escapeHtml(u.image_tag || "latest");
+  const safeVer = u.image_version ? escapeHtml(u.image_version) : "";
   const safeStack = escapeHtml(u.stack || "-");
   const safeCur = escapeHtml(u.current_id || "--");
   const safeLat = escapeHtml(u.latest_id || "--");
@@ -4395,9 +4586,15 @@ function generateUpdateRowHtml(u) {
     actionHtml = `<span style="color: var(--text-muted); font-size: 0.8rem;">Current</span>`;
   }
 
+  const tagVersionHtml = `
+    <span class="kind-badge kind-tag">${safeTag}</span>
+    ${safeVer ? `<div class="tag-version-detail mono-text">${safeVer}</div>` : ""}
+  `;
+
   return `
     <td><strong>${safeName}</strong></td>
     <td><span class="mono-text" style="color: var(--accent-primary);">${safeImg}</span></td>
+    <td>${tagVersionHtml}</td>
     <td>${safeStack !== "-" ? `<span class="kind-badge kind-weekly">${safeStack}</span>` : "-"}</td>
     <td><span class="mono-text">${safeCur}</span></td>
     <td><span class="mono-text">${safeLat}</span></td>
@@ -4419,7 +4616,7 @@ function renderDockerUpdates(updates) {
 
   if (!updates || updates.length === 0) {
     lastDockerUpdatesRenderKey = renderKey;
-    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No running containers detected to scan for updates.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No running containers detected to scan for updates.</td></tr>`;
     return;
   }
 
@@ -4441,7 +4638,7 @@ function renderDockerUpdates(updates) {
     activeCids.add(cid);
 
     const rowContent = generateUpdateRowHtml(u);
-    const rowKey = `${u.container_name}|${u.image}|${u.stack}|${u.current_id}|${u.latest_id}|${u.update_available}|${u.managed_stack}|${u.can_update}`;
+    const rowKey = `${u.container_name}|${u.image}|${u.image_tag}|${u.image_version}|${u.stack}|${u.current_id}|${u.latest_id}|${u.update_available}|${u.managed_stack}|${u.can_update}`;
 
     let row = existingRowMap.get(cid);
     if (row) {
@@ -4499,7 +4696,7 @@ async function fetchDockerUpdates({ force = false } = {}) {
   // Only show an initial loading placeholder if tbody is completely empty on initial load
   const hasExistingRows = tbody.querySelectorAll("tr[data-container-id]").length > 0;
   if (!hasExistingRows && (tbody.children.length === 0 || (!cachedDockerUpdates && tbody.querySelector(".empty-state")))) {
-    tbody.innerHTML = `<tr><td colspan="7" class="loading-state" style="text-align:center; padding: 24px; color: var(--text-muted);"><span class="spinner" style="display:inline-block; margin-right:8px;"></span> Checking container images for updates...</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="loading-state" style="text-align:center; padding: 24px; color: var(--text-muted);"><span class="spinner" style="display:inline-block; margin-right:8px;"></span> Checking container images for updates...</td></tr>`;
   }
 
   try {
@@ -4822,6 +5019,18 @@ function initDashboard() {
   document
     .getElementById("btn-goto-notifications")
     ?.addEventListener("click", () => switchViewTab("notifications", true));
+
+  // CPU Cores Drilldown Toggle
+  const btnToggleCpuCores = document.getElementById("btn-toggle-cpu-cores");
+  const cpuCoresDrilldown = document.getElementById("cpu-cores-drilldown");
+  if (btnToggleCpuCores && cpuCoresDrilldown) {
+    btnToggleCpuCores.addEventListener("click", () => {
+      const isHidden = cpuCoresDrilldown.classList.toggle("hidden");
+      btnToggleCpuCores.setAttribute("aria-expanded", String(!isHidden));
+      btnToggleCpuCores.classList.toggle("expanded", !isHidden);
+      cpuCoresDrilldown.setAttribute("aria-hidden", String(isHidden));
+    });
+  }
 
   // Mobile Sidebar Toggle & Backdrop
   document
