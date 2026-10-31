@@ -271,6 +271,7 @@ class TestNotificationRequest(BaseModel):
     channel: Optional[str] = "all"
 
 
+NotificationTestRequest = TestNotificationRequest
 def _extract_session_token(request: Request) -> Optional[str]:
     cookie_token = request.cookies.get("session_token")
     if cookie_token:

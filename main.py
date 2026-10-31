@@ -1346,12 +1346,46 @@ def get_masked_notification_center_config(
     discord_cfg = result.get("channels", {}).get("discord", {})
     bot_token = discord_cfg.get("bot_token", "")
     discord_cfg["bot_token_configured"] = bool(bot_token)
+    discord_cfg["token_configured"] = bool(bot_token)
     discord_cfg["bot_token"] = "********" if bot_token else ""
+    discord_cfg["token_masked"] = (
+        f"••••{bot_token[-4:]}"
+        if len(bot_token) > 4
+        else ("••••" if bot_token else "")
+    )
 
     telegram_cfg = result.get("channels", {}).get("telegram", {})
     t_bot_token = telegram_cfg.get("bot_token", "")
     telegram_cfg["bot_token_configured"] = bool(t_bot_token)
+    telegram_cfg["token_configured"] = bool(t_bot_token)
     telegram_cfg["bot_token"] = "********" if t_bot_token else ""
+    telegram_cfg["token_masked"] = (
+        f"••••{t_bot_token[-4:]}"
+        if len(t_bot_token) > 4
+        else ("••••" if t_bot_token else "")
+    )
+
+    topics = result.setdefault("topics", {})
+    if "system_status" in topics:
+        topics["system"] = topics["system_status"]
+    if "disk_health" in topics:
+        topics["disks"] = topics["disk_health"]
+    if "raid_status" in topics:
+        topics["raid"] = topics["raid_status"]
+
+    thresholds = result.setdefault("thresholds", {})
+    if "ram_percent" in thresholds and "ram" not in thresholds:
+        thresholds["ram"] = {"enabled": thresholds.get("enabled", True), "value": int(thresholds["ram_percent"])}
+    if "cpu_percent" in thresholds and "cpu" not in thresholds:
+        thresholds["cpu"] = {"enabled": thresholds.get("enabled", True), "value": int(thresholds["cpu_percent"])}
+    if "disk_percent" in thresholds and "disk" not in thresholds:
+        thresholds["disk"] = {"enabled": thresholds.get("enabled", True), "value": int(thresholds["disk_percent"])}
+    if "raid_degraded" in thresholds and "raid" not in thresholds:
+        thresholds["raid"] = {"enabled": bool(thresholds["raid_degraded"])}
+
+    schedule = result.setdefault("schedule", {})
+    if "day_of_week" in schedule and "day" not in schedule:
+        schedule["day"] = schedule["day_of_week"]
 
     return result
 
@@ -1368,12 +1402,12 @@ def update_notification_center_config(updates: dict[str, Any]) -> dict[str, Any]
                 incoming = updates["channels"][ch_key]
                 target = current["channels"][ch_key]
                 for k, v in incoming.items():
-                    if k == "bot_token":
+                    if k in ("bot_token", "token"):
                         str_val = str(v).strip()
                         if (
                             str_val
                             and not str_val.startswith("***")
-                            and str_val != "••••••••"
+                            and not str_val.startswith("•••")
                         ):
                             target["bot_token"] = str_val
                     elif k == "headers" and isinstance(v, dict):
@@ -1383,12 +1417,29 @@ def update_notification_center_config(updates: dict[str, Any]) -> dict[str, Any]
 
     if "schedule" in updates and isinstance(updates["schedule"], dict):
         current["schedule"].update(updates["schedule"])
+        if "day" in updates["schedule"]:
+            current["schedule"]["day_of_week"] = updates["schedule"]["day"]
 
     if "topics" in updates and isinstance(updates["topics"], dict):
         current["topics"].update(updates["topics"])
+        if "system" in updates["topics"]:
+            current["topics"]["system_status"] = updates["topics"]["system"]
+        if "disks" in updates["topics"]:
+            current["topics"]["disk_health"] = updates["topics"]["disks"]
+        if "raid" in updates["topics"]:
+            current["topics"]["raid_status"] = updates["topics"]["raid"]
 
     if "thresholds" in updates and isinstance(updates["thresholds"], dict):
-        current["thresholds"].update(updates["thresholds"])
+        in_t = updates["thresholds"]
+        if "ram" in in_t and isinstance(in_t["ram"], dict) and "value" in in_t["ram"]:
+            current["thresholds"]["ram_percent"] = float(in_t["ram"]["value"])
+        if "cpu" in in_t and isinstance(in_t["cpu"], dict) and "value" in in_t["cpu"]:
+            current["thresholds"]["cpu_percent"] = float(in_t["cpu"]["value"])
+        if "disk" in in_t and isinstance(in_t["disk"], dict) and "value" in in_t["disk"]:
+            current["thresholds"]["disk_percent"] = float(in_t["disk"]["value"])
+        if "raid" in in_t and isinstance(in_t["raid"], dict) and "enabled" in in_t["raid"]:
+            current["thresholds"]["raid_degraded"] = bool(in_t["raid"]["enabled"])
+        current["thresholds"].update(in_t)
 
     json_val = json.dumps(current)
     now = time.time()
@@ -1496,7 +1547,7 @@ def build_periodic_report_data(
         cfg = get_notification_center_config()
         topics = cfg.get("topics", {})
 
-    title = "📊 SystemAlerts - Periodic Report"
+    title = "SystemAlerts - Periodic Report"
     description = "Scheduled system health and status summary report."
     fields: list[dict[str, Any]] = []
 
@@ -1513,13 +1564,13 @@ def build_periodic_report_data(
             uptime_str = f"{days}d {hours}h {minutes}m"
             ram_info = f"{vm.percent}% ({_format_bytes(vm.used)} / {_format_bytes(vm.total)})"
             fields.append({
-                "name": "🖥️ System Status",
+                "name": "System Status",
                 "value": f"• CPU Usage: {cpu_pct}%\n• Memory: {ram_info}\n• Uptime: {uptime_str}",
                 "inline": False,
             })
         except Exception as exc:
             fields.append({
-                "name": "🖥️ System Status",
+                "name": "System Status",
                 "value": f"Error gathering system metrics: {exc}",
                 "inline": False,
             })
@@ -1535,13 +1586,13 @@ def build_periodic_report_data(
                 mnt_stat = get_disk_usage_statvfs(mount_path)
                 lines.append(f"• Mount ({mount_path}): {mnt_stat.get('storage_info', 'N/A')}")
             fields.append({
-                "name": "💾 Disk Health",
+                "name": "Disk Health",
                 "value": "\n".join(lines),
                 "inline": False,
             })
         except Exception as exc:
             fields.append({
-                "name": "💾 Disk Health",
+                "name": "Disk Health",
                 "value": f"Error gathering disk metrics: {exc}",
                 "inline": False,
             })
@@ -1551,13 +1602,13 @@ def build_periodic_report_data(
         try:
             status, details = check_raid_status()
             fields.append({
-                "name": "🛡️ RAID Status",
+                "name": "RAID Status",
                 "value": f"• Array Health: {status.upper()}\n• Status Details: {details[:200]}",
                 "inline": False,
             })
         except Exception as exc:
             fields.append({
-                "name": "🛡️ RAID Status",
+                "name": "RAID Status",
                 "value": f"Error checking RAID: {exc}",
                 "inline": False,
             })
@@ -1601,7 +1652,7 @@ async def evaluate_threshold_alerts(
                 entry = get_notification_state_entry(f"threshold_{key}")
                 in_cooldown = entry is not None and current_time < entry[1]
                 if not in_cooldown:
-                    title = f"⚠️ Alert: High Memory Usage ({vm.percent}%)"
+                    title = f"Alert: High Memory Usage ({vm.percent}%)"
                     msg = f"RAM usage has reached {vm.percent}%, exceeding threshold of {ram_limit}%."
                     embed = {
                         "title": title,
@@ -1633,7 +1684,7 @@ async def evaluate_threshold_alerts(
                 entry = get_notification_state_entry(f"threshold_{key}")
                 in_cooldown = entry is not None and current_time < entry[1]
                 if not in_cooldown:
-                    title = f"⚠️ Alert: High CPU Usage ({cpu_pct}%)"
+                    title = f"Alert: High CPU Usage ({cpu_pct}%)"
                     msg = f"CPU usage has reached {cpu_pct}%, exceeding threshold of {cpu_limit}%."
                     embed = {
                         "title": title,
@@ -1671,7 +1722,7 @@ async def evaluate_threshold_alerts(
                     entry = get_notification_state_entry(f"threshold_{metric_key}")
                     in_cooldown = entry is not None and current_time < entry[1]
                     if not in_cooldown:
-                        title = f"⚠️ Alert: High Disk Usage on {d} ({pct}%)"
+                        title = f"Alert: High Disk Usage on {d} ({pct}%)"
                         msg = f"Disk {d} usage is at {pct}%, exceeding threshold of {disk_limit}%."
                         embed = {
                             "title": title,
@@ -1702,7 +1753,7 @@ async def evaluate_threshold_alerts(
                 entry = get_notification_state_entry(f"threshold_{key}")
                 in_cooldown = entry is not None and current_time < entry[1]
                 if not in_cooldown:
-                    title = f"🚨 Alert: RAID Array Degraded ({status.upper()})"
+                    title = f"Alert: RAID Array Degraded ({status.upper()})"
                     msg = f"RAID array is reported as '{status}'. Attention is required!\n{details[:200]}"
                     embed = {
                         "title": title,
@@ -1785,7 +1836,7 @@ async def send_test_notification(
     mgr = NotificationManager(config_dict)
 
     embed_data = {
-        "title": "🔔 System Alerts - Test Notification",
+        "title": "System Alerts - Test Notification",
         "description": (
             "This is a test notification from SystemAlerts Server Manager.\n"
             "Notifications are configured and functioning properly."
@@ -1836,7 +1887,7 @@ async def send_test_notification(
             return False, msg
 
         embed = discord.Embed(
-            title="🔔 System Alerts - Test Notification",
+            title="System Alerts - Test Notification",
             description=(
                 "This is a test notification from SystemAlerts Server Manager.\n"
                 "Discord notifications are configured and functioning properly."
@@ -1863,7 +1914,7 @@ async def send_test_notification(
 
     success, message = await mgr.send_channel(
         effective_channel,
-        "🔔 System Alerts - Test Notification",
+        "System Alerts - Test Notification",
         "This is a test notification from SystemAlerts Server Manager.",
         embed_data=embed_data,
     )
@@ -4291,7 +4342,7 @@ async def run_scheduled_docker_updates(
         if updated_items:
             try:
                 embed = discord.Embed(
-                    title="🐳 Docker Automated Update Report",
+                    title="Docker Automated Update Report",
                     description=f"Automated update completed at {now_dt.strftime('%Y-%m-%d %H:%M')}.",
                     color=0x2ECC71,
                 )

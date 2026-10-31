@@ -1628,6 +1628,7 @@ function onAuthenticatedSuccess(username) {
   startPolling();
   connectWebSocket();
   fetchDiscordSettings();
+  fetchNotificationCenterConfig();
   checkForUpdates({ silent: true });
   fetchDockerUpdatesConfig();
 }
@@ -2297,124 +2298,445 @@ let cachedDiscordSettings = null;
 /**
  * Fetch settings from SQLite API to update Discord controls card.
  */
-async function fetchDiscordSettings() {
-  if (!isAuthenticated) return;
-  try {
-    const resp = await apiFetch("/api/settings");
-    if (!resp.ok) return;
-    const data = await resp.json().catch(() => ({}));
-    populateDiscordForm(data);
-  } catch (err) {
-    console.warn("Failed to fetch Discord settings:", err);
+let cachedNotificationCenterConfig = null;
+
+/**
+ * Show feedback message in Notification Center (#notif-feedback & #discord-feedback).
+ */
+function showNotificationFeedback(message, isSuccess = true) {
+  const notifFeedback = document.getElementById("notif-feedback");
+  const discordFeedback = document.getElementById("discord-feedback");
+  const testFeedback = document.getElementById("test-notification-feedback");
+  const targets = [notifFeedback, discordFeedback, testFeedback].filter(Boolean);
+
+  targets.forEach((el) => {
+    if (!message) {
+      el.textContent = "";
+      el.classList.add("hidden");
+      el.classList.remove("feedback-success", "feedback-error");
+    } else {
+      el.textContent = message;
+      el.classList.remove("hidden", "feedback-success", "feedback-error");
+      el.classList.add(isSuccess ? "feedback-success" : "feedback-error");
+    }
+  });
+}
+
+const showDiscordFeedback = showNotificationFeedback;
+const showTestNotificationFeedback = showNotificationFeedback;
+
+/**
+ * Update next run info text based on schedule form controls.
+ */
+function updateNextRunDisplay(schedule = null) {
+  const nextRunEl = document.getElementById("notif-schedule-next-run");
+  if (!nextRunEl) return;
+
+  const scheduleToggle = document.getElementById("notif-schedule-enable");
+  const enabled = scheduleToggle ? scheduleToggle.checked : true;
+  if (!enabled) {
+    nextRunEl.textContent = "Scheduled reports disabled";
+    return;
   }
+
+  const freqEl = document.getElementById("notif-schedule-freq");
+  const freq = freqEl ? freqEl.value : (schedule?.frequency || "daily");
+  const dayEl = document.getElementById("notif-schedule-day");
+  const day = dayEl ? dayEl.value : (schedule?.day || "monday");
+  const timeEl = document.getElementById("notif-schedule-time");
+  const time = timeEl ? timeEl.value : (schedule?.time || "09:00");
+
+  let desc = `Daily at ${time}`;
+  if (freq === "weekly") {
+    const capitalizedDay = day ? (day.charAt(0).toUpperCase() + day.slice(1)) : "Monday";
+    desc = `Every ${capitalizedDay} at ${time}`;
+  } else if (freq === "hourly") {
+    desc = `Every hour at :00`;
+  } else if (freq === "6h") {
+    desc = `Every 6 hours`;
+  } else if (freq === "12h") {
+    desc = `Every 12 hours`;
+  }
+
+  nextRunEl.textContent = `Next report scheduled: ${desc}`;
 }
 
 /**
- * Render Discord Configuration & Setup card in Notifications view.
+ * Populate all Notification Center form controls from GET /api/notifications/center payload.
  */
-function populateDiscordForm(settings) {
-  if (!settings) return;
-  cachedDiscordSettings = settings;
+function populateNotificationCenter(config) {
+  if (!config || typeof config !== "object") return;
+  cachedNotificationCenterConfig = config;
 
-  const toggle = document.getElementById("discord-enabled-toggle");
-  const tokenInput = document.getElementById("discord-token-input");
-  const tokenBadge = document.getElementById("discord-token-status");
-  const channelInput = document.getElementById("discord-channel-input");
-  const statusBadge = document.getElementById("discord-status-badge");
+  const channels = config.channels || {};
+  const discordCh = channels.discord || {};
+  const telegramCh = channels.telegram || {};
+  const webhookCh = channels.webhook || {};
+  const schedule = config.schedule || {};
+  const topics = config.topics || {};
+  const thresholds = config.thresholds || {};
 
-  if (toggle) {
-    toggle.checked = Boolean(settings.discord_enabled);
-  }
+  // 1. Discord Channel
+  const notifDiscordToggle = document.getElementById("notif-channel-discord-enable");
+  const discordLegacyToggle = document.getElementById("discord-enabled-toggle");
+  const discordEnabled = Boolean(
+    discordCh.enabled !== undefined
+      ? discordCh.enabled
+      : (config.discord_enabled !== undefined ? config.discord_enabled : false)
+  );
+  if (notifDiscordToggle) notifDiscordToggle.checked = discordEnabled;
+  if (discordLegacyToggle) discordLegacyToggle.checked = discordEnabled;
 
-  if (tokenInput) {
-    tokenInput.value = "";
-    tokenInput.placeholder = settings.discord_token_configured
-      ? `Configured (${settings.discord_token_masked || "********"}) — type to replace`
+  const notifDiscordToken = document.getElementById("notif-discord-token-input");
+  const discordLegacyToken = document.getElementById("discord-token-input");
+  const discordTokenBadge = document.getElementById("discord-token-status");
+  const isTokenConfigured = Boolean(
+    discordCh.token_configured !== undefined
+      ? discordCh.token_configured
+      : config.discord_token_configured
+  );
+  const tokenMasked = discordCh.token_masked || config.discord_token_masked || "";
+
+  if (notifDiscordToken) {
+    notifDiscordToken.value = "";
+    notifDiscordToken.placeholder = isTokenConfigured
+      ? `Configured (${tokenMasked || "••••••••"}) — type to replace`
       : "Leave blank to keep existing token";
   }
-
-  if (tokenBadge) {
-    if (settings.discord_token_configured) {
-      tokenBadge.textContent = settings.discord_token_masked
-        ? `Configured (${settings.discord_token_masked})`
-        : "Configured";
-      tokenBadge.classList.add("configured");
+  if (discordLegacyToken) {
+    discordLegacyToken.value = "";
+    discordLegacyToken.placeholder = notifDiscordToken ? notifDiscordToken.placeholder : "";
+  }
+  if (discordTokenBadge) {
+    if (isTokenConfigured) {
+      discordTokenBadge.textContent = tokenMasked ? `Configured (${tokenMasked})` : "Configured";
+      discordTokenBadge.classList.add("configured");
     } else {
-      tokenBadge.textContent = "Not configured";
-      tokenBadge.classList.remove("configured");
+      discordTokenBadge.textContent = "Not configured";
+      discordTokenBadge.classList.remove("configured");
     }
   }
 
-  if (channelInput) {
-    channelInput.value = settings.channel_id || "";
-  }
+  const notifDiscordChannel = document.getElementById("notif-discord-channel-input");
+  const discordLegacyChannel = document.getElementById("discord-channel-input");
+  const channelId = discordCh.channel_id || config.channel_id || "";
+  if (notifDiscordChannel) notifDiscordChannel.value = channelId;
+  if (discordLegacyChannel) discordLegacyChannel.value = channelId;
 
-  if (statusBadge) {
-    statusBadge.classList.remove(
+  const discordStatusBadge = document.getElementById("discord-status-badge");
+  if (discordStatusBadge) {
+    discordStatusBadge.classList.remove(
       "status-clean",
       "status-degraded",
       "status-unknown",
       "status-enabled",
       "status-disabled"
     );
-    if (settings.discord_enabled) {
-      statusBadge.classList.add("status-clean", "status-enabled");
-      statusBadge.textContent = "ENABLED";
-      statusBadge.setAttribute("data-state", "enabled");
+    if (discordEnabled) {
+      discordStatusBadge.classList.add("status-clean", "status-enabled");
+      discordStatusBadge.textContent = "ENABLED";
+      discordStatusBadge.setAttribute("data-state", "enabled");
     } else {
-      statusBadge.classList.add("status-degraded", "status-disabled");
-      statusBadge.textContent = "DISABLED";
-      statusBadge.setAttribute("data-state", "disabled");
+      discordStatusBadge.classList.add("status-degraded", "status-disabled");
+      discordStatusBadge.textContent = "DISABLED";
+      discordStatusBadge.setAttribute("data-state", "disabled");
     }
   }
 
   const overviewDiscordBadge = document.getElementById("overview-discord-badge");
   if (overviewDiscordBadge) {
-    overviewDiscordBadge.className = `status-badge ${settings.discord_enabled ? "status-clean" : "status-degraded"}`;
-    overviewDiscordBadge.textContent = settings.discord_enabled ? "ENABLED" : "DISABLED";
+    overviewDiscordBadge.className = `status-badge ${discordEnabled ? "status-clean" : "status-degraded"}`;
+    overviewDiscordBadge.textContent = discordEnabled ? "ENABLED" : "DISABLED";
   }
   const overviewDiscordSummary = document.getElementById("overview-discord-summary");
   if (overviewDiscordSummary) {
-    overviewDiscordSummary.textContent = settings.discord_enabled
-      ? `Active Discord alerts channel: ${settings.channel_id || "configured"}`
+    overviewDiscordSummary.textContent = discordEnabled
+      ? `Active Discord alerts channel: ${channelId || "configured"}`
       : "Discord notifications are currently disabled";
   }
+
+  // 2. Telegram Channel
+  const notifTelegramToggle = document.getElementById("notif-channel-telegram-enable");
+  if (notifTelegramToggle) notifTelegramToggle.checked = Boolean(telegramCh.enabled);
+
+  const notifTelegramToken = document.getElementById("notif-telegram-token-input");
+  const notifTelegramBadge = document.getElementById("notif-telegram-token-badge");
+  const isTgConfigured = Boolean(telegramCh.token_configured);
+  if (notifTelegramToken) {
+    notifTelegramToken.value = "";
+    notifTelegramToken.placeholder = isTgConfigured
+      ? `Configured (${telegramCh.token_masked || "••••••••"}) — type to replace`
+      : "e.g. 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11";
+  }
+  if (notifTelegramBadge) {
+    if (isTgConfigured) {
+      notifTelegramBadge.textContent = telegramCh.token_masked
+        ? `Configured (${telegramCh.token_masked})`
+        : "Configured";
+      notifTelegramBadge.classList.add("configured");
+    } else {
+      notifTelegramBadge.textContent = "Not configured";
+      notifTelegramBadge.classList.remove("configured");
+    }
+  }
+
+  const notifTelegramChatId = document.getElementById("notif-telegram-chat-id-input");
+  if (notifTelegramChatId) notifTelegramChatId.value = telegramCh.chat_id || "";
+
+  // 3. Generic Webhook Channel
+  const notifWebhookToggle = document.getElementById("notif-channel-webhook-enable");
+  if (notifWebhookToggle) notifWebhookToggle.checked = Boolean(webhookCh.enabled);
+
+  const notifWebhookUrl = document.getElementById("notif-webhook-url-input");
+  if (notifWebhookUrl) notifWebhookUrl.value = webhookCh.url || "";
+
+  // 4. Automated Report Schedule
+  const scheduleToggle = document.getElementById("notif-schedule-enable");
+  if (scheduleToggle) scheduleToggle.checked = Boolean(schedule.enabled ?? true);
+
+  const scheduleFreq = document.getElementById("notif-schedule-freq");
+  if (scheduleFreq && schedule.frequency) scheduleFreq.value = schedule.frequency;
+
+  const scheduleDay = document.getElementById("notif-schedule-day");
+  if (scheduleDay && schedule.day) scheduleDay.value = schedule.day;
+
+  const scheduleDayGroup = document.getElementById("notif-schedule-day-group");
+  if (scheduleDayGroup) {
+    scheduleDayGroup.classList.toggle("hidden", (scheduleFreq?.value || "daily") !== "weekly");
+  }
+
+  const scheduleTime = document.getElementById("notif-schedule-time");
+  if (scheduleTime && schedule.time) scheduleTime.value = schedule.time;
+
+  updateNextRunDisplay(schedule);
+
+  // 5. Topics
+  const topicSys = document.getElementById("notif-topic-system");
+  if (topicSys) topicSys.checked = Boolean(topics.system ?? true);
+
+  const topicDisks = document.getElementById("notif-topic-disks");
+  if (topicDisks) topicDisks.checked = Boolean(topics.disks ?? true);
+
+  const topicRaid = document.getElementById("notif-topic-raid");
+  if (topicRaid) topicRaid.checked = Boolean(topics.raid ?? true);
+
+  // 6. Thresholds
+  const ramTh = thresholds.ram || {};
+  const notifRamEnable = document.getElementById("notif-threshold-ram-enable");
+  const notifRamVal = document.getElementById("notif-threshold-ram-value");
+  const notifRamSlider = document.getElementById("notif-threshold-ram-slider");
+  if (notifRamEnable) notifRamEnable.checked = Boolean(ramTh.enabled ?? true);
+  const ramVal = Number(ramTh.value ?? 90);
+  if (notifRamVal) notifRamVal.value = ramVal;
+  if (notifRamSlider) notifRamSlider.value = ramVal;
+
+  const cpuTh = thresholds.cpu || {};
+  const notifCpuEnable = document.getElementById("notif-threshold-cpu-enable");
+  const notifCpuVal = document.getElementById("notif-threshold-cpu-value");
+  const notifCpuSlider = document.getElementById("notif-threshold-cpu-slider");
+  if (notifCpuEnable) notifCpuEnable.checked = Boolean(cpuTh.enabled ?? true);
+  const cpuVal = Number(cpuTh.value ?? 90);
+  if (notifCpuVal) notifCpuVal.value = cpuVal;
+  if (notifCpuSlider) notifCpuSlider.value = cpuVal;
+
+  const diskTh = thresholds.disk || {};
+  const notifDiskEnable = document.getElementById("notif-threshold-disk-enable");
+  const notifDiskVal = document.getElementById("notif-threshold-disk-value");
+  const notifDiskSlider = document.getElementById("notif-threshold-disk-slider");
+  if (notifDiskEnable) notifDiskEnable.checked = Boolean(diskTh.enabled ?? true);
+  const diskVal = Number(diskTh.value ?? 85);
+  if (notifDiskVal) notifDiskVal.value = diskVal;
+  if (notifDiskSlider) notifDiskSlider.value = diskVal;
+
+  const raidTh = thresholds.raid || {};
+  const notifRaidEnable = document.getElementById("notif-threshold-raid-enable");
+  if (notifRaidEnable) notifRaidEnable.checked = Boolean(raidTh.enabled ?? true);
+}
+
+/**
+ * Legacy populator kept for backwards compatibility with tests.
+ */
+function populateDiscordForm(settings) {
+  if (!settings) return;
+  cachedDiscordSettings = settings;
+  populateNotificationCenter(settings);
 }
 
 const renderDiscordStatusCard = populateDiscordForm;
 
 /**
- * Show feedback message in Discord setup card (#discord-feedback).
+ * Fetch full Notification Center configuration from GET /api/notifications/center.
  */
-function showDiscordFeedback(message, isSuccess = true) {
-  const el =
-    document.getElementById("discord-feedback") ||
-    document.getElementById("test-notification-feedback");
-  if (!el) return;
-  if (!message) {
-    el.textContent = "";
-    el.classList.add("hidden");
-    el.classList.remove("feedback-success", "feedback-error");
-    return;
+async function fetchNotificationCenterConfig() {
+  if (!isAuthenticated) return;
+  try {
+    const resp = await apiFetch("/api/notifications/center");
+    if (resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      populateNotificationCenter(data);
+      return;
+    }
+  } catch (err) {
+    console.debug("GET /api/notifications/center error, checking fallback:", err);
   }
-  el.textContent = message;
-  el.classList.remove("hidden", "feedback-success", "feedback-error");
-  el.classList.add(isSuccess ? "feedback-success" : "feedback-error");
+
+  // Fallback to /api/settings if needed
+  try {
+    const respSettings = await apiFetch("/api/settings");
+    if (respSettings.ok) {
+      const settingsData = await respSettings.json().catch(() => ({}));
+      populateDiscordForm(settingsData);
+    }
+  } catch (err) {
+    console.warn("Fallback fetch settings error:", err);
+  }
 }
 
-const showTestNotificationFeedback = showDiscordFeedback;
+async function fetchDiscordSettings() {
+  await fetchNotificationCenterConfig();
+}
 
 /**
- * Save Discord Configuration from Notifications tab.
+ * Collect form controls and save to POST /api/notifications/center.
+ */
+async function saveNotificationCenterConfig() {
+  const saveBtn = document.getElementById("save-notifications-btn");
+  if (saveBtn) saveBtn.disabled = true;
+  showNotificationFeedback(null);
+
+  const discordToggle = document.getElementById("notif-channel-discord-enable");
+  const discordToken = document.getElementById("notif-discord-token-input");
+  const discordChannel = document.getElementById("notif-discord-channel-input");
+
+  const telegramToggle = document.getElementById("notif-channel-telegram-enable");
+  const telegramToken = document.getElementById("notif-telegram-token-input");
+  const telegramChatId = document.getElementById("notif-telegram-chat-id-input");
+
+  const webhookToggle = document.getElementById("notif-channel-webhook-enable");
+  const webhookUrl = document.getElementById("notif-webhook-url-input");
+
+  const scheduleToggle = document.getElementById("notif-schedule-enable");
+  const scheduleFreq = document.getElementById("notif-schedule-freq");
+  const scheduleDay = document.getElementById("notif-schedule-day");
+  const scheduleTime = document.getElementById("notif-schedule-time");
+
+  const topicSys = document.getElementById("notif-topic-system");
+  const topicDisks = document.getElementById("notif-topic-disks");
+  const topicRaid = document.getElementById("notif-topic-raid");
+
+  const ramToggle = document.getElementById("notif-threshold-ram-enable");
+  const ramVal = document.getElementById("notif-threshold-ram-value");
+  const cpuToggle = document.getElementById("notif-threshold-cpu-enable");
+  const cpuVal = document.getElementById("notif-threshold-cpu-value");
+  const diskToggle = document.getElementById("notif-threshold-disk-enable");
+  const diskVal = document.getElementById("notif-threshold-disk-value");
+  const raidToggle = document.getElementById("notif-threshold-raid-enable");
+
+  const discordPayload = {
+    enabled: Boolean(discordToggle ? discordToggle.checked : false),
+    channel_id: discordChannel ? discordChannel.value.trim() : "",
+  };
+  if (discordToken && discordToken.value.trim().length > 0) {
+    discordPayload.token = discordToken.value.trim();
+  }
+
+  const telegramPayload = {
+    enabled: Boolean(telegramToggle ? telegramToggle.checked : false),
+    chat_id: telegramChatId ? telegramChatId.value.trim() : "",
+  };
+  if (telegramToken && telegramToken.value.trim().length > 0) {
+    telegramPayload.token = telegramToken.value.trim();
+  }
+
+  const webhookPayload = {
+    enabled: Boolean(webhookToggle ? webhookToggle.checked : false),
+    url: webhookUrl ? webhookUrl.value.trim() : "",
+  };
+
+  const payload = {
+    channels: {
+      discord: discordPayload,
+      telegram: telegramPayload,
+      webhook: webhookPayload,
+    },
+    schedule: {
+      enabled: Boolean(scheduleToggle ? scheduleToggle.checked : false),
+      frequency: scheduleFreq ? scheduleFreq.value : "daily",
+      day: scheduleDay ? scheduleDay.value : "monday",
+      time: scheduleTime ? scheduleTime.value : "09:00",
+    },
+    topics: {
+      system: Boolean(topicSys ? topicSys.checked : false),
+      disks: Boolean(topicDisks ? topicDisks.checked : false),
+      raid: Boolean(topicRaid ? topicRaid.checked : false),
+    },
+    thresholds: {
+      ram: {
+        enabled: Boolean(ramToggle ? ramToggle.checked : false),
+        value: Number(ramVal ? ramVal.value : 90) || 90,
+      },
+      cpu: {
+        enabled: Boolean(cpuToggle ? cpuToggle.checked : false),
+        value: Number(cpuVal ? cpuVal.value : 90) || 90,
+      },
+      disk: {
+        enabled: Boolean(diskToggle ? diskToggle.checked : false),
+        value: Number(diskVal ? diskVal.value : 85) || 85,
+      },
+      raid: {
+        enabled: Boolean(raidToggle ? raidToggle.checked : false),
+      },
+    },
+  };
+
+  try {
+    const resp = await apiFetch("/api/notifications/center", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json().catch(() => ({}));
+
+    if (resp.status === 401) {
+      showNotificationFeedback("Authentication required. Please sign in again.", false);
+      return;
+    }
+
+    if (!resp.ok) {
+      throw new Error(
+        data.detail || `Failed to save Notification Center settings (${resp.status})`
+      );
+    }
+
+    populateNotificationCenter(data);
+    showNotificationFeedback("Notification Center configuration saved successfully.", true);
+  } catch (err) {
+    showNotificationFeedback(
+      err instanceof Error ? err.message : String(err),
+      false
+    );
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+/**
+ * Save Discord Configuration from Notifications tab (legacy handler).
  */
 async function handleSaveDiscordSettings() {
   const saveBtn = document.getElementById("save-discord-btn");
   if (saveBtn) saveBtn.disabled = true;
-  showDiscordFeedback(null);
+  showNotificationFeedback(null);
 
-  const toggle = document.getElementById("discord-enabled-toggle");
-  const channelInput = document.getElementById("discord-channel-input");
-  const tokenInput = document.getElementById("discord-token-input");
+  const toggle =
+    document.getElementById("notif-channel-discord-enable") ||
+    document.getElementById("discord-enabled-toggle");
+  const channelInput =
+    document.getElementById("notif-discord-channel-input") ||
+    document.getElementById("discord-channel-input");
+  const tokenInput =
+    document.getElementById("notif-discord-token-input") ||
+    document.getElementById("discord-token-input");
 
   const payload = {
     discord_enabled: Boolean(toggle ? toggle.checked : false),
@@ -2435,7 +2757,7 @@ async function handleSaveDiscordSettings() {
     const data = await resp.json().catch(() => ({}));
 
     if (resp.status === 401) {
-      showDiscordFeedback("Authentication required. Please sign in again.", false);
+      showNotificationFeedback("Authentication required. Please sign in again.", false);
       return;
     }
 
@@ -2444,9 +2766,9 @@ async function handleSaveDiscordSettings() {
     }
 
     populateDiscordForm(data);
-    showDiscordFeedback("Discord configuration saved successfully.", true);
+    showNotificationFeedback("Discord configuration saved successfully.", true);
   } catch (err) {
-    showDiscordFeedback(
+    showNotificationFeedback(
       err instanceof Error ? err.message : String(err),
       false
     );
@@ -2456,7 +2778,7 @@ async function handleSaveDiscordSettings() {
 }
 
 /**
- * Send test notification to Discord and update history.
+ * Send test notification to target channel ("all", "discord", "telegram", "webhook").
  */
 async function handleSendTestNotification() {
   const btn = document.getElementById("send-test-notification-btn");
@@ -2474,33 +2796,38 @@ async function handleSendTestNotification() {
     <span>Sending test notification...</span>
   `;
 
-  showDiscordFeedback(null);
+  showNotificationFeedback(null);
+
+  const testSelect = document.getElementById("notif-test-channel-select");
+  const selectedChannel = testSelect ? testSelect.value : "all";
 
   try {
     const resp = await apiFetch("/api/notifications/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel: selectedChannel }),
     });
     const data = await resp.json().catch(() => ({}));
 
     if (resp.status === 401) {
-      showDiscordFeedback("Authentication required. Please sign in again.", false);
+      showNotificationFeedback("Authentication required. Please sign in again.", false);
       return;
     }
 
     if (!resp.ok) {
-      const errMsg = data.detail || data.message || `Server returned error (${resp.status})`;
-      showDiscordFeedback(errMsg, false);
+      const errMsg =
+        data.detail || data.message || `Server returned error (${resp.status})`;
+      showNotificationFeedback(errMsg, false);
       return;
     }
 
     if (data.success) {
-      showDiscordFeedback(
-        data.message || "Test notification sent successfully to Discord!",
+      showNotificationFeedback(
+        data.message || `Test notification sent successfully to ${selectedChannel}!`,
         true
       );
     } else {
-      showDiscordFeedback(
+      showNotificationFeedback(
         data.message || "Failed to send test notification.",
         false
       );
@@ -2509,7 +2836,7 @@ async function handleSendTestNotification() {
     // Automatically refresh notification history so the new test log appears immediately
     await refreshNotificationHistory();
   } catch (err) {
-    showDiscordFeedback(
+    showNotificationFeedback(
       `Error sending test notification: ${err instanceof Error ? err.message : String(err)}`,
       false
     );
@@ -2519,6 +2846,8 @@ async function handleSendTestNotification() {
     btn.innerHTML = originalHtml;
   }
 }
+
+const sendTestNotification = handleSendTestNotification;
 
 /**
  * Refresh notification history table via WebSocket or HTTP fallback.
@@ -2628,8 +2957,8 @@ function switchViewTab(tabName, updateHash = true) {
       history.replaceState(null, "", "#notifications");
     }
 
-    if (!cachedDiscordSettings && isAuthenticated) {
-      fetchDiscordSettings();
+    if (isAuthenticated) {
+      fetchNotificationCenterConfig();
     }
   } else {
     overviewTab?.classList.add("active");
@@ -4716,7 +5045,11 @@ function initDashboard() {
     });
   }
 
-  // Notifications
+  // Notifications & Notification Center
+  document
+    .getElementById("save-notifications-btn")
+    ?.addEventListener("click", saveNotificationCenterConfig);
+
   document
     .getElementById("send-test-notification-btn")
     ?.addEventListener("click", handleSendTestNotification);
@@ -4724,6 +5057,71 @@ function initDashboard() {
   document
     .getElementById("save-discord-btn")
     ?.addEventListener("click", handleSaveDiscordSettings);
+
+  // Sync Discord legacy controls bidirectionally
+  const notifDiscordToggle = document.getElementById("notif-channel-discord-enable");
+  const discordLegacyToggle = document.getElementById("discord-enabled-toggle");
+  if (notifDiscordToggle && discordLegacyToggle) {
+    notifDiscordToggle.addEventListener("change", (e) => {
+      discordLegacyToggle.checked = e.target.checked;
+    });
+    discordLegacyToggle.addEventListener("change", (e) => {
+      notifDiscordToggle.checked = e.target.checked;
+    });
+  }
+
+  const notifDiscordToken = document.getElementById("notif-discord-token-input");
+  const discordLegacyToken = document.getElementById("discord-token-input");
+  if (notifDiscordToken && discordLegacyToken) {
+    notifDiscordToken.addEventListener("input", (e) => {
+      discordLegacyToken.value = e.target.value;
+    });
+    discordLegacyToken.addEventListener("input", (e) => {
+      notifDiscordToken.value = e.target.value;
+    });
+  }
+
+  const notifDiscordChannel = document.getElementById("notif-discord-channel-input");
+  const discordLegacyChannel = document.getElementById("discord-channel-input");
+  if (notifDiscordChannel && discordLegacyChannel) {
+    notifDiscordChannel.addEventListener("input", (e) => {
+      discordLegacyChannel.value = e.target.value;
+    });
+    discordLegacyChannel.addEventListener("input", (e) => {
+      notifDiscordChannel.value = e.target.value;
+    });
+  }
+
+  // Schedule controls handlers
+  const schedFreqSelect = document.getElementById("notif-schedule-freq");
+  const schedDayGroup = document.getElementById("notif-schedule-day-group");
+  if (schedFreqSelect) {
+    schedFreqSelect.addEventListener("change", (e) => {
+      if (schedDayGroup) {
+        schedDayGroup.classList.toggle("hidden", e.target.value !== "weekly");
+      }
+      updateNextRunDisplay();
+    });
+  }
+  document.getElementById("notif-schedule-day")?.addEventListener("change", () => updateNextRunDisplay());
+  document.getElementById("notif-schedule-time")?.addEventListener("input", () => updateNextRunDisplay());
+  document.getElementById("notif-schedule-enable")?.addEventListener("change", () => updateNextRunDisplay());
+
+  // Threshold sliders and number inputs sync
+  const wireThresholdInputs = (sliderId, numberId) => {
+    const slider = document.getElementById(sliderId);
+    const num = document.getElementById(numberId);
+    if (!slider || !num) return;
+    slider.addEventListener("input", (e) => {
+      num.value = e.target.value;
+    });
+    num.addEventListener("input", (e) => {
+      slider.value = e.target.value;
+    });
+  };
+  wireThresholdInputs("notif-threshold-ram-slider", "notif-threshold-ram-value");
+  wireThresholdInputs("notif-threshold-cpu-slider", "notif-threshold-cpu-value");
+  wireThresholdInputs("notif-threshold-disk-slider", "notif-threshold-disk-value");
 
   window.addEventListener("hashchange", syncTabFromHash);
   syncTabFromHash();
