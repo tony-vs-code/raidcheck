@@ -6727,6 +6727,9 @@ class TestPackageManagerBackendAndEndpoints(unittest.TestCase):
         self.assertIn("function formatRelativeTime(", app_js)
         self.assertIn("function fetchPackageUpdates(", app_js)
         self.assertIn("function fetchInstalledPackages(", app_js)
+        # Preloading checks
+        self.assertIn("fetchDockerUpdates({ background: true });", app_js)
+        self.assertIn("fetchInstalledPackages(\"\", 1);", app_js)
 
 
 if __name__ == "__main__":
