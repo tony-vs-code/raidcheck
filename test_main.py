@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import io
 import json
 import os
@@ -4743,6 +4743,446 @@ class DockerUpdatesDecouplingAndLifecycleTests(unittest.TestCase):
         proc = subprocess.run(["node", "-e", node_script], capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, f"Node test failed: {proc.stderr}")
         self.assertIn("SUCCESS", proc.stdout)
+
+
+class NotificationCenterTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test_nc_monitor.sqlite3"
+        self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
+        self.db_patcher.start()
+        main.create_user("admin", "adminpass", email="admin@example.com")
+        self.session_token = main.create_session("admin")
+        self.auth_cookies = {"session_token": self.session_token}
+
+    def tearDown(self):
+        self.db_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_provider_classes_and_notification_manager(self):
+        # 1. Base provider
+        base = main.NotificationProvider()
+        with self.assertRaises(NotImplementedError):
+            asyncio.run(base.send_notification("Title", "Msg"))
+
+        # 2. DiscordProvider validation
+        disc_disabled = main.DiscordProvider(enabled=False)
+        ok, msg = asyncio.run(disc_disabled.send_notification("T", "M"))
+        self.assertFalse(ok)
+        self.assertIn("disabled", msg.lower())
+
+        disc_no_token = main.DiscordProvider(enabled=True, bot_token="", channel_id="123")
+        with patch.object(main, "get_app_settings", return_value={"discord_token": ""}):
+            ok, msg = asyncio.run(disc_no_token.send_notification("T", "M"))
+            self.assertFalse(ok)
+            self.assertIn("token", msg.lower())
+
+        disc_no_channel = main.DiscordProvider(enabled=True, bot_token="tok", channel_id="")
+        with (
+            patch.object(main, "CHANNEL_ID", ""),
+            patch.object(main, "get_app_settings", return_value={"channel_id": ""}),
+        ):
+            ok, msg = asyncio.run(disc_no_channel.send_notification("T", "M"))
+            self.assertFalse(ok)
+            self.assertIn("channel", msg.lower())
+
+        # DiscordProvider webhook branch
+        disc_webhook = main.DiscordProvider(
+            webhook_url="https://discord.com/api/webhooks/123/abc", enabled=True
+        )
+        mock_resp_204 = MagicMock(status=204)
+        mock_session_disc = MagicMock()
+        mock_session_disc.post = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_resp_204),
+                __aexit__=AsyncMock(),
+            )
+        )
+        with patch(
+            "aiohttp.ClientSession",
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_session_disc),
+                __aexit__=AsyncMock(),
+            ),
+        ):
+            ok, msg = asyncio.run(
+                disc_webhook.send_notification("Webhook Title", "Webhook Message")
+            )
+            self.assertTrue(ok)
+            self.assertIn("webhook", msg.lower())
+
+        # 3. TelegramProvider validation
+        tg_disabled = main.TelegramProvider(enabled=False)
+        ok, msg = asyncio.run(tg_disabled.send_notification("T", "M"))
+        self.assertFalse(ok)
+        self.assertIn("disabled", msg.lower())
+
+        tg_no_tok = main.TelegramProvider(enabled=True, bot_token="", chat_id="123")
+        ok, msg = asyncio.run(tg_no_tok.send_notification("T", "M"))
+        self.assertFalse(ok)
+        self.assertIn("token", msg.lower())
+
+        tg_no_chat = main.TelegramProvider(enabled=True, bot_token="tok", chat_id="")
+        ok, msg = asyncio.run(tg_no_chat.send_notification("T", "M"))
+        self.assertFalse(ok)
+        self.assertIn("chat id", msg.lower())
+
+        # TelegramProvider success and fallback
+        tg_success = main.TelegramProvider(
+            enabled=True, bot_token="123:ABC", chat_id="45678"
+        )
+        mock_resp_tg = MagicMock(status=200)
+        mock_resp_tg.text = AsyncMock(return_value='{"ok": true}')
+        mock_session_tg = MagicMock()
+        mock_session_tg.post = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_resp_tg),
+                __aexit__=AsyncMock(),
+            )
+        )
+        with patch(
+            "aiohttp.ClientSession",
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_session_tg),
+                __aexit__=AsyncMock(),
+            ),
+        ):
+            ok, msg = asyncio.run(
+                tg_success.send_notification(
+                    "TG Title",
+                    "TG Message",
+                    embed_data={"fields": [{"name": "Key", "value": "Val"}]},
+                )
+            )
+            self.assertTrue(ok)
+            self.assertIn("success", msg.lower())
+
+        # 4. WebhookProvider validation
+        wh_disabled = main.WebhookProvider(enabled=False)
+        ok, msg = asyncio.run(wh_disabled.send_notification("T", "M"))
+        self.assertFalse(ok)
+        self.assertIn("disabled", msg.lower())
+
+        wh_no_url = main.WebhookProvider(enabled=True, url="")
+        ok, msg = asyncio.run(wh_no_url.send_notification("T", "M"))
+        self.assertFalse(ok)
+        self.assertIn("url", msg.lower())
+
+        wh_bad_url = main.WebhookProvider(enabled=True, url="ftp://example.com")
+        ok, msg = asyncio.run(wh_bad_url.send_notification("T", "M"))
+        self.assertFalse(ok)
+        self.assertIn("http", msg.lower())
+
+        wh_valid = main.WebhookProvider(
+            enabled=True, url="https://example.com/alerts", headers={"X-Custom": "1"}
+        )
+        mock_resp_wh = MagicMock(status=200)
+        mock_resp_wh.text = AsyncMock(return_value='{"received": true}')
+        mock_session_wh = MagicMock()
+        mock_session_wh.post = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_resp_wh),
+                __aexit__=AsyncMock(),
+            )
+        )
+        with patch(
+            "aiohttp.ClientSession",
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_session_wh),
+                __aexit__=AsyncMock(),
+            ),
+        ):
+            ok, msg = asyncio.run(wh_valid.send_notification("WH Title", "WH Message"))
+            self.assertTrue(ok)
+            self.assertIn("success", msg.lower())
+
+        # 5. NotificationManager send_channel & send_all
+        mgr = main.NotificationManager({
+            "channels": {
+                "discord": {"enabled": True, "bot_token": "tok", "channel_id": "123"},
+                "telegram": {"enabled": True, "bot_token": "tg_tok", "chat_id": "tg_chat"},
+                "webhook": {"enabled": False, "url": ""},
+            }
+        })
+        with (
+            patch.object(mgr.providers["discord"], "send_notification", new=AsyncMock(return_value=(True, "Discord OK"))),
+            patch.object(mgr.providers["telegram"], "send_notification", new=AsyncMock(return_value=(True, "TG OK"))),
+        ):
+            res = asyncio.run(mgr.send_all("Manager Title", "Manager Message"))
+            self.assertIn("discord", res)
+            self.assertIn("telegram", res)
+            self.assertNotIn("webhook", res)
+
+            # Test send_channel("all")
+            all_ok, all_msg = asyncio.run(mgr.send_channel("all", "T", "M"))
+            self.assertTrue(all_ok)
+            self.assertIn("discord", all_msg.lower())
+
+            # Test unknown channel
+            bad_ch_ok, bad_ch_msg = asyncio.run(mgr.send_channel("pagerduty", "T", "M"))
+            self.assertFalse(bad_ch_ok)
+            self.assertIn("unknown", bad_ch_msg.lower())
+
+    def test_schedule_cron_calculation(self):
+        # 1. Hourly: exactly +3600s
+        t0 = 1700000000.0
+        next_hourly = main.compute_next_scheduled_run({"frequency": "hourly"}, from_time=t0)
+        self.assertEqual(next_hourly, t0 + 3600.0)
+
+        # 2. Custom interval: e.g. 12 hours
+        next_interval = main.compute_next_scheduled_run(
+            {"frequency": "interval", "interval_hours": 12}, from_time=t0
+        )
+        self.assertEqual(next_interval, t0 + 12 * 3600.0)
+
+        # 3. Daily: fixed time
+        # Given 2023-11-14 12:00:00 UTC (1700001600.0)
+        # If schedule is 15:00 UTC -> same day at 15:00 UTC
+        dt = datetime(2023, 11, 14, 12, 0, 0, tzinfo=timezone.utc)
+        ts_now = dt.timestamp()
+        next_daily_same_day = main.compute_next_scheduled_run(
+            {"frequency": "daily", "time": "15:00"}, from_time=ts_now, timezone_str="UTC"
+        )
+        dt_res = datetime.fromtimestamp(next_daily_same_day, tz=timezone.utc)
+        self.assertEqual(dt_res.hour, 15)
+        self.assertEqual(dt_res.day, 14)
+
+        # If schedule is 09:00 UTC -> next day at 09:00 UTC
+        next_daily_next_day = main.compute_next_scheduled_run(
+            {"frequency": "daily", "time": "09:00"}, from_time=ts_now, timezone_str="UTC"
+        )
+        dt_next = datetime.fromtimestamp(next_daily_next_day, tz=timezone.utc)
+        self.assertEqual(dt_next.hour, 9)
+        self.assertEqual(dt_next.day, 15)
+
+        # 4. Weekly: specific weekday and time
+        # 2023-11-14 was a Tuesday (weekday 1). Target Wednesday (weekday 2) at 10:00 UTC
+        next_weekly = main.compute_next_scheduled_run(
+            {"frequency": "weekly", "day_of_week": "wednesday", "time": "10:00"},
+            from_time=ts_now,
+            timezone_str="UTC",
+        )
+        dt_weekly = datetime.fromtimestamp(next_weekly, tz=timezone.utc)
+        self.assertEqual(dt_weekly.weekday(), 2)
+        self.assertEqual(dt_weekly.hour, 10)
+        self.assertEqual(dt_weekly.day, 15)
+
+    def test_topics_and_periodic_report_generation(self):
+        # All topics enabled
+        with (
+            patch.object(main, "check_raid_status", return_value=("clean", "All 2 drives functional")),
+            patch.object(main, "get_disk_usage_statvfs", return_value={"storage_info": "10GB/100GB (10%) | 90GB free"}),
+        ):
+            title, desc, embed = main.build_periodic_report_data({
+                "system_status": True,
+                "disk_health": True,
+                "raid_status": True,
+            })
+            self.assertIn("Periodic Report", title)
+            field_names = [f["name"] for f in embed["fields"]]
+            self.assertTrue(any("System Status" in n for n in field_names))
+            self.assertTrue(any("Disk Health" in n for n in field_names))
+            self.assertTrue(any("RAID Status" in n for n in field_names))
+
+        # Only system_status enabled
+        title, desc, embed = main.build_periodic_report_data({
+            "system_status": True,
+            "disk_health": False,
+            "raid_status": False,
+        })
+        field_names = [f["name"] for f in embed["fields"]]
+        self.assertTrue(any("System Status" in n for n in field_names))
+        self.assertFalse(any("Disk Health" in n for n in field_names))
+        self.assertFalse(any("RAID Status" in n for n in field_names))
+
+    def test_threshold_evaluations_and_cooldown_throttling(self):
+        t0 = 1700000000.0
+
+        # Configure thresholds
+        main.update_notification_center_config({
+            "channels": {
+                "discord": {"enabled": True, "bot_token": "dummy_token", "channel_id": "12345"},
+            },
+            "thresholds": {
+                "enabled": True,
+                "ram_percent": 80.0,
+                "cpu_percent": 80.0,
+                "disk_percent": 80.0,
+                "raid_degraded": True,
+                "cooldown_minutes": 60,
+            },
+        })
+
+        # Mock metrics exceeding RAM threshold (85%), CPU low (20%), Disk low (40%), RAID clean
+        mock_vm = MagicMock(percent=85.0, used=8500, total=10000)
+        with (
+            patch("psutil.virtual_memory", return_value=mock_vm),
+            patch("psutil.cpu_percent", return_value=20.0),
+            patch.object(main, "get_disk_usage_statvfs", return_value={"percent": 40.0, "storage_info": "40/100"}),
+            patch.object(main, "check_raid_status", return_value=("clean", "optimal")),
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send,
+        ):
+            # 1. First evaluation: RAM alert fires
+            alerts = asyncio.run(main.evaluate_threshold_alerts(now=t0))
+            self.assertEqual(len(alerts), 1)
+            self.assertEqual(alerts[0]["metric"], "ram")
+            self.assertEqual(mock_send.await_count, 1)
+
+            # 2. Immediate second evaluation at t0 + 60s: in cooldown, should NOT fire again
+            alerts_cd = asyncio.run(main.evaluate_threshold_alerts(now=t0 + 60.0))
+            self.assertEqual(len(alerts_cd), 0)
+            self.assertEqual(mock_send.await_count, 1)
+
+            # 3. Third evaluation after cooldown expired (t0 + 3601s): fires again!
+            alerts_exp = asyncio.run(main.evaluate_threshold_alerts(now=t0 + 3601.0))
+            self.assertEqual(len(alerts_exp), 1)
+            self.assertEqual(alerts_exp[0]["metric"], "ram")
+            self.assertEqual(mock_send.await_count, 2)
+
+        # Test RAID degraded alert trigger
+        t1 = t0 + 4000.0
+        with (
+            patch("psutil.virtual_memory", return_value=MagicMock(percent=20.0)),
+            patch("psutil.cpu_percent", return_value=10.0),
+            patch.object(main, "get_disk_usage_statvfs", return_value={"percent": 30.0, "storage_info": "30/100"}),
+            patch.object(main, "check_raid_status", return_value=("degraded", "/dev/sdb1 failed")),
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send_raid,
+        ):
+            alerts_raid = asyncio.run(main.evaluate_threshold_alerts(now=t1))
+            self.assertEqual(len(alerts_raid), 1)
+            self.assertEqual(alerts_raid[0]["metric"], "raid_degraded")
+            self.assertEqual(mock_send_raid.await_count, 1)
+
+    def test_notification_center_sqlite_persistence_and_backward_compatibility(self):
+        # 1. Initial default configuration
+        cfg = main.get_notification_center_config()
+        self.assertIn("channels", cfg)
+        self.assertIn("schedule", cfg)
+        self.assertIn("topics", cfg)
+        self.assertIn("thresholds", cfg)
+
+        # 2. Update via notification center
+        updated = main.update_notification_center_config({
+            "channels": {
+                "discord": {
+                    "enabled": True,
+                    "bot_token": "my_new_bot_token",
+                    "channel_id": "987654321",
+                },
+                "telegram": {
+                    "enabled": True,
+                    "bot_token": "tg_secret_123",
+                    "chat_id": "777888",
+                },
+            },
+            "schedule": {
+                "frequency": "daily",
+                "time": "14:30",
+            },
+        })
+        self.assertTrue(updated["channels"]["discord"]["enabled"])
+        self.assertEqual(updated["channels"]["discord"]["bot_token"], "my_new_bot_token")
+        self.assertEqual(updated["channels"]["telegram"]["bot_token"], "tg_secret_123")
+
+        # Verify backward compatibility with app_settings
+        app_settings = main.get_app_settings()
+        self.assertEqual(app_settings["discord_enabled"], "true")
+        self.assertEqual(app_settings["discord_token"], "my_new_bot_token")
+        self.assertEqual(app_settings["channel_id"], "987654321")
+
+        # 3. Masked retrieval
+        masked = main.get_masked_notification_center_config()
+        self.assertEqual(masked["channels"]["discord"]["bot_token"], "********")
+        self.assertTrue(masked["channels"]["discord"]["bot_token_configured"])
+        self.assertEqual(masked["channels"]["telegram"]["bot_token"], "********")
+        self.assertTrue(masked["channels"]["telegram"]["bot_token_configured"])
+
+        # 4. Update with masked token (should retain real secret)
+        re_saved = main.update_notification_center_config({
+            "channels": {
+                "discord": {
+                    "bot_token": "********",
+                    "channel_id": "111222333",
+                },
+            },
+        })
+        self.assertEqual(re_saved["channels"]["discord"]["bot_token"], "my_new_bot_token")
+        self.assertEqual(re_saved["channels"]["discord"]["channel_id"], "111222333")
+
+        # 5. Reverse compatibility: update_app_settings syncs notification_center_config
+        main.update_app_settings({
+            "discord_token": "synced_from_app_settings",
+            "channel_id": "444555",
+            "discord_enabled": "true",
+        })
+        synced_cfg = main.get_notification_center_config()
+        self.assertEqual(synced_cfg["channels"]["discord"]["bot_token"], "synced_from_app_settings")
+        self.assertEqual(synced_cfg["channels"]["discord"]["channel_id"], "444555")
+
+    def test_notification_center_api_endpoints_and_scheduled_evaluation(self):
+        # 1. GET /api/notifications/center (enforces auth)
+        unauth_resp = asgi_get(api.app, "/api/notifications/center")
+        self.assertEqual(unauth_resp.status_code, 401)
+
+        # Authenticated GET
+        resp = asgi_get(api.app, "/api/notifications/center", cookies=self.auth_cookies)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("channels", data)
+        self.assertIn("schedule", data)
+        self.assertIn("topics", data)
+        self.assertIn("thresholds", data)
+
+        # 2. POST /api/notifications/center
+        update_payload = {
+            "channels": {
+                "discord": {"enabled": True, "bot_token": "api_token_123", "channel_id": "555666"},
+                "telegram": {"enabled": True, "bot_token": "tg_token_999", "chat_id": "333444"},
+            },
+            "topics": {
+                "system_status": True,
+                "disk_health": True,
+                "raid_status": False,
+            },
+        }
+        post_resp = asgi_post(
+            api.app,
+            "/api/notifications/center",
+            json_body=update_payload,
+            cookies=self.auth_cookies,
+        )
+        self.assertEqual(post_resp.status_code, 200)
+        post_data = post_resp.json()
+        self.assertTrue(post_data["channels"]["discord"]["enabled"])
+        self.assertEqual(post_data["channels"]["discord"]["bot_token"], "********")
+        self.assertFalse(post_data["topics"]["raid_status"])
+
+        # 3. POST /api/notifications/test with explicit channel
+        with patch.object(
+            main, "send_test_notification", new=AsyncMock(return_value=(True, "Test notification sent successfully."))
+        ) as mock_test_notif:
+            test_resp = asgi_post(
+                api.app,
+                "/api/notifications/test",
+                json_body={"channel": "telegram"},
+                cookies=self.auth_cookies,
+            )
+            self.assertEqual(test_resp.status_code, 200)
+            self.assertEqual(test_resp.json(), {"success": True, "message": "Test notification sent successfully."})
+            mock_test_notif.assert_awaited_once_with(channel="telegram")
+
+        # 4. evaluate_scheduled_reports
+        t_due = 1700000000.0
+        main.set_notification_state_entry("raid_summary", sent_at=t_due - 100, due_at=t_due - 10, status="clean")
+        with patch.object(main, "send_message", new=AsyncMock(return_value=True)):
+            ran = asyncio.run(main.evaluate_scheduled_reports(now=t_due))
+            self.assertTrue(ran)
+            state = main.get_weekly_notification_state()
+            self.assertIsNotNone(state)
+            sent_at, due_at, status = state
+            self.assertEqual(sent_at, t_due)
+            self.assertGreater(due_at, t_due)
+            self.assertEqual(status, "scheduled_report")
 
 
 if __name__ == "__main__":
