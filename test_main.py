@@ -2359,8 +2359,6 @@ class FastAPIEndpointTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parent
         pyproject_file = repo_root / "pyproject.toml"
         workflow_file = repo_root / ".github" / "workflows" / "ci-release.yml"
-        raidcheck_service = repo_root / "systemd" / "raidcheck.service"
-        raidcheck_web_service = repo_root / "systemd" / "raidcheck-web.service"
 
         # Check pyproject build-system packaging metadata
         self.assertTrue(pyproject_file.is_file())
@@ -2395,15 +2393,17 @@ class FastAPIEndpointTests(unittest.TestCase):
         self.assertEqual(mod.calculate_next_patch("0.9.1"), "0.9.2")
         self.assertEqual(mod.calculate_next_patch("v1.2.3"), "1.2.4")
 
-        self.assertTrue(raidcheck_service.is_file())
-        raidcheck_content = raidcheck_service.read_text(encoding="utf-8")
-        self.assertIn("WantedBy=multi-user.target", raidcheck_content)
-        self.assertIn("main.py", raidcheck_content)
+        vigil_service = repo_root / "systemd" / "vigil.service"
+        self.assertTrue(vigil_service.is_file())
+        vigil_content = vigil_service.read_text(encoding="utf-8")
+        self.assertIn("WantedBy=multi-user.target", vigil_content)
+        self.assertIn("main.py web", vigil_content)
 
-        self.assertTrue(raidcheck_web_service.is_file())
-        raidcheck_web_content = raidcheck_web_service.read_text(encoding="utf-8")
-        self.assertIn("WantedBy=multi-user.target", raidcheck_web_content)
-        self.assertIn("main.py web", raidcheck_web_content)
+        install_script = repo_root / "install.sh"
+        self.assertTrue(install_script.is_file())
+        install_content = install_script.read_text(encoding="utf-8")
+        self.assertIn("vigil.service", install_content)
+        self.assertIn("/usr/local/bin/vigil", install_content)
 
     def test_websocket_auth_snapshot_and_refresh_actions(self):
         # 1. Unauthenticated connection attempt is closed with code 4401
@@ -5382,6 +5382,227 @@ class NotificationCenterTests(unittest.TestCase):
             self.assertEqual(sent_at, t_due)
             self.assertGreater(due_at, t_due)
             self.assertEqual(status, "scheduled_report")
+
+
+class DiscordNotificationFormattingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test_formatting.sqlite3"
+        self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
+        self.db_patcher.start()
+
+    def tearDown(self):
+        self.db_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_format_progress_bar_and_bytes_human(self):
+        # Progress bar checks
+        self.assertEqual(main.format_progress_bar(0), "▱▱▱▱▱▱▱▱▱▱")
+        self.assertEqual(main.format_progress_bar(34.2), "▰▰▰▱▱▱▱▱▱▱")
+        self.assertEqual(main.format_progress_bar(51.0), "▰▰▰▰▰▱▱▱▱▱")
+        self.assertEqual(main.format_progress_bar(100.0), "▰▰▰▰▰▰▰▰▰▰")
+        self.assertEqual(main.format_progress_bar(-5), "▱▱▱▱▱▱▱▱▱▱")
+        self.assertEqual(main.format_progress_bar(120), "▰▰▰▰▰▰▰▰▰▰")
+        self.assertEqual(main.format_progress_bar("invalid"), "▱▱▱▱▱▱▱▱▱▱")
+
+        # Custom length
+        self.assertEqual(main.format_progress_bar(50.0, length=6), "▰▰▰▱▱▱")
+        self.assertEqual(main.format_progress_bar(20.0, length=5), "▰▱▱▱▱")
+
+        # Bytes human formatting
+        self.assertEqual(main.format_bytes_human(500), "500 B")
+        self.assertEqual(main.format_bytes_human(1024), "1 KB")
+        self.assertEqual(main.format_bytes_human(8.1 * (1024**3)), "8.1 GB")
+        self.assertEqual(main.format_bytes_human(15.9 * (1024**3)), "15.9 GB")
+        self.assertEqual(main.format_bytes_human(4.5 * (1024**4)), "4.5 TB")
+        self.assertEqual(main.format_bytes_human("bad"), "0 B")
+
+    def test_dict_to_discord_embed_and_provider_delivery(self):
+        # Verify alias
+        self.assertIs(main.DiscordChannel, main.DiscordProvider)
+
+        # Build embed from dictionary with author, footer, timestamp, and fields
+        embed_dict = {
+            "title": "Embed Title",
+            "description": "Embed Description",
+            "color": 0x2ECC71,
+            "author": {
+                "name": "Vigil System Monitor [myhost]",
+                "icon_url": "https://example.com/icon.png",
+                "url": "https://example.com",
+            },
+            "footer": {
+                "text": "Vigil v0.9.6 • Linux • myhost",
+                "icon_url": "https://example.com/footer.png",
+            },
+            "timestamp": "2026-10-31T03:00:00+00:00",
+            "fields": [
+                {"name": "CPU", "value": "34.2%", "inline": True},
+                {"name": "Memory", "value": "51.0%", "inline": True},
+            ],
+        }
+        embed = main.dict_to_discord_embed(embed_dict)
+        self.assertEqual(embed.title, "Embed Title")
+        self.assertEqual(embed.description, "Embed Description")
+        self.assertEqual(embed.color.value, 0x2ECC71)
+        self.assertEqual(embed.author.name, "Vigil System Monitor [myhost]")
+        self.assertEqual(embed.author.icon_url, "https://example.com/icon.png")
+        self.assertEqual(embed.author.url, "https://example.com")
+        self.assertEqual(embed.footer.text, "Vigil v0.9.6 • Linux • myhost")
+        self.assertEqual(embed.footer.icon_url, "https://example.com/footer.png")
+        self.assertIsNotNone(embed.timestamp)
+        self.assertEqual(len(embed.fields), 2)
+        self.assertEqual(embed.fields[0].name, "CPU")
+        self.assertTrue(embed.fields[0].inline)
+        self.assertTrue(embed.fields[1].inline)
+
+        # Test DiscordChannel.send_notification invokes send_message with full embed
+        provider = main.DiscordChannel(bot_token="test_tok", channel_id="7890", enabled=True)
+        with patch.object(main, "send_message", new=AsyncMock(return_value=True)) as mock_send:
+            ok, msg = asyncio.run(provider.send_notification("Title", "Message", embed_data=embed_dict))
+            self.assertTrue(ok)
+            mock_send.assert_awaited_once()
+            sent_embed = mock_send.await_args[0][0]
+            self.assertIsInstance(sent_embed, discord.Embed)
+            self.assertEqual(sent_embed.author.name, "Vigil System Monitor [myhost]")
+            self.assertEqual(sent_embed.footer.text, "Vigil v0.9.6 • Linux • myhost")
+            self.assertEqual(len(sent_embed.fields), 2)
+
+    def test_modern_embed_layout_periodic_report_and_test_notification(self):
+        # Mock metrics
+        mock_vm = MagicMock(percent=51.0, used=int(8.1 * 1024**3), total=int(15.9 * 1024**3))
+        with (
+            patch("psutil.cpu_percent", return_value=34.2),
+            patch("psutil.cpu_count", return_value=4),
+            patch("psutil.virtual_memory", return_value=mock_vm),
+            patch("psutil.boot_time", return_value=time.time() - 3600),
+            patch("os.getloadavg", return_value=(0.45, 0.38, 0.32)),
+            patch.object(main, "get_disk_usage_statvfs", return_value={"percent": 42.0, "used": 42000, "total": 100000, "free": 58000}),
+            patch.object(main, "check_raid_status", return_value=("clean", SAMPLE_DETAILS)),
+            patch("platform.node", return_value="vps-node-1"),
+        ):
+            title, desc, embed_data = main.build_periodic_report_data({
+                "system_status": True,
+                "disk_health": True,
+                "raid_status": True,
+            })
+            self.assertIn("Periodic Report", title)
+            self.assertIn("🟢 All Systems Operational", desc)
+            self.assertEqual(embed_data["color"], 0x2ECC71)
+            self.assertIn("vps-node-1", embed_data["author"]["name"])
+            self.assertIn("vps-node-1", embed_data["footer"]["text"])
+            self.assertIn("timestamp", embed_data)
+
+            # Check CPU field
+            field_map = {f["name"]: f for f in embed_data["fields"]}
+            self.assertIn("System Status • CPU", field_map)
+            cpu_field = field_map["System Status • CPU"]
+            self.assertIn("▰▰▰▱▱▱▱▱▱▱", cpu_field["value"])
+            self.assertIn("34.2%", cpu_field["value"])
+            self.assertIn("4 cores", cpu_field["value"])
+            self.assertTrue(cpu_field["inline"])
+
+            # Check Memory field
+            self.assertIn("System Status • Memory", field_map)
+            mem_field = field_map["System Status • Memory"]
+            self.assertIn("▰▰▰▰▰▱▱▱▱▱", mem_field["value"])
+            self.assertIn("51.0%", mem_field["value"])
+            self.assertTrue(mem_field["inline"])
+
+            # Check Uptime & Load field
+            self.assertIn("System Status • Uptime & Load", field_map)
+            uptime_field = field_map["System Status • Uptime & Load"]
+            self.assertIn("Load: `0.45, 0.38, 0.32`", uptime_field["value"])
+            self.assertTrue(uptime_field["inline"])
+
+            # Check Disk Health
+            self.assertIn("Disk Health", field_map)
+            disk_field = field_map["Disk Health"]
+            self.assertIn("Root (/)", disk_field["value"])
+            self.assertIn("42.0%", disk_field["value"])
+
+            # Check RAID Status
+            self.assertIn("RAID Status", field_map)
+            raid_field = field_map["RAID Status"]
+            self.assertIn("🟢 CLEAN", raid_field["value"])
+            self.assertIn("RAID 1", raid_field["value"])
+            self.assertIn("`2` active", raid_field["value"])
+
+        # Degraded status banner test
+        with (
+            patch.object(main, "check_raid_status", return_value=("degraded", "md0 degraded")),
+            patch.object(main, "get_disk_usage_statvfs", return_value={"percent": 50.0}),
+        ):
+            title_deg, desc_deg, embed_deg = main.build_periodic_report_data({
+                "system_status": False,
+                "disk_health": True,
+                "raid_status": True,
+            })
+            self.assertIn("🔴 Attention: RAID Array DEGRADED", desc_deg)
+            self.assertEqual(embed_deg["color"], 0xEF4444)
+
+    def test_modern_threshold_alert_embeds(self):
+        t0 = 1700000000.0
+        main.update_notification_center_config({
+            "channels": {"discord": {"enabled": True, "bot_token": "tok", "channel_id": "123"}},
+            "thresholds": {
+                "enabled": True,
+                "ram_percent": 80.0,
+                "cpu_percent": 85.0,
+                "disk_percent": 85.0,
+                "raid_degraded": True,
+                "cooldown_minutes": 60,
+            },
+        })
+
+        # Exceeding RAM (85% warning -> Amber 0xF59E0B)
+        mock_vm = MagicMock(percent=85.0, used=int(8.5 * 1024**3), total=int(10 * 1024**3))
+        with (
+            patch("psutil.virtual_memory", return_value=mock_vm),
+            patch("psutil.cpu_percent", return_value=10.0),
+            patch.object(main, "get_disk_usage_statvfs", return_value={"percent": 40.0}),
+            patch.object(main, "check_raid_status", return_value=("clean", "optimal")),
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)),
+            patch("platform.node", return_value="vps-node-1"),
+        ):
+            alerts = asyncio.run(main.evaluate_threshold_alerts(now=t0))
+            self.assertEqual(len(alerts), 1)
+            embed = alerts[0]["embed"]
+            self.assertEqual(embed["color"], 0xF59E0B)
+            self.assertIn("▰▰▰▰▰▰▰▰▱▱", embed["fields"][0]["value"])
+            self.assertIn("vps-node-1", embed["author"]["name"])
+            self.assertIn("vps-node-1", embed["footer"]["text"])
+            self.assertIn("timestamp", embed)
+
+        # Exceeding CPU (95% critical -> Red 0xEF4444)
+        with (
+            patch("psutil.virtual_memory", return_value=MagicMock(percent=20.0)),
+            patch("psutil.cpu_percent", return_value=95.0),
+            patch.object(main, "get_disk_usage_statvfs", return_value={"percent": 40.0}),
+            patch.object(main, "check_raid_status", return_value=("clean", "optimal")),
+            patch.object(main, "send_message", new=AsyncMock(return_value=True)),
+            patch("platform.node", return_value="vps-node-1"),
+        ):
+            alerts_cpu = asyncio.run(main.evaluate_threshold_alerts(now=t0 + 7200))
+            self.assertEqual(len(alerts_cpu), 1)
+            self.assertEqual(alerts_cpu[0]["metric"], "cpu")
+            self.assertEqual(alerts_cpu[0]["embed"]["color"], 0xEF4444)
+            self.assertIn("▰▰▰▰▰▰▰▰▰▰", alerts_cpu[0]["embed"]["fields"][0]["value"])
+
+    def test_modern_raid_embed_structure(self):
+        with patch("platform.node", return_value="vps-node-1"):
+            embed = main.build_raid_embed("clean", SAMPLE_DETAILS, SAMPLE_DUF)
+            self.assertEqual(embed.title, "RAID 1 | CLEAN")
+            self.assertEqual(embed.color.value, 0x2ECC71)
+            self.assertIn("Status", embed.description)
+            self.assertIn("🟢", embed.description)
+            self.assertIn("vps-node-1", embed.author.name)
+            self.assertIn("vps-node-1", embed.footer.text)
+            self.assertIsNotNone(embed.timestamp)
+
+            field_names = [f.name for f in embed.fields]
+            self.assertIn("Array Health", field_names)
+            self.assertIn("Device Breakdown", field_names)
 
 
 if __name__ == "__main__":

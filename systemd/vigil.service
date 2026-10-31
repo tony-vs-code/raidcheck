@@ -1,0 +1,20 @@
+[Unit]
+Description=Vigil — Linux Host Operations & Observability Suite
+Documentation=https://github.com/tony-vs-code/raidcheck
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/vigil
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=-/etc/vigil/vigil.env
+ExecStart=/opt/vigil/.venv/bin/python /opt/vigil/main.py web --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

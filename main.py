@@ -106,6 +106,98 @@ def enforce_discord_message_limit(message: str) -> str:
     return f"{trimmed}...\n[truncated]"
 
 
+def format_progress_bar(percent: float | int, length: int = 10) -> str:
+    """Return a visual progress bar using sleek unicode blocks (e.g. ▰▰▰▰▰▱▱▱▱▱)."""
+    try:
+        pct = float(percent)
+    except (ValueError, TypeError):
+        pct = 0.0
+    pct = max(0.0, min(100.0, pct))
+    bar_length = max(1, int(length))
+    filled = int(round((pct / 100.0) * bar_length))
+    filled = max(0, min(bar_length, filled))
+    empty = bar_length - filled
+    return "▰" * filled + "▱" * empty
+
+
+def format_bytes_human(bytes_val: int | float) -> str:
+    """Format byte counts into human-readable strings with unit spacing (e.g. 8.1 GB, 15.9 GB)."""
+    try:
+        val = float(bytes_val)
+    except (ValueError, TypeError):
+        return "0 B"
+    for unit in ["B", "KB", "MB", "GB", "TB", "PB"]:
+        if abs(val) < 1024.0 or unit == "PB":
+            return f"{val:.1f} {unit}" if unit in ["MB", "GB", "TB", "PB"] else f"{int(val)} {unit}"
+        val /= 1024.0
+    return f"{val:.1f} PB"
+
+
+def dict_to_discord_embed(
+    embed_data: Optional[dict[str, Any]] = None,
+    default_title: str = "",
+    default_desc: str = "",
+) -> discord.Embed:
+    """Construct a discord.Embed from a dictionary, setting title, description, color,
+    author, footer, timestamp, and multi-column fields.
+    """
+    data = embed_data or {}
+    title = data.get("title") or default_title
+    desc = data.get("description") or default_desc
+    color = data.get("color", 0x3498DB)
+
+    ts_val = data.get("timestamp")
+    ts_obj = None
+    if isinstance(ts_val, datetime):
+        ts_obj = ts_val
+    elif isinstance(ts_val, (int, float)):
+        ts_obj = datetime.fromtimestamp(float(ts_val), tz=timezone.utc)
+    elif isinstance(ts_val, str) and ts_val:
+        try:
+            ts_obj = datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
+        except Exception:
+            ts_obj = datetime.now(timezone.utc)
+    else:
+        ts_obj = datetime.now(timezone.utc)
+
+    embed = discord.Embed(
+        title=title,
+        description=desc,
+        color=color,
+        timestamp=ts_obj,
+    )
+
+    author = data.get("author")
+    if isinstance(author, dict) and author.get("name"):
+        author_kwargs: dict[str, Any] = {"name": str(author["name"])}
+        if author.get("icon_url"):
+            author_kwargs["icon_url"] = str(author["icon_url"])
+        if author.get("url"):
+            author_kwargs["url"] = str(author["url"])
+        embed.set_author(**author_kwargs)
+    elif isinstance(author, str) and author:
+        embed.set_author(name=author)
+
+    footer = data.get("footer")
+    if isinstance(footer, dict) and footer.get("text"):
+        footer_kwargs: dict[str, Any] = {"text": str(footer["text"])}
+        if footer.get("icon_url"):
+            footer_kwargs["icon_url"] = str(footer["icon_url"])
+        embed.set_footer(**footer_kwargs)
+    elif isinstance(footer, str) and footer:
+        embed.set_footer(text=footer)
+
+    for f in data.get("fields", []):
+        if isinstance(f, dict):
+            embed.add_field(
+                name=str(f.get("name", "")),
+                value=str(f.get("value", "")),
+                inline=bool(f.get("inline", False)),
+            )
+
+    return embed
+
+
 async def send_message(message: str | discord.Embed) -> bool:
     global _last_send_error
     settings = get_app_settings()
@@ -1036,6 +1128,15 @@ class DiscordProvider(NotificationProvider):
                 embed_payload["title"] = title
             if embed_payload and "description" not in embed_payload:
                 embed_payload["description"] = message
+            if embed_payload:
+                if "timestamp" not in embed_payload:
+                    embed_payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+                elif isinstance(embed_payload.get("timestamp"), (int, float)):
+                    embed_payload["timestamp"] = datetime.fromtimestamp(
+                        float(embed_payload["timestamp"]), tz=timezone.utc
+                    ).isoformat()
+                elif isinstance(embed_payload.get("timestamp"), datetime):
+                    embed_payload["timestamp"] = embed_payload["timestamp"].isoformat()
 
             payload: dict[str, Any] = {}
             if embed_payload:
@@ -1072,23 +1173,18 @@ class DiscordProvider(NotificationProvider):
             return False, "Discord channel ID is not configured."
 
         if embed_data:
-            embed = discord.Embed(
-                title=embed_data.get("title") or title,
-                description=embed_data.get("description") or message,
-                color=embed_data.get("color", 0x3498DB),
+            embed = dict_to_discord_embed(
+                embed_data, default_title=title, default_desc=message
             )
-            for f in embed_data.get("fields", []):
-                embed.add_field(
-                    name=f.get("name", ""),
-                    value=f.get("value", ""),
-                    inline=f.get("inline", False),
-                )
         else:
             embed = discord.Embed(
                 title=title,
                 description=message,
                 color=0x3498DB,
+                timestamp=datetime.now(timezone.utc),
             )
+            hostname = platform.node() or "localhost"
+            embed.set_footer(text=f"Vigil System Monitor • {hostname}")
 
         success = await send_message(embed)
         if success:
@@ -1096,6 +1192,9 @@ class DiscordProvider(NotificationProvider):
         else:
             global _last_send_error
             return False, _last_send_error or "Failed to send message via Discord."
+
+
+DiscordChannel = DiscordProvider
 
 
 class TelegramProvider(NotificationProvider):
@@ -1547,26 +1646,72 @@ def build_periodic_report_data(
         cfg = get_notification_center_config()
         topics = cfg.get("topics", {})
 
+    status_for_banner = "clean"
+    raid_details_for_banner = ""
+    if topics.get("raid_status", True):
+        try:
+            status_for_banner, raid_details_for_banner = check_raid_status()
+        except Exception:
+            status_for_banner = "error"
+
+    if status_for_banner in ("clean", "active"):
+        status_banner = "🟢 All Systems Operational"
+        color = 0x2ECC71
+    elif status_for_banner in ("recovering", "resyncing", "rebuilding"):
+        status_banner = f"🟡 RAID Array {status_for_banner.upper()}"
+        color = 0xF59E0B
+    elif status_for_banner in ("degraded", "failed", "error"):
+        status_banner = f"🔴 Attention: RAID Array {status_for_banner.upper()}"
+        color = 0xEF4444
+    else:
+        status_banner = "🔵 System Status Report"
+        color = 0x3498DB
+
     title = "Vigil - Periodic Report"
-    description = "Scheduled system health and status summary report."
+    description = f"**{status_banner}**\nScheduled telemetry, storage health, and RAID diagnostics."
     fields: list[dict[str, Any]] = []
 
     # 1. System Status
     if topics.get("system_status", True):
         try:
             cpu_pct = psutil.cpu_percent(interval=None)
+            cpu_val = float(cpu_pct) if cpu_pct is not None else 0.0
+            core_count = psutil.cpu_count(logical=True) or 1
+            cpu_bar = format_progress_bar(cpu_val)
+            cores_label = f"{core_count} core" if core_count == 1 else f"{core_count} cores"
+
             vm = psutil.virtual_memory()
+            ram_pct = float(vm.percent) if hasattr(vm, "percent") else 0.0
+            ram_bar = format_progress_bar(ram_pct)
+            ram_used = format_bytes_human(getattr(vm, "used", 0))
+            ram_total = format_bytes_human(getattr(vm, "total", 0))
+
             boot_time = psutil.boot_time()
             uptime_sec = max(0, int(time.time() - boot_time))
             days, rem = divmod(uptime_sec, 86400)
             hours, rem = divmod(rem, 3600)
             minutes = rem // 60
             uptime_str = f"{days}d {hours}h {minutes}m"
-            ram_info = f"{vm.percent}% ({_format_bytes(vm.used)} / {_format_bytes(vm.total)})"
+            try:
+                load_1, load_5, load_15 = os.getloadavg()
+                load_str = f"{load_1:.2f}, {load_5:.2f}, {load_15:.2f}"
+            except (AttributeError, OSError):
+                load_str = "N/A"
+
             fields.append({
-                "name": "System Status",
-                "value": f"• CPU Usage: {cpu_pct}%\n• Memory: {ram_info}\n• Uptime: {uptime_str}",
-                "inline": False,
+                "name": "System Status • CPU",
+                "value": f"`{cpu_bar}` {cpu_val:.1f}% ({cores_label})",
+                "inline": True,
+            })
+            fields.append({
+                "name": "System Status • Memory",
+                "value": f"`{ram_bar}` {ram_pct:.1f}% ({ram_used} / {ram_total})",
+                "inline": True,
+            })
+            fields.append({
+                "name": "System Status • Uptime & Load",
+                "value": f"⏱️ `{uptime_str}`\n📊 Load: `{load_str}`",
+                "inline": True,
             })
         except Exception as exc:
             fields.append({
@@ -1578,16 +1723,36 @@ def build_periodic_report_data(
     # 2. Disk Health
     if topics.get("disk_health", True):
         try:
-            lines = []
-            root_stat = get_disk_usage_statvfs("/")
-            lines.append(f"• Root (/): {root_stat.get('storage_info', 'N/A')}")
+            disks_to_check = [("/", "Root (/)")]
             mount_path = get_app_settings().get("mount_path")
             if mount_path and Path(mount_path).exists() and mount_path != "/":
-                mnt_stat = get_disk_usage_statvfs(mount_path)
-                lines.append(f"• Mount ({mount_path}): {mnt_stat.get('storage_info', 'N/A')}")
+                disks_to_check.append((mount_path, f"Mount ({mount_path})"))
+
+            disk_lines = []
+            for path, label in disks_to_check:
+                st = get_disk_usage_statvfs(path)
+                pct = st.get("percent")
+                if pct is None:
+                    m = re.search(r"(\d+(?:\.\d+)?)%", str(st.get("storage_info", "")))
+                    pct = float(m.group(1)) if m else 0.0
+                else:
+                    pct = float(pct)
+
+                bar = format_progress_bar(pct)
+                total = st.get("total", 0)
+                used = st.get("used", 0)
+                if total > 0 and used > 0:
+                    used_str = format_bytes_human(used)
+                    total_str = format_bytes_human(total)
+                    disk_lines.append(f"• **{label}**: `{bar}` {pct:.1f}% ({used_str} / {total_str})")
+                elif st.get("storage_info"):
+                    disk_lines.append(f"• **{label}**: `{bar}` {st.get('storage_info')}")
+                else:
+                    disk_lines.append(f"• **{label}**: `{bar}` {pct:.1f}%")
+
             fields.append({
                 "name": "Disk Health",
-                "value": "\n".join(lines),
+                "value": "\n".join(disk_lines) if disk_lines else "No disks configured.",
                 "inline": False,
             })
         except Exception as exc:
@@ -1600,10 +1765,52 @@ def build_periodic_report_data(
     # 3. RAID Status
     if topics.get("raid_status", True):
         try:
-            status, details = check_raid_status()
+            status, details = (
+                (status_for_banner, raid_details_for_banner)
+                if status_for_banner != "unknown"
+                else check_raid_status()
+            )
+            status_emojis = {
+                "clean": "🟢 CLEAN",
+                "active": "🟢 ACTIVE",
+                "recovering": "🟡 REBUILDING",
+                "resyncing": "🟡 RESYNCING",
+                "rebuilding": "🟡 REBUILDING",
+                "degraded": "🔴 DEGRADED",
+                "failed": "🔴 FAILED",
+                "error": "❌ ERROR",
+            }
+            status_badge = status_emojis.get(status.lower(), f"⚪ {status.upper()}")
+
+            data = _extract_raid_summary_data(status, details, "")
+            raw_level = data.get("raid_level", "unknown").strip().upper()
+            if raw_level.startswith("RAID") and raw_level[4:].strip().isalnum():
+                level_str = f"RAID {raw_level[4:].strip()}"
+            elif raw_level.startswith("RAID"):
+                level_str = raw_level
+            elif raw_level != "UNKNOWN":
+                level_str = f"RAID {raw_level}"
+            else:
+                level_str = "RAID"
+
+            active_cnt = data.get("active_devices", "0")
+            working_cnt = data.get("working_devices", "0")
+            failed_cnt = data.get("failed_devices", "0")
+            spare_cnt = data.get("spare_devices", "0")
+
+            raid_lines = [
+                f"• **Array Health**: {status_badge} ({level_str})",
+                f"• **Devices**: `{active_cnt}` active / `{working_cnt}` working | `{failed_cnt}` failed / `{spare_cnt}` spare",
+            ]
+            if details and status not in ("clean", "active", "none"):
+                diag_line = details.splitlines()[0][:120]
+                raid_lines.append(f"• **Diagnostics**: `{diag_line}`")
+            elif details and len(details.splitlines()) == 1 and "raid level" not in details.lower():
+                raid_lines.append(f"• **Details**: `{details.strip()}`")
+
             fields.append({
                 "name": "RAID Status",
-                "value": f"• Array Health: {status.upper()}\n• Status Details: {details[:200]}",
+                "value": "\n".join(raid_lines),
                 "inline": False,
             })
         except Exception as exc:
@@ -1619,10 +1826,22 @@ def build_periodic_report_data(
         "inline": True,
     })
 
+    hostname = platform.node() or "localhost"
+    version_info = get_current_version_info()
+    version = version_info.get("current_version", "0.9.6")
+    os_info = f"{platform.system()} {platform.release()}"
+
     embed_data = {
         "title": title,
         "description": description,
-        "color": 0x3498DB,
+        "color": color,
+        "author": {
+            "name": f"Vigil System Monitor [{hostname}]",
+        },
+        "footer": {
+            "text": f"Vigil v{version} • {os_info} • {hostname}",
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "fields": fields,
     }
     return title, description, embed_data
@@ -1640,6 +1859,13 @@ async def evaluate_threshold_alerts(
     cooldown_minutes = int(thresholds.get("cooldown_minutes", 60) or 60)
     cooldown_sec = cooldown_minutes * 60
 
+    hostname = platform.node() or "localhost"
+    version_info = get_current_version_info()
+    version = version_info.get("current_version", "0.9.6")
+    author_info = {"name": f"Vigil System Monitor [{hostname}]"}
+    footer_info = {"text": f"Vigil v{version} • {platform.system()} • {hostname}"}
+    iso_timestamp = datetime.fromtimestamp(current_time, tz=timezone.utc).isoformat()
+
     alerts: list[dict[str, Any]] = []
 
     # RAM
@@ -1652,15 +1878,28 @@ async def evaluate_threshold_alerts(
                 entry = get_notification_state_entry(f"threshold_{key}")
                 in_cooldown = entry is not None and current_time < entry[1]
                 if not in_cooldown:
+                    ram_val = float(vm.percent)
+                    is_critical = ram_val >= 90.0 or ram_val >= float(ram_limit) + 15.0
+                    color = 0xEF4444 if is_critical else 0xF59E0B
+                    bar = format_progress_bar(ram_val)
+                    severity = "CRITICAL" if is_critical else "WARNING"
+
                     title = f"Alert: High Memory Usage ({vm.percent}%)"
                     msg = f"RAM usage has reached {vm.percent}%, exceeding threshold of {ram_limit}%."
+                    ram_used = format_bytes_human(getattr(vm, "used", 0))
+                    ram_total = format_bytes_human(getattr(vm, "total", 0))
+
                     embed = {
-                        "title": title,
-                        "description": msg,
-                        "color": 0xE67E22,
+                        "title": f"⚠️ [{severity}] High Memory Usage: {vm.percent}%",
+                        "description": f"RAM usage has exceeded the configured threshold of **{ram_limit}%**.",
+                        "color": color,
+                        "author": author_info,
+                        "footer": footer_info,
+                        "timestamp": iso_timestamp,
                         "fields": [
-                            {"name": "Current Usage", "value": f"{vm.percent}%", "inline": True},
-                            {"name": "Threshold", "value": f"{ram_limit}%", "inline": True},
+                            {"name": "Current Usage", "value": f"`{bar}` **{vm.percent}%** ({ram_used} / {ram_total})", "inline": True},
+                            {"name": "Threshold", "value": f"⚠️ **{ram_limit}%**", "inline": True},
+                            {"name": "Host", "value": f"`{hostname}`", "inline": True},
                             {"name": "Timestamp", "value": format_timestamp(current_time), "inline": True},
                         ],
                     }
@@ -1684,15 +1923,25 @@ async def evaluate_threshold_alerts(
                 entry = get_notification_state_entry(f"threshold_{key}")
                 in_cooldown = entry is not None and current_time < entry[1]
                 if not in_cooldown:
+                    cpu_val = float(cpu_pct)
+                    is_critical = cpu_val >= 90.0 or cpu_val >= float(cpu_limit) + 15.0
+                    color = 0xEF4444 if is_critical else 0xF59E0B
+                    bar = format_progress_bar(cpu_val)
+                    severity = "CRITICAL" if is_critical else "WARNING"
+
                     title = f"Alert: High CPU Usage ({cpu_pct}%)"
                     msg = f"CPU usage has reached {cpu_pct}%, exceeding threshold of {cpu_limit}%."
                     embed = {
-                        "title": title,
-                        "description": msg,
-                        "color": 0xE67E22,
+                        "title": f"⚠️ [{severity}] High CPU Usage: {cpu_pct}%",
+                        "description": f"CPU load has exceeded the configured threshold of **{cpu_limit}%**.",
+                        "color": color,
+                        "author": author_info,
+                        "footer": footer_info,
+                        "timestamp": iso_timestamp,
                         "fields": [
-                            {"name": "Current Usage", "value": f"{cpu_pct}%", "inline": True},
-                            {"name": "Threshold", "value": f"{cpu_limit}%", "inline": True},
+                            {"name": "Current Usage", "value": f"`{bar}` **{cpu_pct}%**", "inline": True},
+                            {"name": "Threshold", "value": f"⚠️ **{cpu_limit}%**", "inline": True},
+                            {"name": "Host", "value": f"`{hostname}`", "inline": True},
                             {"name": "Timestamp", "value": format_timestamp(current_time), "inline": True},
                         ],
                     }
@@ -1722,16 +1971,30 @@ async def evaluate_threshold_alerts(
                     entry = get_notification_state_entry(f"threshold_{metric_key}")
                     in_cooldown = entry is not None and current_time < entry[1]
                     if not in_cooldown:
+                        is_critical = pct >= 90.0 or pct >= float(disk_limit) + 10.0
+                        color = 0xEF4444 if is_critical else 0xF59E0B
+                        bar = format_progress_bar(pct)
+                        severity = "CRITICAL" if is_critical else "WARNING"
+
                         title = f"Alert: High Disk Usage on {d} ({pct}%)"
                         msg = f"Disk {d} usage is at {pct}%, exceeding threshold of {disk_limit}%."
+                        used_str = format_bytes_human(st.get("used", 0)) if st.get("total", 0) > 0 else ""
+                        total_str = format_bytes_human(st.get("total", 0)) if st.get("total", 0) > 0 else ""
+                        usage_detail = f"{used_str} / {total_str}" if used_str and total_str else st.get("storage_info", f"{pct}%")
+
                         embed = {
-                            "title": title,
-                            "description": msg,
-                            "color": 0xE74C3C,
+                            "title": f"💾 [{severity}] High Disk Usage: {d} ({pct}%)",
+                            "description": f"Filesystem on `{d}` has reached **{pct}%**, exceeding threshold of **{disk_limit}%**.",
+                            "color": color,
+                            "author": author_info,
+                            "footer": footer_info,
+                            "timestamp": iso_timestamp,
                             "fields": [
-                                {"name": "Path", "value": d, "inline": True},
-                                {"name": "Usage", "value": st.get("storage_info", f"{pct}%"), "inline": True},
-                                {"name": "Threshold", "value": f"{disk_limit}%", "inline": True},
+                                {"name": "Path", "value": f"`{d}`", "inline": True},
+                                {"name": "Usage", "value": f"`{bar}` **{pct}%** ({usage_detail})", "inline": True},
+                                {"name": "Threshold", "value": f"⚠️ **{disk_limit}%**", "inline": True},
+                                {"name": "Host", "value": f"`{hostname}`", "inline": True},
+                                {"name": "Timestamp", "value": format_timestamp(current_time), "inline": True},
                             ],
                         }
                         alerts.append({
@@ -1755,13 +2018,25 @@ async def evaluate_threshold_alerts(
                 if not in_cooldown:
                     title = f"Alert: RAID Array Degraded ({status.upper()})"
                     msg = f"RAID array is reported as '{status}'. Attention is required!\n{details[:200]}"
+                    color = 0xEF4444  # Red for degraded RAID alert
+
+                    data = _extract_raid_summary_data(status, details, "")
+                    active_devs = data.get("active_devices", "unknown")
+                    working_devs = data.get("working_devices", "unknown")
+                    failed_devs = data.get("failed_devices", "unknown")
+
                     embed = {
-                        "title": title,
-                        "description": msg,
-                        "color": 0xC0392B,
+                        "title": f"🚨 [CRITICAL] RAID Array Degraded: {status.upper()}",
+                        "description": f"RAID array condition is **{status.upper()}**. Immediate attention is required!",
+                        "color": color,
+                        "author": author_info,
+                        "footer": footer_info,
+                        "timestamp": iso_timestamp,
                         "fields": [
-                            {"name": "Status", "value": status.upper(), "inline": True},
-                            {"name": "Details", "value": details[:200], "inline": False},
+                            {"name": "Status", "value": f"🔴 **{status.upper()}**", "inline": True},
+                            {"name": "Devices", "value": f"Active: `{active_devs}` | Working: `{working_devs}` | Failed: `{failed_devs}`", "inline": True},
+                            {"name": "Host", "value": f"`{hostname}`", "inline": True},
+                            {"name": "Details", "value": f"```{details[:300]}```" if details else "No detail output available", "inline": False},
                             {"name": "Timestamp", "value": format_timestamp(current_time), "inline": True},
                         ],
                     }
@@ -1843,7 +2118,7 @@ async def send_test_notification(
 
     embed_data = copy.deepcopy(real_embed)
     embed_data["title"] = test_title
-    embed_data["description"] = test_desc
+    embed_data["description"] = f"**🧪 Test Dispatch Operational**\n{test_desc}"
     embed_data["fields"].insert(
         0,
         {"name": "Dispatch Mode", "value": "Test Notification (Operational)", "inline": True},
@@ -1887,17 +2162,9 @@ async def send_test_notification(
             logging.error(msg)
             return False, msg
 
-        embed = discord.Embed(
-            title=embed_data.get("title") or test_title,
-            description=embed_data.get("description") or test_desc,
-            color=embed_data.get("color", 0x3498DB),
+        embed = dict_to_discord_embed(
+            embed_data, default_title=test_title, default_desc=test_desc
         )
-        for f in embed_data.get("fields", []):
-            embed.add_field(
-                name=f.get("name", ""),
-                value=f.get("value", ""),
-                inline=f.get("inline", False),
-            )
 
         success = await send_message(embed)
         if success:
@@ -2387,7 +2654,7 @@ extract_raid_summary_data = _extract_raid_summary_data
 
 
 def build_raid_embed(status: str, details: str, duf_output: str) -> discord.Embed:
-    """Keep the old boxed RAID card look, but render it inside a Discord embed."""
+    """Build a modern, sleek Discord embed for RAID array diagnostics."""
     data = _extract_raid_summary_data(status, details, duf_output)
     raid_level = data["raid_level"]
     display_raid_level = (
@@ -2406,12 +2673,49 @@ def build_raid_embed(status: str, details: str, duf_output: str) -> discord.Embe
         "none": 0x95A5A6,
     }.get(status, 0x95A5A6)
 
+    status_emojis = {
+        "clean": "🟢",
+        "active": "🟢",
+        "recovering": "🟡",
+        "resyncing": "🟡",
+        "rebuilding": "🟡",
+        "degraded": "🔴",
+        "failed": "🔴",
+        "error": "❌",
+    }
+    emoji = status_emojis.get(status.lower(), "⚪")
+
     card = format_raid_summary(status, details, duf_output)
     embed = discord.Embed(
         title=f"RAID {display_raid_level} | {status.upper()}",
         color=color,
     )
-    embed.description = f"```text\n{card}\n```"
+    embed.description = f"**Status:** {emoji} `{data['full_state']}`\n\n```text\n{card}\n```"
+
+    hostname = platform.node() or "localhost"
+    version_info = get_current_version_info()
+    version = version_info.get("current_version", "0.9.6")
+    embed.set_author(name=f"Vigil System Monitor [{hostname}]")
+    embed.set_footer(text=f"Vigil v{version} • {platform.system()} • {hostname}")
+    embed.timestamp = datetime.now(timezone.utc)
+
+    embed.add_field(
+        name="Array Health",
+        value=f"{emoji} **{status.upper()}** (`{data['full_state']}`)",
+        inline=True,
+    )
+    embed.add_field(
+        name="Device Breakdown",
+        value=f"Active: **{data['active_devices']}** | Failed: **{data['failed_devices']}** | Spare: **{data['spare_devices']}**",
+        inline=True,
+    )
+    if data.get("storage_info") and data["storage_info"] != "N/A":
+        embed.add_field(
+            name="Storage Usage",
+            value=f"`{data['storage_info']}`",
+            inline=True,
+        )
+
     return embed
 
 
