@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  <title>SystemAlerts — Server Manager</title>
+  <title>Vigil — Host Operations &amp; Observability</title>
   <link rel="stylesheet" href="/static/styles.css?v=0.5.0" />
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
@@ -24,14 +24,14 @@
           </svg>
         </div>
         <div class="auth-brand-text">
-          <h1 class="auth-brand-title">SystemAlerts</h1>
-          <span class="auth-brand-badge">Server Manager</span>
+          <h1 class="auth-brand-title">Vigil</h1>
+          <span class="auth-brand-badge">Host Operations</span>
         </div>
       </div>
 
       <div class="auth-header">
         <h2 id="auth-modal-title" class="modal-title">Sign In</h2>
-        <p id="auth-modal-subtitle" class="modal-subtitle">Authenticate to access SystemAlerts Server Manager</p>
+        <p id="auth-modal-subtitle" class="modal-subtitle">Authenticate to access Vigil Host Manager</p>
       </div>
 
       <div id="auth-error" class="auth-alert hidden" role="alert"></div>
@@ -94,9 +94,9 @@
         </div>
         <div class="sidebar-brand-info">
           <div class="sidebar-brand-title-row">
-            <span class="sidebar-brand-name">SystemAlerts</span>
+            <span class="sidebar-brand-name">Vigil</span>
           </div>
-          <span class="sidebar-brand-desc">Server Manager</span>
+          <span class="sidebar-brand-desc">Host Operations</span>
         </div>
         <span class="sidebar-status-dot" title="System operational"></span>
       </div>
@@ -219,7 +219,7 @@
             <span class="user-label">Signed In</span>
             <span id="auth-username" class="auth-username-pill">admin</span>
           </div>
-          <button id="btn-logout" class="btn-logout" type="button" title="Sign out of SystemAlerts">
+          <button id="btn-logout" class="btn-logout" type="button" title="Sign out of Vigil">
             <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
               <polyline points="16 17 21 12 16 7"></polyline>
@@ -305,21 +305,37 @@
             </div>
             <div class="metrics-grid">
               <!-- CPU Card -->
-              <article class="card metric-card">
+              <article class="card metric-card" id="cpu-metric-card">
                 <div class="metric-header">
                   <span class="metric-title">CPU Usage</span>
-                  <span id="cpu-percent-value" class="metric-value">--%</span>
+                  <div class="metric-header-right">
+                    <span id="cpu-cores-badge" class="kind-badge" title="Logical CPU Cores">-- Cores</span>
+                    <span id="cpu-percent-value" class="metric-value">--%</span>
+                  </div>
                 </div>
                 <div class="progress-track" aria-label="CPU usage bar">
                   <div id="cpu-progress-bar" class="progress-fill" style="width: 0%"></div>
                 </div>
-                <div class="metric-footer">
-                  <span id="cpu-subtitle" class="metric-subtext">Real-time processor load</span>
+                <div class="metric-footer cpu-metric-footer">
+                  <div class="cpu-footer-info">
+                    <span id="cpu-load-detail" class="metric-subtext">Load avg: --, --, --</span>
+                    <span id="cpu-subtitle" class="metric-subtext">Real-time processor load</span>
+                  </div>
+                  <button id="btn-toggle-cpu-cores" class="btn-icon-subtle" type="button" aria-expanded="false" aria-controls="cpu-cores-drilldown" title="Toggle per-core drilldown">
+                    <span class="btn-toggle-text">Cores</span>
+                    <svg class="chevron-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  </button>
+                </div>
+                <!-- Collapsible CPU Cores Drilldown -->
+                <div id="cpu-cores-drilldown" class="cpu-cores-drilldown hidden" aria-hidden="true">
+                  <div id="cpu-cores-grid" class="cpu-cores-grid"></div>
                 </div>
               </article>
 
               <!-- Memory Card -->
-              <article class="card metric-card">
+              <article class="card metric-card" id="memory-metric-card">
                 <div class="metric-header">
                   <span class="metric-title">Memory Usage</span>
                   <span id="memory-percent-value" class="metric-value">--%</span>
@@ -327,8 +343,25 @@
                 <div class="progress-track" aria-label="Memory usage bar">
                   <div id="memory-progress-bar" class="progress-fill" style="width: 0%"></div>
                 </div>
-                <div class="metric-footer">
+                <div id="memory-chart-container" class="memory-chart-container">
+                  <svg id="memory-history-chart" class="metric-trend-chart" viewBox="0 0 240 44" preserveAspectRatio="none" aria-label="Memory usage historical trend">
+                    <defs>
+                      <linearGradient id="memChartGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35"></stop>
+                        <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.0"></stop>
+                      </linearGradient>
+                    </defs>
+                    <path id="memory-chart-area" class="trend-area" fill="url(#memChartGrad)" d=""></path>
+                    <path id="memory-chart-line" class="trend-line" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d=""></path>
+                  </svg>
+                </div>
+                <div class="metric-footer memory-metric-footer">
                   <span id="memory-detail" class="metric-subtext">-- / -- used (-- available)</span>
+                  <div class="memory-breakdown-row" id="memory-breakdown-chips">
+                    <span id="memory-chip-used" class="breakdown-chip chip-used">Used: --</span>
+                    <span id="memory-chip-cached" class="breakdown-chip chip-cached">Cached: --</span>
+                    <span id="memory-chip-free" class="breakdown-chip chip-free">Free: --</span>
+                  </div>
                 </div>
               </article>
 
@@ -354,6 +387,7 @@
                 </div>
                 <div class="uptime-badge-row">
                   <span class="uptime-indicator">ONLINE</span>
+                  <span id="uptime-load-badge" class="uptime-load-badge">Load: --</span>
                 </div>
                 <div class="metric-footer">
                   <span id="boot-time-detail" class="metric-subtext">Boot time: --</span>
@@ -576,6 +610,37 @@
                 </div>
               </article>
             </div>
+
+            <!-- Storage Volumes & Filesystems Card -->
+            <article class="card storage-mounts-card" id="storage-mounts-card">
+              <div class="card-header">
+                <div>
+                  <h3 class="card-title">Storage Volumes &amp; Filesystems</h3>
+                  <p class="card-subtitle">Mounted block partitions and disk usage</p>
+                </div>
+                <span id="storage-mounts-count-badge" class="pill-counter">0 volumes</span>
+              </div>
+
+              <div class="table-container">
+                <table class="data-table" id="storage-mounts-table">
+                  <thead>
+                    <tr>
+                      <th>Device</th>
+                      <th>Mount Point</th>
+                      <th>Filesystem</th>
+                      <th>Usage</th>
+                      <th>Used / Total (Free)</th>
+                      <th>Mount Options</th>
+                    </tr>
+                  </thead>
+                  <tbody id="storage-mounts-tbody">
+                    <tr>
+                      <td colspan="6" class="empty-state">Loading storage volumes...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
           </section>
         </div>
 
@@ -1038,6 +1103,7 @@
                   <tr>
                     <th>Target Container</th>
                     <th>Image</th>
+                    <th>Tag / Version</th>
                     <th>Stack</th>
                     <th>Current Digest/ID</th>
                     <th>Latest Digest/ID</th>
@@ -1047,7 +1113,7 @@
                 </thead>
                 <tbody id="docker-updates-tbody">
                   <tr>
-                    <td colspan="7" class="empty-state">Click 'Check Now' to scan running containers for upstream updates.</td>
+                    <td colspan="8" class="empty-state">Click 'Check Now' to scan running containers for upstream updates.</td>
                   </tr>
                 </tbody>
               </table>
@@ -1516,7 +1582,7 @@
           </div>
           <div>
             <h2 id="update-modal-title" class="modal-title">Software Update</h2>
-            <p class="modal-subtitle">SystemAlerts Server Manager Update</p>
+            <p class="modal-subtitle">Vigil Host Operations Update</p>
           </div>
         </div>
         <button id="close-update-modal-btn" type="button" class="btn-icon-close" aria-label="Close update modal">&times;</button>

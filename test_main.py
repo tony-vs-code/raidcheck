@@ -1951,7 +1951,7 @@ class FastAPIEndpointTests(unittest.TestCase):
         with patch.object(api, "STATIC_DIR", empty_static_dir):
             fallback_resp = asgi_get(api.app, "/")
             self.assertEqual(fallback_resp.status_code, 200)
-            self.assertIn("<h1>SystemAlerts Server Manager</h1>", fallback_resp.text)
+            self.assertIn("<h1>Vigil</h1>", fallback_resp.text)
 
     def test_get_root_serves_dashboard_html(self):
         response = asgi_get(api.app, "/")
@@ -2251,6 +2251,109 @@ class FastAPIEndpointTests(unittest.TestCase):
 
         # Ensure active-disks-table is NOT placed in the high-level overview
         self.assertNotIn('id="active-disks-table"', overview_view_html)
+
+    def test_system_overview_drilldowns_storage_mounts_and_update_tags(self):
+        """Verify CPU drilldowns, memory SVG trend chart, storage mounts table, and docker tag badges."""
+        import subprocess
+        index_resp = asgi_get(api.app, "/")
+        self.assertEqual(index_resp.status_code, 200)
+        html = index_resp.text
+
+        # 1. CPU Card & Drill-downs
+        self.assertIn('id="btn-toggle-cpu-cores"', html)
+        self.assertIn('id="cpu-cores-drilldown"', html)
+        self.assertIn('id="cpu-cores-grid"', html)
+        self.assertIn('id="cpu-cores-badge"', html)
+        self.assertIn('id="cpu-load-detail"', html)
+
+        # 2. Memory Card Trend Chart & Breakdown Chips
+        self.assertIn('id="memory-chart-container"', html)
+        self.assertIn('id="memory-history-chart"', html)
+        self.assertIn('id="memory-chart-area"', html)
+        self.assertIn('id="memory-chart-line"', html)
+        self.assertIn('id="memory-breakdown-chips"', html)
+        self.assertIn('id="memory-chip-used"', html)
+        self.assertIn('id="memory-chip-cached"', html)
+        self.assertIn('id="memory-chip-free"', html)
+
+        # 3. System Uptime Card Load Average Badge
+        self.assertIn('id="uptime-load-badge"', html)
+
+        # 4. Storage Volumes & Filesystems Card in RAID view
+        raid_start = html.find('id="view-raid"')
+        self.assertGreater(raid_start, -1)
+        raid_end = html.find('id="view-containers"')
+        raid_view_html = html[raid_start:raid_end]
+        self.assertIn('id="storage-mounts-card"', raid_view_html)
+        self.assertIn('id="storage-mounts-table"', raid_view_html)
+        self.assertIn('id="storage-mounts-tbody"', raid_view_html)
+        self.assertIn('id="storage-mounts-count-badge"', raid_view_html)
+        self.assertIn("Device", raid_view_html)
+        self.assertIn("Mount Point", raid_view_html)
+        self.assertIn("Filesystem", raid_view_html)
+        self.assertIn("Mount Options", raid_view_html)
+
+        # 5. Docker Updates Table Tag / Version column
+        self.assertIn("<th>Tag / Version</th>", html)
+        self.assertIn('colspan="8"', html)
+
+        # 6. CSS styles verification
+        css_text = Path("static/styles.css").read_text(encoding="utf-8")
+        self.assertIn(".cpu-cores-grid", css_text)
+        self.assertIn(".memory-chart-container", css_text)
+        self.assertIn(".storage-mounts-card", css_text)
+        self.assertIn(".kind-tag", css_text)
+
+        # 7. Node unit test for generateUpdateRowHtml tag/version output
+        node_script = """
+        const fs = require('fs');
+        const vm = require('vm');
+        const code = fs.readFileSync('static/app.js', 'utf8');
+
+        const context = vm.createContext({
+          document: {},
+          window: {},
+          console: console,
+          escapeHtml: (s) => String(s || ''),
+          lastDockerUpdatesRenderKey: ''
+        });
+
+        const start = code.indexOf('function generateUpdateRowHtml');
+        let depth = 0;
+        let end = start;
+        let foundBrace = false;
+        for (let i = start; i < code.length; i++) {
+          if (code[i] === '{') {
+            depth++;
+            foundBrace = true;
+          } else if (code[i] === '}') {
+            depth--;
+            if (foundBrace && depth === 0) {
+              end = i + 1;
+              break;
+            }
+          }
+        }
+        vm.runInContext(code.slice(start, end), context);
+
+        const html1 = context.generateUpdateRowHtml({
+          container_id: 'c1',
+          container_name: 'webapp',
+          image: 'webapp:v1.2.0',
+          image_tag: 'v1.2.0',
+          image_version: '1.2.0',
+          update_available: true
+        });
+
+        if (!html1.includes('kind-tag')) throw new Error('Missing kind-tag in row HTML');
+        if (!html1.includes('v1.2.0')) throw new Error('Missing tag text');
+        if (!html1.includes('1.2.0')) throw new Error('Missing version text');
+
+        console.log('SUCCESS');
+        """
+        proc = subprocess.run(["node", "-e", node_script], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"Node test failed: {proc.stderr}")
+        self.assertIn("SUCCESS", proc.stdout)
 
     def test_ci_workflow_packaging_and_systemd_services(self):
         repo_root = Path(__file__).resolve().parent

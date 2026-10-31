@@ -134,7 +134,7 @@ async def lifespan(app: FastAPI):
                 pass
 
 
-app = FastAPI(title="SystemAlerts Server Manager", lifespan=lifespan)
+app = FastAPI(title="Vigil", lifespan=lifespan)
 
 
 class ConnectionManager:
@@ -1314,8 +1314,8 @@ def serve_index():
         )
         return HTMLResponse(content=content, status_code=200, headers=headers)
     return HTMLResponse(
-        content="<!DOCTYPE html><html><head><title>SystemAlerts Server Manager</title></head>"
-        "<body><h1>SystemAlerts Server Manager</h1></body></html>",
+        content="<!DOCTYPE html><html><head><title>Vigil</title></head>"
+        "<body><h1>Vigil</h1></body></html>",
         status_code=200,
         headers=headers,
     )

@@ -581,19 +581,19 @@ body {
 /* Overview Summary Cockpit Cards */
 .overview-cockpit-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
 }
 
 .overview-summary-card {
-  padding: 20px 22px;
+  padding: 14px 18px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 14px;
+  gap: 10px;
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   transition: border-color 0.15s ease, transform 0.15s ease;
 }
 
@@ -1576,12 +1576,13 @@ body {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 16px;
+  align-items: start;
 }
 
 .metric-card {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
 }
 
@@ -1589,6 +1590,21 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+}
+
+.metric-header-right {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+#cpu-cores-badge {
+  font-size: 0.72rem;
+  padding: 2px 6px;
+  background: rgba(56, 189, 248, 0.1);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  font-weight: 600;
 }
 
 .metric-title {
@@ -1631,10 +1647,178 @@ body {
   background: linear-gradient(90deg, #ef4444, #dc2626);
 }
 
+/* CPU Drilldown & Per-Core Grid */
+.cpu-metric-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.cpu-footer-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.btn-icon-subtle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+
+.btn-icon-subtle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.btn-icon-subtle .chevron-icon {
+  transition: transform 0.2s ease;
+}
+
+.btn-icon-subtle.expanded .chevron-icon,
+.btn-icon-subtle[aria-expanded="true"] .chevron-icon {
+  transform: rotate(180deg);
+}
+
+.cpu-cores-drilldown {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  width: 100%;
+}
+
+.cpu-cores-drilldown.hidden {
+  display: none;
+}
+
+.cpu-cores-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.cpu-core-item {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+
+.cpu-core-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.72rem;
+  margin-bottom: 4px;
+}
+
+.cpu-core-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.cpu-core-percent {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cpu-core-track {
+  height: 4px;
+}
+
+/* Memory Historical Trend Chart & Chips */
+.memory-chart-container {
+  width: 100%;
+  height: 44px;
+  margin: 6px 0;
+  border-radius: var(--radius-sm);
+  background: rgba(15, 23, 42, 0.45);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+  position: relative;
+}
+
+.metric-trend-chart {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.metric-trend-chart .trend-line {
+  stroke: var(--accent-primary, #38bdf8);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.metric-trend-chart .trend-area {
+  fill: url(#memChartGrad);
+}
+
+.memory-metric-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.memory-breakdown-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.breakdown-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+}
+
+.chip-used {
+  border-color: rgba(56, 189, 248, 0.3);
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.chip-cached {
+  border-color: rgba(168, 85, 247, 0.3);
+  color: #c084fc;
+  background: rgba(168, 85, 247, 0.08);
+}
+
+.chip-free {
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #4ade80;
+  background: rgba(34, 197, 94, 0.08);
+}
+
+/* System Uptime Badge Row & Load Badge */
 .uptime-badge-row {
   display: flex;
   align-items: center;
-  height: 8px;
+  gap: 8px;
+  min-height: 20px;
 }
 
 .uptime-indicator {
@@ -1648,9 +1832,66 @@ body {
   border: 1px solid rgba(16, 185, 129, 0.3);
 }
 
+.uptime-load-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
 .metric-footer {
   font-size: 0.78rem;
   color: var(--text-muted);
+}
+
+/* Storage Volumes & Filesystems Card */
+.storage-mounts-card {
+  margin-top: 20px;
+}
+
+.storage-usage-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 140px;
+}
+
+.storage-usage-cell .progress-track {
+  flex: 1;
+  height: 6px;
+}
+
+.storage-usage-val {
+  font-size: 0.8rem;
+  font-weight: 600;
+  min-width: 44px;
+  text-align: right;
+}
+
+.storage-capacity-cell {
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.mount-point {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.opts-text {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  max-width: 220px;
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 /* RAID Details & Active Disks Grid */
@@ -2013,6 +2254,21 @@ body {
   border: 1px solid var(--border-subtle);
   font-size: 0.75rem;
   letter-spacing: 0.02em;
+}
+
+.kind-tag {
+  background: rgba(14, 165, 233, 0.14);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.tag-version-detail {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 3px;
 }
 
 /* Docker & Containers Management Subsystem */
@@ -2841,6 +3097,12 @@ body {
   }
   .device-counts-strip {
     grid-template-columns: repeat(2, 1fr);
+  }
+  .cpu-cores-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .storage-usage-cell {
+    min-width: 100px;
   }
   .topbar-right .last-updated {
     display: none;
