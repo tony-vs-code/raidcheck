@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import sqlite3
 from subprocess import CalledProcessError
 import tempfile
@@ -6311,6 +6312,114 @@ class TestStorageAndFilesystemMetricsEndpoints(unittest.TestCase):
             self.assertIn("Error fetching system metrics", resp.json()["detail"])
 
 
+class TestNetworkTelemetry(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "raid_state.db"
+        self.db_patcher = patch.object(main, "RAID_STATE_DB", self.db_path)
+        self.db_patcher.start()
+
+        main.create_user("admin", "adminpass", email="admin@example.com")
+        self.session_token = main.create_session("admin")
+        self.auth_cookies = {"session_token": self.session_token}
+
+    def tearDown(self):
+        self.db_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_get_system_metrics_data_includes_network(self):
+        metrics = main.get_system_metrics_data()
+        self.assertIn("network", metrics)
+        net = metrics["network"]
+        self.assertIn("total_bytes_sent", net)
+        self.assertIn("total_bytes_recv", net)
+        self.assertIn("interfaces", net)
+        self.assertIsInstance(net["total_bytes_sent"], int)
+        self.assertIsInstance(net["total_bytes_recv"], int)
+        self.assertIsInstance(net["interfaces"], list)
+
+        for iface in net["interfaces"]:
+            self.assertIn("interface", iface)
+            self.assertNotEqual(iface["interface"], "lo")
+            self.assertIn("ip", iface)
+            self.assertIn("is_up", iface)
+            self.assertIsInstance(iface["is_up"], bool)
+            self.assertIn("bytes_sent", iface)
+            self.assertIn("bytes_recv", iface)
+            self.assertIn("packets_sent", iface)
+            self.assertIn("packets_recv", iface)
+
+    def test_api_system_metrics_and_status_network(self):
+        resp = asgi_get(api.app, "/api/system/metrics", cookies=self.auth_cookies)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("network", data)
+        self.assertIn("total_bytes_sent", data["network"])
+        self.assertIn("total_bytes_recv", data["network"])
+        self.assertIn("interfaces", data["network"])
+
+        resp_status = asgi_get(api.app, "/api/status", cookies=self.auth_cookies)
+        self.assertEqual(resp_status.status_code, 200)
+        status_data = resp_status.json()
+        self.assertIn("network", status_data["system"])
+        self.assertIn("network", status_data)
+
+    def test_network_telemetry_mocked_interfaces_and_loopback_skipped(self):
+        from collections import namedtuple
+        SnicAddr = namedtuple("snicaddr", ["family", "address", "netmask", "broadcast", "ptp"])
+        Snetio = namedtuple("snetio", ["bytes_sent", "bytes_recv", "packets_sent", "packets_recv", "errin", "errout", "dropin", "dropout"])
+        SnicStats = namedtuple("snicstats", ["isup", "duplex", "speed", "mtu", "flags"])
+
+        fake_addrs = {
+            "lo": [SnicAddr(socket.AF_INET, "127.0.0.1", "255.0.0.0", None, None)],
+            "eth0": [
+                SnicAddr(socket.AF_INET, "192.168.1.100", "255.255.255.0", "192.168.1.255", None),
+                SnicAddr(socket.AF_INET6, "fe80::1", "ffff:ffff:ffff:ffff::", None, None),
+            ],
+            "enp3s0": [
+                SnicAddr(socket.AF_INET, "10.0.0.5", "255.255.255.0", None, None),
+            ],
+        }
+        fake_io = {
+            "lo": Snetio(999999, 999999, 500, 500, 0, 0, 0, 0),
+            "eth0": Snetio(1000, 2000, 10, 20, 0, 0, 0, 0),
+            "enp3s0": Snetio(3000, 4000, 30, 40, 0, 0, 0, 0),
+        }
+        fake_stats = {
+            "lo": SnicStats(True, 0, 0, 65536, ""),
+            "eth0": SnicStats(True, 2, 1000, 1500, ""),
+            "enp3s0": SnicStats(False, 0, 0, 1500, ""),
+        }
+
+        with patch("psutil.net_if_addrs", return_value=fake_addrs), \
+             patch("psutil.net_io_counters", return_value=fake_io), \
+             patch("psutil.net_if_stats", return_value=fake_stats):
+
+            metrics = main.get_system_metrics_data()
+            net = metrics["network"]
+            self.assertEqual(net["total_bytes_sent"], 4000)
+            self.assertEqual(net["total_bytes_recv"], 6000)
+            self.assertEqual(len(net["interfaces"]), 2)
+
+            eth0 = next((i for i in net["interfaces"] if i["interface"] == "eth0"), None)
+            self.assertIsNotNone(eth0)
+            self.assertEqual(eth0["ip"], "192.168.1.100")
+            self.assertTrue(eth0["is_up"])
+            self.assertEqual(eth0["bytes_sent"], 1000)
+            self.assertEqual(eth0["bytes_recv"], 2000)
+            self.assertEqual(eth0["packets_sent"], 10)
+            self.assertEqual(eth0["packets_recv"], 20)
+
+            enp3s0 = next((i for i in net["interfaces"] if i["interface"] == "enp3s0"), None)
+            self.assertIsNotNone(enp3s0)
+            self.assertEqual(enp3s0["ip"], "10.0.0.5")
+            self.assertFalse(enp3s0["is_up"])
+            self.assertEqual(enp3s0["bytes_sent"], 3000)
+            self.assertEqual(enp3s0["bytes_recv"], 4000)
+            self.assertEqual(enp3s0["packets_sent"], 30)
+            self.assertEqual(enp3s0["packets_recv"], 40)
+
+
 class TestSystemUserGroupEndpoints(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -6730,6 +6839,109 @@ class TestPackageManagerBackendAndEndpoints(unittest.TestCase):
         # Preloading checks
         self.assertIn("fetchDockerUpdates({ background: true });", app_js)
         self.assertIn("fetchInstalledPackages(\"\", 1);", app_js)
+
+
+class TestModernizedUIContractsAndTelemetry(unittest.TestCase):
+    """Test invariants for modern UI contracts, unified cards, and network telemetry."""
+
+    def setUp(self):
+        self.index_html = (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.app_js = (Path(__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+
+    def test_notifications_tab_modernization_contracts(self):
+        # 1. Modals exist
+        self.assertIn('id="modal-notif-channels"', self.index_html)
+        self.assertIn('id="modal-notif-schedule"', self.index_html)
+        self.assertIn('id="modal-notif-thresholds"', self.index_html)
+
+        # 2. Control ribbon exists in notifications view
+        self.assertIn('class="notif-control-ribbon"', self.index_html)
+        self.assertIn('id="btn-open-notif-channels"', self.index_html)
+        self.assertIn('id="btn-open-notif-schedule"', self.index_html)
+        self.assertIn('id="btn-open-notif-thresholds"', self.index_html)
+
+        # 3. Notification audit history table prominently displayed
+        self.assertIn('id="notification-history-table"', self.index_html)
+        self.assertIn('id="notification-history-tbody"', self.index_html)
+        self.assertIn('id="history-count-badge"', self.index_html)
+
+        # 4. Form inputs preserved for settings compatibility
+        preserved_inputs = [
+            'id="notif-channel-discord-enable"',
+            'id="discord-enabled-toggle"',
+            'id="notif-discord-token-input"',
+            'id="discord-token-input"',
+            'id="notif-discord-channel-input"',
+            'id="discord-channel-input"',
+            'id="notif-channel-telegram-enable"',
+            'id="notif-telegram-token-input"',
+            'id="notif-telegram-chat-id-input"',
+            'id="notif-channel-webhook-enable"',
+            'id="notif-webhook-url-input"',
+            'id="notif-schedule-enable"',
+            'id="notif-schedule-freq"',
+            'id="notif-schedule-time"',
+            'id="notif-topic-system"',
+            'id="notif-topic-disks"',
+            'id="notif-topic-raid"',
+            'id="notif-threshold-ram-slider"',
+            'id="notif-threshold-ram-value"',
+            'id="notif-threshold-cpu-slider"',
+            'id="notif-threshold-cpu-value"',
+            'id="notif-threshold-disk-slider"',
+            'id="notif-threshold-disk-value"',
+            'id="notif-threshold-raid-enable"',
+        ]
+        for input_id in preserved_inputs:
+            self.assertIn(input_id, self.index_html)
+
+    def test_packages_refresh_button_icon_contract(self):
+        # Verify #btn-refresh-packages has class="btn-module-refresh" and refresh-icon SVG
+        self.assertIn('id="btn-refresh-packages" class="btn-module-refresh"', self.index_html)
+        self.assertIn('svg class="refresh-icon"', self.index_html)
+
+    def test_storage_tab_unified_array_and_disks(self):
+        # Unified card RAID Array & Member Disks
+        self.assertIn('class="card raid-details-card"', self.index_html)
+        self.assertIn('RAID Array &amp; Member Disks', self.index_html)
+        self.assertIn('id="active-disks-table"', self.index_html)
+        self.assertIn('id="active-disks-tbody"', self.index_html)
+        self.assertIn('id="raid-card-badge"', self.index_html)
+        self.assertIn('id="raid-active-devices"', self.index_html)
+        self.assertIn('id="raid-working-devices"', self.index_html)
+        self.assertIn('id="raid-failed-devices"', self.index_html)
+        self.assertIn('id="raid-spare-devices"', self.index_html)
+
+    def test_overview_tab_overhaul_invariants(self):
+        # Jump buttons removed from visible ribbon (hidden)
+        jump_btns = [
+            'id="btn-goto-raid" type="button" class="btn-ribbon-nav hidden"',
+            'id="btn-goto-containers" type="button" class="btn-ribbon-nav hidden"',
+            'id="btn-goto-notifications" type="button" class="btn-ribbon-nav hidden"',
+            'id="btn-goto-services" type="button" class="btn-ribbon-nav hidden"',
+            'id="btn-goto-packages" type="button" class="btn-ribbon-nav hidden"',
+        ]
+        for btn in jump_btns:
+            self.assertIn(btn, self.index_html)
+
+        # CPU Telemetry: collapsible button hidden, drilldown always visible
+        self.assertIn('id="btn-toggle-cpu-cores" class="btn-icon-subtle hidden"', self.index_html)
+        self.assertIn('id="cpu-cores-drilldown" class="cpu-cores-drilldown"', self.index_html)
+        self.assertIn('id="cpu-cores-grid"', self.index_html)
+
+        # Redundant storage metric card is hidden
+        self.assertIn('id="storage-metric-card" style="display: none;"', self.index_html)
+
+        # Network Telemetry in Host Platform card
+        net_elements = [
+            'id="host-network-interface"',
+            'id="host-network-ip"',
+            'id="host-network-rx"',
+            'id="host-network-tx"',
+            'id="host-network-status"',
+        ]
+        for elem in net_elements:
+            self.assertIn(elem, self.index_html)
 
 
 if __name__ == "__main__":

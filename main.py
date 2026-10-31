@@ -5737,6 +5737,103 @@ def get_storage_metrics() -> list[dict[str, Any]]:
     return disks
 
 
+def get_network_metrics() -> dict[str, Any]:
+    """Collect non-loopback network interface telemetry and total counters via psutil."""
+    io_per_nic: dict[str, Any] = {}
+    try:
+        if hasattr(psutil, "net_io_counters"):
+            io_per_nic = psutil.net_io_counters(pernic=True) or {}
+    except Exception:
+        io_per_nic = {}
+
+    addrs: dict[str, Any] = {}
+    try:
+        if hasattr(psutil, "net_if_addrs"):
+            addrs = psutil.net_if_addrs() or {}
+    except Exception:
+        addrs = {}
+
+    stats: dict[str, Any] = {}
+    if hasattr(psutil, "net_if_stats"):
+        try:
+            stats = psutil.net_if_stats() or {}
+        except Exception:
+            stats = {}
+
+    nic_names = sorted(set(list(addrs.keys()) + list(io_per_nic.keys()) + list(stats.keys())))
+    interfaces: list[dict[str, Any]] = []
+
+    for nic in nic_names:
+        if nic == "lo" or nic.startswith("lo:"):
+            continue
+
+        ipv4_addrs: list[str] = []
+        for addr_info in addrs.get(nic, []):
+            if isinstance(addr_info, dict):
+                family = addr_info.get("family")
+                addr_str = addr_info.get("address", "")
+            else:
+                family = getattr(addr_info, "family", None)
+                addr_str = getattr(addr_info, "address", "")
+
+            if family == socket.AF_INET or str(family).endswith("AF_INET") or family == 2:
+                if addr_str:
+                    ipv4_addrs.append(str(addr_str))
+
+        primary_ip = ipv4_addrs[0] if ipv4_addrs else ""
+
+        stat = stats.get(nic)
+        if stat is not None:
+            if isinstance(stat, dict):
+                is_up = bool(stat.get("isup", False))
+            else:
+                is_up = bool(getattr(stat, "isup", False))
+        else:
+            is_up = False
+
+        io = io_per_nic.get(nic)
+        if isinstance(io, dict):
+            bytes_sent = int(io.get("bytes_sent", 0) or 0)
+            bytes_recv = int(io.get("bytes_recv", 0) or 0)
+            packets_sent = int(io.get("packets_sent", 0) or 0)
+            packets_recv = int(io.get("packets_recv", 0) or 0)
+        else:
+            bytes_sent = int(getattr(io, "bytes_sent", 0) or 0) if io else 0
+            bytes_recv = int(getattr(io, "bytes_recv", 0) or 0) if io else 0
+            packets_sent = int(getattr(io, "packets_sent", 0) or 0) if io else 0
+            packets_recv = int(getattr(io, "packets_recv", 0) or 0) if io else 0
+
+        interfaces.append(
+            {
+                "interface": nic,
+                "ip": primary_ip,
+                "is_up": is_up,
+                "bytes_sent": bytes_sent,
+                "bytes_recv": bytes_recv,
+                "packets_sent": packets_sent,
+                "packets_recv": packets_recv,
+            }
+        )
+
+    total_bytes_sent = sum(item["bytes_sent"] for item in interfaces)
+    total_bytes_recv = sum(item["bytes_recv"] for item in interfaces)
+
+    if total_bytes_sent == 0 and total_bytes_recv == 0:
+        try:
+            tot_io = psutil.net_io_counters(pernic=False)
+            if tot_io and not isinstance(tot_io, dict):
+                total_bytes_sent = int(getattr(tot_io, "bytes_sent", 0) or 0)
+                total_bytes_recv = int(getattr(tot_io, "bytes_recv", 0) or 0)
+        except Exception:
+            pass
+
+    return {
+        "total_bytes_sent": total_bytes_sent,
+        "total_bytes_recv": total_bytes_recv,
+        "interfaces": interfaces,
+    }
+
+
 def get_system_metrics_data() -> dict[str, Any]:
     """Collect real-time system metrics via psutil, mounted disks, and services summary."""
     cpu_percent = psutil.cpu_percent(interval=None)
@@ -5761,6 +5858,7 @@ def get_system_metrics_data() -> dict[str, Any]:
     boot_time = psutil.boot_time()
     storage_metrics = get_storage_metrics()
     services_summary = get_services_summary()
+    network_metrics = get_network_metrics()
 
     os_distro = ""
     try:
@@ -5797,6 +5895,7 @@ def get_system_metrics_data() -> dict[str, Any]:
         "filesystems": storage_metrics,
         "mounts": storage_metrics,
         "services_summary": services_summary,
+        "network": network_metrics,
         "boot_time": boot_time,
         "platform": platform.system(),
         "kernel": kernel,
