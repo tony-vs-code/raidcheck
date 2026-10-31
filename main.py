@@ -4327,10 +4327,15 @@ class DockerManager:
         update_app_settings({"docker_auto_update_frequency": freq})
         return {"frequency": freq}
 
-    def _get_remote_image_digest(self, img: str) -> Optional[str]:
+    def _get_remote_image_details(self, img: str) -> dict[str, Any]:
         clean_img = img.strip()
+        result: dict[str, Any] = {
+            "primary_digest": None,
+            "platform_digest": None,
+            "candidate_digests": set(),
+        }
         if not clean_img:
-            return None
+            return result
 
         arch = (
             "amd64"
@@ -4338,26 +4343,43 @@ class DockerManager:
             else ("arm64" if platform.machine() in ("aarch64", "arm64") else platform.machine())
         )
 
+        candidates: set[str] = set()
+
         # Attempt 1: buildx imagetools inspect --raw
         try:
             raw = self._run_docker(["buildx", "imagetools", "inspect", "--raw", clean_img], timeout=8)
-            data = json.loads(raw)
-            if isinstance(data, dict):
-                manifests = data.get("manifests")
-                if isinstance(manifests, list) and manifests:
-                    for m in manifests:
-                        plat = m.get("platform", {})
-                        if plat.get("architecture") == arch and plat.get("os") == "linux":
+            if raw and raw.strip():
+                raw_hash = f"sha256:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
+                candidates.add(raw_hash)
+                result["primary_digest"] = raw_hash
+
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    manifests = data.get("manifests")
+                    if isinstance(manifests, list) and manifests:
+                        for m in manifests:
                             digest = m.get("digest")
                             if digest:
-                                return digest
-                    first_digest = manifests[0].get("digest")
-                    if first_digest:
-                        return first_digest
-                elif "config" in data:
-                    cfg_digest = data.get("config", {}).get("digest")
-                    if cfg_digest:
-                        return cfg_digest
+                                candidates.add(digest)
+                            plat = m.get("platform", {})
+                            if plat.get("architecture") == arch and plat.get("os") == "linux":
+                                if not result["platform_digest"] and digest:
+                                    result["platform_digest"] = digest
+                        if not result["platform_digest"] and manifests:
+                            first_digest = manifests[0].get("digest")
+                            if first_digest:
+                                result["platform_digest"] = first_digest
+                    elif "config" in data:
+                        cfg_digest = data.get("config", {}).get("digest")
+                        if cfg_digest:
+                            candidates.add(cfg_digest)
+                            result["platform_digest"] = cfg_digest
+                            if not result["primary_digest"]:
+                                result["primary_digest"] = cfg_digest
+
+                if result["platform_digest"] or result["primary_digest"]:
+                    result["candidate_digests"] = candidates
+                    return result
         except Exception:
             pass
 
@@ -4368,19 +4390,30 @@ class DockerManager:
             if isinstance(data, list):
                 for entry in data:
                     if isinstance(entry, dict):
-                        plat = entry.get("Descriptor", {}).get("platform", {})
+                        desc = entry.get("Descriptor", {})
+                        digest = desc.get("digest")
+                        if digest:
+                            candidates.add(digest)
+                        plat = desc.get("platform", {})
                         if plat.get("architecture") == arch and plat.get("os") == "linux":
-                            digest = entry.get("Descriptor", {}).get("digest")
-                            if digest:
-                                return digest
-                if data and isinstance(data[0], dict):
+                            if not result["platform_digest"] and digest:
+                                result["platform_digest"] = digest
+                if not result["platform_digest"] and data and isinstance(data[0], dict):
                     first_digest = data[0].get("Descriptor", {}).get("digest")
                     if first_digest:
-                        return first_digest
+                        result["platform_digest"] = first_digest
             elif isinstance(data, dict):
                 digest = data.get("Descriptor", {}).get("digest")
                 if digest:
-                    return digest
+                    candidates.add(digest)
+                    result["platform_digest"] = digest
+                    result["primary_digest"] = digest
+
+            if result["platform_digest"] or candidates:
+                result["candidate_digests"] = candidates
+                if not result["primary_digest"]:
+                    result["primary_digest"] = result["platform_digest"]
+                return result
         except Exception:
             pass
 
@@ -4392,22 +4425,38 @@ class DockerManager:
                 manifests = data.get("manifests")
                 if isinstance(manifests, list) and manifests:
                     for m in manifests:
+                        digest = m.get("digest")
+                        if digest:
+                            candidates.add(digest)
                         plat = m.get("platform", {})
                         if plat.get("architecture") == arch and plat.get("os") == "linux":
-                            digest = m.get("digest")
-                            if digest:
-                                return digest
-                    first_digest = manifests[0].get("digest")
-                    if first_digest:
-                        return first_digest
+                            if not result["platform_digest"] and digest:
+                                result["platform_digest"] = digest
+                    if not result["platform_digest"] and manifests:
+                        first_digest = manifests[0].get("digest")
+                        if first_digest:
+                            result["platform_digest"] = first_digest
                 elif "config" in data:
                     cfg_digest = data.get("config", {}).get("digest")
                     if cfg_digest:
-                        return cfg_digest
+                        candidates.add(cfg_digest)
+                        result["platform_digest"] = cfg_digest
+                        result["primary_digest"] = cfg_digest
+
+            if result["platform_digest"] or candidates:
+                result["candidate_digests"] = candidates
+                if not result["primary_digest"]:
+                    result["primary_digest"] = result["platform_digest"]
+                return result
         except Exception:
             pass
 
-        return None
+        result["candidate_digests"] = candidates
+        return result
+
+    def _get_remote_image_digest(self, img: str) -> Optional[str]:
+        details = self._get_remote_image_details(img)
+        return details.get("platform_digest") or details.get("primary_digest")
 
     def check_updates(self, force: bool = False) -> dict[str, Any]:
         frequency = self.get_auto_update_config().get("frequency", "disabled")
@@ -4500,15 +4549,56 @@ class DockerManager:
                 except Exception:
                     pass
 
-            remote_digest = self._get_remote_image_digest(img)
+            target_ref = f"{image_repo}:{image_tag}" if (image_repo and image_tag) else img
+            remote_details = self._get_remote_image_details(target_ref)
+            remote_digest = self._get_remote_image_digest(target_ref)
+            if not remote_details.get("candidate_digests") and target_ref != img:
+                remote_details = self._get_remote_image_details(img)
+                remote_digest = self._get_remote_image_digest(img)
 
+            candidates: set[str] = set(remote_details.get("candidate_digests") or [])
             if remote_digest:
-                if any(remote_digest in rd for rd in repo_digests):
+                candidates.add(remote_digest)
+
+            if candidates:
+                is_match = False
+                for cand in candidates:
+                    cand_clean = cand.strip().lower()
+                    cand_hex = cand_clean.replace("sha256:", "")
+                    if not cand_hex:
+                        continue
+
+                    for rd in repo_digests:
+                        rd_lower = str(rd).lower()
+                        if cand_clean in rd_lower or cand_hex in rd_lower:
+                            is_match = True
+                            break
+                    if is_match:
+                        break
+
+                    if local_id:
+                        lid_lower = local_id.lower()
+                        if cand_clean == lid_lower or cand_hex == lid_lower.replace("sha256:", ""):
+                            is_match = True
+                            break
+
+                    desc_digest = str(local_data.get("Descriptor", {}).get("digest") or "").lower()
+                    if desc_digest and (cand_clean == desc_digest or cand_hex == desc_digest.replace("sha256:", "")):
+                        is_match = True
+                        break
+
+                if is_match:
                     update_available = False
                     latest_id = current_id
                 else:
                     update_available = True
-                    latest_id = remote_digest.replace("sha256:", "")[:12]
+                    primary = (
+                        remote_details.get("platform_digest")
+                        or remote_details.get("primary_digest")
+                        or remote_digest
+                        or next(iter(candidates))
+                    )
+                    latest_id = primary.replace("sha256:", "")[:12]
             else:
                 update_available = False
                 latest_id = current_id
